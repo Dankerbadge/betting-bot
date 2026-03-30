@@ -1,0 +1,2 @@
+event_id,selection,team,sport_id,observed_at,availability_signal,lineup_signal,news_signal,source_confidence,source_count,conflict_flag,source_note
+,Boston Celtics ML,Boston Celtics,4,2026-03-28T20:00:00Z,0.20,0.05,0.00,0.90,2,false,Official lineup confirms full-strength starters

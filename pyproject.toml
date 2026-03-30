@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "betbot"
+version = "0.1.0"
+description = "Deterministic, testable baseline for a probability-driven betting/trading bot."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+betbot = "betbot.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["betbot*"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+exclude = [
+    ".venv",
+    ".monitoring-venv",
+    "build",
+    "outputs",
+]
+
+[tool.ruff.lint]
+select = ["E9", "F63", "F7", "F82"]

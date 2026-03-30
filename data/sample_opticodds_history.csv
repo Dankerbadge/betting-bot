@@ -1,0 +1,10 @@
+timestamp,event_id,market,book,odds,commence_time
+2026-03-27T10:00:00,evt_mlb_001,moneyline_home,book_a,1.93,2026-03-27T13:10:00
+2026-03-27T10:15:00,evt_mlb_001,moneyline_home,book_a,1.95,2026-03-27T13:10:00
+2026-03-27T12:40:00,evt_mlb_001,moneyline_home,book_a,1.91,2026-03-27T13:10:00
+2026-03-27T13:05:00,evt_mlb_001,moneyline_home,book_a,1.90,2026-03-27T13:10:00
+2026-03-27T11:00:00,evt_mlb_001,moneyline_away,book_a,2.02,2026-03-27T13:10:00
+2026-03-27T12:10:00,evt_mlb_001,moneyline_away,book_a,2.00,2026-03-27T13:10:00
+2026-03-27T13:20:00,evt_mlb_002,moneyline_home,book_b,1.88,2026-03-27T13:10:00
+2026-03-27T13:25:00,evt_mlb_002,moneyline_home,book_b,1.87,2026-03-27T13:10:00
+2026-03-27T10:00:00,evt_mlb_003,moneyline_home,book_c,1.00,2026-03-27T14:00:00

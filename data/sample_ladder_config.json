@@ -1,0 +1,16 @@
+{
+  "min_ev": 0.01,
+  "kelly_fraction": 0.25,
+  "max_bet_fraction": 0.03,
+  "min_stake": 1.0,
+  "max_daily_loss_fraction": 0.1,
+  "max_drawdown_fraction": 0.2,
+  "planning_prob_floor": null,
+  "ladder_enabled": true,
+  "ladder_rungs": [105, 120, 150],
+  "ladder_min_success_prob": 0.7,
+  "ladder_withdraw_step": 10.0,
+  "ladder_min_risk_wallet": 10.0,
+  "ladder_risk_per_effort": 10.0,
+  "ladder_planning_p": 0.55
+}

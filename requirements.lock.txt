@@ -1,0 +1,2 @@
+# Runtime dependency lock.
+# This project's runtime is standard-library only, so no third-party pins are required.

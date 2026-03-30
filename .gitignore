@@ -1,0 +1,39 @@
+# macOS
+.DS_Store
+
+# Virtual environments
+.venv/
+.monitoring-venv/
+
+# Python caches and test caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+
+# Build and packaging artifacts
+build/
+dist/
+*.egg-info/
+
+# Local secrets and environment files
+.env
+.env.*
+!.env.example
+*.local.env
+data/research/account_onboarding.local.env
+.secrets/*
+!.secrets/README.md
+Dank's key.txt
+*.pem
+*.p8
+
+# Runtime outputs
+outputs/
+
+# IDE/editor
+.idea/
+.vscode/

@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: |
+            requirements.txt
+            requirements.lock.txt
+            requirements-dev.txt
+            requirements-dev.lock.txt
+
+      - name: Upgrade pip
+        run: python -m pip install --upgrade pip
+
+      - name: Secret path guard
+        run: python scripts/check_no_tracked_secrets.py
+
+      - name: Install project and locked dev dependencies
+        run: make install-dev
+
+      - name: Run pre-commit hooks
+        run: make precommit-run
+
+      - name: Run full quality gate
+        run: make check
