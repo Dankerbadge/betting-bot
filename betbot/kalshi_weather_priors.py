@@ -74,6 +74,9 @@ WEATHER_PRIOR_EXTRA_FIELDS = [
     "settlement_station",
     "settlement_timezone",
     "local_day_boundary",
+    "observation_window_local_start",
+    "observation_window_local_end",
+    "observation_window_local_source",
     "threshold_expression",
     "rule_text_hash_sha256",
 ]
@@ -106,6 +109,9 @@ WEATHER_PRIOR_OUTPUT_FIELDNAMES = [
     "settlement_station",
     "settlement_timezone",
     "local_day_boundary",
+    "observation_window_local_start",
+    "observation_window_local_end",
+    "observation_window_local_source",
     "threshold_expression",
     "rule_text_hash_sha256",
 ]
@@ -380,19 +386,43 @@ def _period_window(
     hours_to_close: float | None,
     settlement_timezone_name: str,
     target_settlement_date: date | None,
+    observation_window_local_start: str | None = None,
+    observation_window_local_end: str | None = None,
 ) -> list[dict[str, Any]]:
+    def _minutes_from_clock(value: str | None) -> int | None:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        match = re.match(r"^(\d{1,2}):(\d{2})$", text)
+        if not match:
+            return None
+        hours = int(match.group(1))
+        minutes = int(match.group(2))
+        if hours < 0 or hours > 23 or minutes < 0 or minutes > 59:
+            return None
+        return (hours * 60) + minutes
+
     if isinstance(target_settlement_date, date):
         try:
             settlement_zone = ZoneInfo(settlement_timezone_name)
         except ZoneInfoNotFoundError:
             settlement_zone = timezone.utc
+        start_minutes = _minutes_from_clock(observation_window_local_start)
+        end_minutes = _minutes_from_clock(observation_window_local_end)
         settlement_day_periods: list[dict[str, Any]] = []
         for period in periods:
             start_time = _parse_datetime(str(period.get("startTime") or ""))
             if start_time is None:
                 continue
-            if start_time.astimezone(settlement_zone).date() == target_settlement_date:
-                settlement_day_periods.append(period)
+            local_start = start_time.astimezone(settlement_zone)
+            if local_start.date() != target_settlement_date:
+                continue
+            if start_minutes is not None and end_minutes is not None:
+                minute_of_day = (local_start.hour * 60) + local_start.minute
+                if start_minutes <= end_minutes:
+                    if minute_of_day < start_minutes or minute_of_day > end_minutes:
+                        continue
+            settlement_day_periods.append(period)
         if settlement_day_periods:
             return settlement_day_periods
 
@@ -538,6 +568,8 @@ def _build_daily_rain_prior(
         hours_to_close=_parse_float(row.get("hours_to_close")),
         settlement_timezone_name=settlement_timezone_name,
         target_settlement_date=target_local_dt.date(),
+        observation_window_local_start=str(settlement.get("observation_window_local_start") or "").strip(),
+        observation_window_local_end=str(settlement.get("observation_window_local_end") or "").strip(),
     )
     pop_values: list[float] = []
     for period in scoped_periods:
@@ -604,6 +636,10 @@ def _build_daily_rain_prior(
         f"periods_used={len(pop_values)}",
         f"forecast_updated_at={updated_at or 'unknown'}",
     ]
+    window_start = str(settlement.get("observation_window_local_start") or "").strip()
+    window_end = str(settlement.get("observation_window_local_end") or "").strip()
+    if window_start and window_end:
+        source_parts.append(f"settlement_window_local={window_start}-{window_end}")
     if isinstance(history_payload, dict):
         source_parts.append(f"ncei_cdo_status={history_payload.get('status')}")
         source_parts.append(f"historical_years={climatology_count}")
@@ -682,6 +718,8 @@ def _build_daily_temperature_prior(
         hours_to_close=_parse_float(row.get("hours_to_close")),
         settlement_timezone_name=settlement_timezone_name,
         target_settlement_date=target_local_dt.date(),
+        observation_window_local_start=str(settlement.get("observation_window_local_start") or "").strip(),
+        observation_window_local_end=str(settlement.get("observation_window_local_end") or "").strip(),
     )
     temperatures: list[float] = []
     for period in scoped_periods:
@@ -763,6 +801,10 @@ def _build_daily_temperature_prior(
         f"temp_points={len(temperatures)}",
         f"forecast_updated_at={updated_at or 'unknown'}",
     ]
+    window_start = str(settlement.get("observation_window_local_start") or "").strip()
+    window_end = str(settlement.get("observation_window_local_end") or "").strip()
+    if window_start and window_end:
+        source_parts.append(f"settlement_window_local={window_start}-{window_end}")
     if isinstance(history_payload, dict):
         source_parts.append(f"ncei_cdo_status={history_payload.get('status')}")
         source_parts.append(f"historical_samples={climatology_count}")
@@ -1103,6 +1145,9 @@ def run_kalshi_weather_priors(
                 ),
                 "settlement_timezone": str(settlement.get("settlement_timezone") or "").strip(),
                 "local_day_boundary": str(settlement.get("local_day_boundary") or "").strip(),
+                "observation_window_local_start": str(settlement.get("observation_window_local_start") or "").strip(),
+                "observation_window_local_end": str(settlement.get("observation_window_local_end") or "").strip(),
+                "observation_window_local_source": str(settlement.get("observation_window_local_source") or "").strip(),
                 "threshold_expression": str(settlement.get("threshold_expression") or "").strip(),
                 "rule_text_hash_sha256": str(settlement.get("rule_text_hash_sha256") or "").strip(),
             }

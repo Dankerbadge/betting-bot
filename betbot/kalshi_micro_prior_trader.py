@@ -408,7 +408,7 @@ def run_kalshi_micro_prior_trader(
     execution_event_log_csv: str | None = None,
     execution_journal_db_path: str | None = None,
     execution_frontier_recent_rows: int = 5000,
-    enforce_ws_state_authority: bool = False,
+    enforce_ws_state_authority: bool = True,
     ws_state_json: str | None = None,
     ws_state_max_age_seconds: float = 30.0,
     enforce_daily_weather_live_only: bool = True,

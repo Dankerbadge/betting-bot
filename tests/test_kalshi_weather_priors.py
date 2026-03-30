@@ -373,6 +373,86 @@ class KalshiWeatherPriorsTests(unittest.TestCase):
             self.assertEqual(summary["station_history_cache_max_age_hours"], 18.0)
             self.assertTrue(str(summary["station_history_cache_dir"]).endswith("weather_station_history_cache"))
 
+    def test_run_kalshi_weather_priors_uses_settlement_window_for_daily_rain(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            history_csv = base / "history.csv"
+            priors_csv = base / "priors.csv"
+            _write_csv(
+                history_csv,
+                HISTORY_FIELDNAMES,
+                [
+                    {
+                        "captured_at": "2026-03-30T00:00:00+00:00",
+                        "category": "Climate and Weather",
+                        "series_ticker": "KXRAINNYC",
+                        "event_ticker": "KXRAINNYC-26MAR30",
+                        "market_ticker": "KXRAINNYC-26MAR30",
+                        "event_title": "Will it rain in NYC today?",
+                        "market_title": "Will it rain in NYC today?",
+                        "rules_primary": (
+                            "If measurable rain is recorded at station KJFK between 6:00 AM and 6:59 AM local time, "
+                            "this market resolves to Yes."
+                        ),
+                        "close_time": "2026-03-30T14:00:00+00:00",
+                        "hours_to_close": "12",
+                        "yes_bid_dollars": "0.09",
+                        "yes_ask_dollars": "0.11",
+                        "spread_dollars": "0.02",
+                    },
+                ],
+            )
+            _write_csv(priors_csv, PRIOR_FIELDNAMES, [])
+
+            def fake_station_forecast_fetcher(*, station_id: str, timeout_seconds: float):
+                self.assertEqual(station_id, "KJFK")
+                return {
+                    "status": "ready",
+                    "station_id": station_id,
+                    "forecast_updated_at": "2026-03-30T00:00:00+00:00",
+                    "periods": [
+                        {
+                            "startTime": "2026-03-30T09:00:00+00:00",  # 05:00 local
+                            "temperature": 51,
+                            "probabilityOfPrecipitation": {"value": 90},
+                        },
+                        {
+                            "startTime": "2026-03-30T10:00:00+00:00",  # 06:00 local
+                            "temperature": 52,
+                            "probabilityOfPrecipitation": {"value": 10},
+                        },
+                        {
+                            "startTime": "2026-03-30T14:00:00+00:00",  # 10:00 local
+                            "temperature": 56,
+                            "probabilityOfPrecipitation": {"value": 90},
+                        },
+                    ],
+                }
+
+            summary = run_kalshi_weather_priors(
+                priors_csv=str(priors_csv),
+                history_csv=str(history_csv),
+                output_dir=str(base),
+                station_forecast_fetcher=fake_station_forecast_fetcher,
+                station_history_fetcher=lambda **kwargs: {"status": "disabled_missing_token"},
+                anomaly_series_fetcher=lambda **kwargs: {"status": "ready", "values": [0.0] * 24},
+                now=datetime(2026, 3, 30, 0, 5, tzinfo=timezone.utc),
+            )
+
+            self.assertEqual(summary["status"], "ready")
+            self.assertEqual(summary["generated_priors"], 1)
+
+            with Path(summary["output_csv"]).open("r", newline="", encoding="utf-8") as handle:
+                rows = [dict(row) for row in csv.DictReader(handle)]
+            self.assertEqual(len(rows), 1)
+            generated = rows[0]
+            # Window filter should include the single 06:00 local period (10% PoP), not the surrounding 90% periods.
+            self.assertAlmostEqual(float(generated["model_probability_raw"]), 0.10, places=3)
+            self.assertAlmostEqual(float(generated["fair_yes_probability"]), 0.10, places=3)
+            self.assertEqual(generated["observation_window_local_start"], "06:00")
+            self.assertEqual(generated["observation_window_local_end"], "06:59")
+            self.assertIn("settlement_window_local=06:00-06:59", generated["source_note"])
+
 
 if __name__ == "__main__":
     unittest.main()

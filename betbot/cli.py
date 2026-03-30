@@ -1220,7 +1220,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     kalshi_weather_priors.add_argument(
         "--allowed-contract-families",
-        default="daily_rain,daily_temperature,monthly_climate_anomaly",
+        default="daily_rain,daily_temperature",
         help="Comma-separated weather contract families to process",
     )
     kalshi_weather_priors.add_argument(

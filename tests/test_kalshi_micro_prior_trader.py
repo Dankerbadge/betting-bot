@@ -8,6 +8,69 @@ from betbot.kalshi_micro_prior_trader import run_kalshi_micro_prior_trader
 
 
 class KalshiMicroPriorTraderTests(unittest.TestCase):
+    def test_run_kalshi_micro_prior_trader_defaults_ws_authority_true(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            seen_ws_flags: list[bool] = []
+
+            def fake_prior_execute_runner(**kwargs):
+                seen_ws_flags.append(bool(kwargs.get("enforce_ws_state_authority")))
+                return {
+                    "status": "dry_run",
+                    "actual_live_balance_dollars": 40.0,
+                    "actual_live_balance_source": "live",
+                    "balance_live_verified": True,
+                    "enforce_ws_state_authority": bool(kwargs.get("enforce_ws_state_authority")),
+                    "ws_state_authority": {
+                        "checked": True,
+                        "status": "ready",
+                        "gate_pass": True,
+                    },
+                    "prior_trade_gate_summary": {
+                        "gate_pass": True,
+                        "gate_status": "pass",
+                        "gate_score": 88.0,
+                        "gate_blockers": [],
+                        "top_market_ticker": "KXTEST-1",
+                        "top_market_title": "Test Market",
+                        "top_market_close_time": "2026-03-28T12:00:00Z",
+                        "top_market_hours_to_close": 15.0,
+                        "top_market_side": "no",
+                        "top_market_maker_entry_price_dollars": 0.96,
+                        "top_market_maker_entry_edge": 0.02,
+                        "top_market_estimated_entry_cost_dollars": 0.96,
+                        "top_market_expected_value_dollars": 0.02,
+                        "top_market_expected_roi_on_cost": 0.020833,
+                        "top_market_expected_value_per_day_dollars": 0.032,
+                        "top_market_expected_roi_per_day": 0.033333,
+                        "top_market_estimated_max_profit_dollars": 0.04,
+                        "top_market_estimated_max_loss_dollars": 0.96,
+                        "top_market_max_profit_roi_on_cost": 0.041667,
+                        "top_market_fair_probability": 0.98,
+                        "top_market_confidence": 0.7,
+                        "top_market_thesis": "Test thesis",
+                    },
+                    "output_file": str(base / "prior_execute.json"),
+                    "execute_summary_file": str(base / "execute_summary.json"),
+                    "execute_output_csv": str(base / "execute.csv"),
+                    "plan_summary_file": str(base / "plan.json"),
+                }
+
+            summary = run_kalshi_micro_prior_trader(
+                env_file="data/research/account_onboarding.local.env",
+                output_dir=str(base),
+                capture_before_execute=False,
+                prior_execute_runner=fake_prior_execute_runner,
+                reconcile_runner=lambda **kwargs: {
+                    "status": "no_order_ids",
+                    "output_file": str(base / "reconcile.json"),
+                },
+                now=datetime(2026, 3, 27, 21, 0, tzinfo=timezone.utc),
+            )
+
+            self.assertEqual(seen_ws_flags, [True])
+            self.assertTrue(summary["enforce_ws_state_authority"])
+
     def test_run_kalshi_micro_prior_trader_holds_when_capture_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)

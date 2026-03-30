@@ -6,6 +6,7 @@ from betbot.kalshi_weather_settlement import (
     build_weather_settlement_spec,
     extract_threshold_expression,
     infer_contract_family,
+    infer_observation_window_local,
     infer_settlement_sources,
     rule_text_hash_sha256,
 )
@@ -45,6 +46,14 @@ class KalshiWeatherSettlementTests(unittest.TestCase):
         text_b = "If   value is above 1.30 then resolve Yes."
         self.assertEqual(rule_text_hash_sha256(text_a), rule_text_hash_sha256(text_b))
 
+    def test_infer_observation_window_local_parses_clock_range(self) -> None:
+        start, end, source = infer_observation_window_local(
+            "Observation period is between 12:00 AM and 11:59 PM local time."
+        )
+        self.assertEqual(start, "00:00")
+        self.assertEqual(end, "23:59")
+        self.assertEqual(source, "rules_text")
+
     def test_build_weather_settlement_spec_contains_core_fields(self) -> None:
         spec = build_weather_settlement_spec(
             {
@@ -57,6 +66,8 @@ class KalshiWeatherSettlementTests(unittest.TestCase):
         self.assertEqual(spec["contract_family"], "daily_rain")
         self.assertEqual(spec["settlement_station"], "KJFK")
         self.assertEqual(spec["settlement_timezone"], "America/New_York")
+        self.assertEqual(spec["observation_window_local_start"], "")
+        self.assertEqual(spec["observation_window_local_end"], "")
         self.assertTrue(bool(spec["rule_text_hash_sha256"]))
 
 

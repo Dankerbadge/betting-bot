@@ -188,6 +188,66 @@ def infer_local_day_boundary(rules_primary: str) -> str:
     return "contract_defined_day"
 
 
+def _parse_clock_text(value: str) -> tuple[int, int] | None:
+    text = str(value or "").strip().lower()
+    if not text:
+        return None
+    match = re.search(r"\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b", text)
+    if not match:
+        return None
+    hour_raw = int(match.group(1))
+    minute_raw = int(match.group(2) or "0")
+    meridiem = str(match.group(3) or "").strip().lower()
+    if minute_raw < 0 or minute_raw > 59:
+        return None
+    if meridiem:
+        if hour_raw < 1 or hour_raw > 12:
+            return None
+        hour = hour_raw % 12
+        if meridiem == "pm":
+            hour += 12
+    else:
+        if hour_raw < 0 or hour_raw > 23:
+            return None
+        hour = hour_raw
+    return (hour, minute_raw)
+
+
+def _format_clock_text(hours: int, minutes: int) -> str:
+    return f"{int(hours):02d}:{int(minutes):02d}"
+
+
+def infer_observation_window_local(rules_primary: str) -> tuple[str, str, str]:
+    text = normalize_rule_text(rules_primary)
+    if not text:
+        return ("", "", "unknown")
+    lowered = text.lower()
+
+    explicit_range = re.search(
+        r"(?:between|from)\s+([0-9]{1,2}(?::[0-9]{2})?\s*(?:am|pm)?)\s*(?:and|to|-)\s*([0-9]{1,2}(?::[0-9]{2})?\s*(?:am|pm)?)",
+        lowered,
+    )
+    if explicit_range:
+        start = _parse_clock_text(str(explicit_range.group(1) or ""))
+        end = _parse_clock_text(str(explicit_range.group(2) or ""))
+        if start is not None and end is not None:
+            return (_format_clock_text(*start), _format_clock_text(*end), "rules_text")
+
+    deadline = re.search(
+        r"(?:before|by|until)\s+([0-9]{1,2}(?::[0-9]{2})?\s*(?:am|pm)?)",
+        lowered,
+    )
+    if deadline:
+        parsed = _parse_clock_text(str(deadline.group(1) or ""))
+        if parsed is not None:
+            return ("00:00", _format_clock_text(*parsed), "rules_text")
+
+    if ("local day" in lowered) or ("calendar day" in lowered) or ("all day" in lowered):
+        return ("00:00", "23:59", "heuristic_local_day")
+
+    return ("", "", "unknown")
+
+
 def build_weather_settlement_spec(row: dict[str, Any]) -> dict[str, Any]:
     market_ticker = str(row.get("market_ticker") or "")
     market_title = str(row.get("market_title") or "")
@@ -200,6 +260,7 @@ def build_weather_settlement_spec(row: dict[str, Any]) -> dict[str, Any]:
         rules_primary=rules_primary,
     )
     primary_source, fallback_source = infer_settlement_sources(rules_primary)
+    window_start, window_end, window_source = infer_observation_window_local(rules_primary)
     return {
         "contract_family": family,
         "settlement_source_primary": primary_source,
@@ -207,6 +268,9 @@ def build_weather_settlement_spec(row: dict[str, Any]) -> dict[str, Any]:
         "settlement_station": infer_settlement_station(rules_primary, market_title, event_title),
         "settlement_timezone": infer_settlement_timezone(market_ticker, market_title, event_title),
         "local_day_boundary": infer_local_day_boundary(rules_primary),
+        "observation_window_local_start": window_start,
+        "observation_window_local_end": window_end,
+        "observation_window_local_source": window_source,
         "threshold_expression": extract_threshold_expression(rules_primary),
         "rule_text_hash_sha256": rule_text_hash_sha256(rules_primary),
     }
