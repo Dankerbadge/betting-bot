@@ -64,6 +64,7 @@ class KalshiWatchdogTests(unittest.TestCase):
                 loops=2,
                 upstream_incident_threshold=1,
                 kill_switch_cooldown_seconds=3600.0,
+                self_heal_attempts_per_run=0,
                 run_dns_doctor_on_upstream=False,
                 autopilot_runner=fake_autopilot,
                 sleep_fn=lambda _seconds: None,
@@ -166,6 +167,7 @@ class KalshiWatchdogTests(unittest.TestCase):
                 upstream_incident_threshold=3,
                 upstream_retry_backoff_base_seconds=5.0,
                 upstream_retry_backoff_max_seconds=30.0,
+                self_heal_attempts_per_run=0,
                 autopilot_runner=fake_autopilot,
                 dns_doctor_runner=fake_dns_doctor,
                 sleep_fn=lambda seconds: sleep_calls.append(float(seconds)),
@@ -178,6 +180,56 @@ class KalshiWatchdogTests(unittest.TestCase):
             self.assertEqual(summary["dns_remediations_attempted"], 1)
             self.assertFalse(summary["kill_switch_active"])
             self.assertEqual(summary["run_summaries"][0]["remediation_dns_status"], "passed")
+
+    def test_watchdog_self_heals_in_loop_before_escalation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            env_file = base / "env.txt"
+            env_file.write_text("KALSHI_ENV=prod\n", encoding="utf-8")
+
+            allow_live_args: list[bool] = []
+            autopilot_calls = 0
+            dns_calls = 0
+
+            def fake_autopilot(**kwargs: Any) -> dict[str, Any]:
+                nonlocal autopilot_calls
+                autopilot_calls += 1
+                allow_live_args.append(bool(kwargs["allow_live_orders"]))
+                if autopilot_calls == 1:
+                    return _upstream_autopilot_summary(base, "initial")
+                return _healthy_autopilot_summary(base, "recovered")
+
+            def fake_dns_doctor(**kwargs: Any) -> dict[str, Any]:
+                nonlocal dns_calls
+                dns_calls += 1
+                return {
+                    "status": "passed",
+                    "output_file": str(base / "dns_doctor_self_heal.json"),
+                }
+
+            summary = run_kalshi_watchdog(
+                env_file=str(env_file),
+                output_dir=str(base),
+                allow_live_orders=True,
+                loops=1,
+                upstream_incident_threshold=2,
+                self_heal_attempts_per_run=2,
+                self_heal_pause_seconds=0.0,
+                autopilot_runner=fake_autopilot,
+                dns_doctor_runner=fake_dns_doctor,
+                sleep_fn=lambda _seconds: None,
+                now=datetime(2026, 3, 30, 3, 30, tzinfo=timezone.utc),
+            )
+
+            self.assertEqual(autopilot_calls, 2)
+            self.assertEqual(allow_live_args, [True, True])
+            self.assertEqual(dns_calls, 1)
+            self.assertFalse(summary["kill_switch_active"])
+            run_summary = summary["run_summaries"][0]
+            self.assertTrue(run_summary["self_healed"])
+            self.assertEqual(run_summary["self_heal_attempts_used"], 1)
+            self.assertEqual(run_summary["autopilot_attempts_total"], 2)
+            self.assertEqual(run_summary["autopilot_status"], "ready")
 
 
 if __name__ == "__main__":

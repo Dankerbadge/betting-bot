@@ -2654,7 +2654,7 @@ def build_parser() -> argparse.ArgumentParser:
     kalshi_watchdog.add_argument(
         "--upstream-incident-threshold",
         type=int,
-        default=2,
+        default=3,
         help="Consecutive upstream incidents before kill-switch engages",
     )
     kalshi_watchdog.add_argument(
@@ -2666,7 +2666,7 @@ def build_parser() -> argparse.ArgumentParser:
     kalshi_watchdog.add_argument(
         "--healthy-runs-to-clear-kill-switch",
         type=int,
-        default=2,
+        default=1,
         help="Healthy autopilot runs required to clear an active kill-switch early",
     )
     kalshi_watchdog.add_argument(
@@ -2680,6 +2680,18 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=300.0,
         help="Maximum backoff used after upstream incidents",
+    )
+    kalshi_watchdog.add_argument(
+        "--self-heal-attempts-per-loop",
+        type=int,
+        default=2,
+        help="In-loop remediation retries before deferring to next watchdog loop",
+    )
+    kalshi_watchdog.add_argument(
+        "--self-heal-pause-seconds",
+        type=float,
+        default=10.0,
+        help="Pause between in-loop remediation retry attempts",
     )
     kalshi_watchdog.add_argument(
         "--disable-remediation-dns-doctor",
@@ -4241,6 +4253,8 @@ def main() -> None:
             healthy_runs_to_clear_kill_switch=args.healthy_runs_to_clear_kill_switch,
             upstream_retry_backoff_base_seconds=args.upstream_retry_backoff_base_seconds,
             upstream_retry_backoff_max_seconds=args.upstream_retry_backoff_max_seconds,
+            self_heal_attempts_per_run=args.self_heal_attempts_per_loop,
+            self_heal_pause_seconds=args.self_heal_pause_seconds,
             run_dns_doctor_on_upstream=not args.disable_remediation_dns_doctor,
             kill_switch_state_json=args.kill_switch_state_json,
         )

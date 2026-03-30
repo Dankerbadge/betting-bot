@@ -208,11 +208,13 @@ def run_kalshi_watchdog(
     scaling_hard_max_live_submissions_per_day: int = 12,
     scaling_hard_max_live_cost_per_day_dollars: float = 12.0,
     scaling_hard_max_daily_risk_cap_dollars: float = 12.0,
-    upstream_incident_threshold: int = 2,
+    upstream_incident_threshold: int = 3,
     kill_switch_cooldown_seconds: float = 1800.0,
-    healthy_runs_to_clear_kill_switch: int = 2,
+    healthy_runs_to_clear_kill_switch: int = 1,
     upstream_retry_backoff_base_seconds: float = 15.0,
     upstream_retry_backoff_max_seconds: float = 300.0,
+    self_heal_attempts_per_run: int = 2,
+    self_heal_pause_seconds: float = 10.0,
     run_dns_doctor_on_upstream: bool = True,
     kill_switch_state_json: str | None = None,
     autopilot_runner: AutopilotRunner = run_kalshi_autopilot,
@@ -243,6 +245,8 @@ def run_kalshi_watchdog(
     safe_sleep_between_loops = max(0.0, float(sleep_between_loops_seconds))
     safe_upstream_backoff_base = max(0.0, float(upstream_retry_backoff_base_seconds))
     safe_upstream_backoff_max = max(safe_upstream_backoff_base, float(upstream_retry_backoff_max_seconds))
+    safe_self_heal_attempts = max(0, int(self_heal_attempts_per_run))
+    safe_self_heal_pause = max(0.0, float(self_heal_pause_seconds))
 
     target_loops = int(loops)
     run_forever = target_loops == 0
@@ -260,6 +264,46 @@ def run_kalshi_watchdog(
     elapsed_seconds = 0.0
     interrupted = False
 
+    def _run_autopilot_attempt(*, attempt_started_at: datetime, live_enabled: bool) -> dict[str, Any]:
+        return autopilot_runner(
+            env_file=env_file,
+            output_dir=output_dir,
+            priors_csv=priors_csv,
+            history_csv=effective_history_csv,
+            ledger_csv=ledger_csv,
+            book_db_path=book_db_path,
+            allow_live_orders=live_enabled,
+            cycles=autopilot_cycles,
+            sleep_between_cycles_seconds=autopilot_sleep_between_cycles_seconds,
+            timeout_seconds=timeout_seconds,
+            planning_bankroll_dollars=planning_bankroll_dollars,
+            daily_risk_cap_dollars=daily_risk_cap_dollars,
+            contracts_per_order=contracts_per_order,
+            max_orders=max_orders,
+            min_maker_edge=min_maker_edge,
+            min_maker_edge_net_fees=min_maker_edge_net_fees,
+            max_entry_price_dollars=max_entry_price_dollars,
+            max_live_submissions_per_day=max_live_submissions_per_day,
+            max_live_cost_per_day_dollars=max_live_cost_per_day_dollars,
+            preflight_run_dns_doctor=preflight_run_dns_doctor,
+            preflight_run_live_smoke=preflight_run_live_smoke,
+            preflight_run_ws_state_collect=preflight_run_ws_state_collect,
+            ws_collect_run_seconds=ws_collect_run_seconds,
+            ws_collect_max_events=ws_collect_max_events,
+            ws_state_json=ws_state_json,
+            ws_state_max_age_seconds=ws_state_max_age_seconds,
+            enable_progressive_scaling=enable_progressive_scaling,
+            scaling_lookback_runs=scaling_lookback_runs,
+            scaling_green_runs_per_step=scaling_green_runs_per_step,
+            scaling_step_live_submissions=scaling_step_live_submissions,
+            scaling_step_live_cost_dollars=scaling_step_live_cost_dollars,
+            scaling_step_daily_risk_cap_dollars=scaling_step_daily_risk_cap_dollars,
+            scaling_hard_max_live_submissions_per_day=scaling_hard_max_live_submissions_per_day,
+            scaling_hard_max_live_cost_per_day_dollars=scaling_hard_max_live_cost_per_day_dollars,
+            scaling_hard_max_daily_risk_cap_dollars=scaling_hard_max_daily_risk_cap_dollars,
+            now=attempt_started_at,
+        )
+
     run_index = 0
     while run_forever or run_index < target_loops:
         run_started_at = captured_at + timedelta(seconds=elapsed_seconds)
@@ -272,68 +316,53 @@ def run_kalshi_watchdog(
         kill_switch_until_before_run = kill_switch_until
         allow_live_orders_effective = bool(allow_live_orders and not kill_switch_active_before_run)
         remediation_dns_summary: dict[str, Any] | None = None
+        remediation_dns_runs: list[dict[str, Any]] = []
         kill_switch_engaged_this_run = False
         kill_switch_released_this_run = False
+        autopilot_attempts: list[dict[str, Any]] = []
+        autopilot_summary: dict[str, Any] = {}
+        upstream_incident = False
+        upstream_reasons: list[str] = []
+        healthy_run = False
+        self_heal_attempts_used = 0
+        self_healed = False
+        run_inner_elapsed_seconds = 0.0
 
-        try:
-            autopilot_summary = autopilot_runner(
-                env_file=env_file,
-                output_dir=output_dir,
-                priors_csv=priors_csv,
-                history_csv=effective_history_csv,
-                ledger_csv=ledger_csv,
-                book_db_path=book_db_path,
-                allow_live_orders=allow_live_orders_effective,
-                cycles=autopilot_cycles,
-                sleep_between_cycles_seconds=autopilot_sleep_between_cycles_seconds,
-                timeout_seconds=timeout_seconds,
-                planning_bankroll_dollars=planning_bankroll_dollars,
-                daily_risk_cap_dollars=daily_risk_cap_dollars,
-                contracts_per_order=contracts_per_order,
-                max_orders=max_orders,
-                min_maker_edge=min_maker_edge,
-                min_maker_edge_net_fees=min_maker_edge_net_fees,
-                max_entry_price_dollars=max_entry_price_dollars,
-                max_live_submissions_per_day=max_live_submissions_per_day,
-                max_live_cost_per_day_dollars=max_live_cost_per_day_dollars,
-                preflight_run_dns_doctor=preflight_run_dns_doctor,
-                preflight_run_live_smoke=preflight_run_live_smoke,
-                preflight_run_ws_state_collect=preflight_run_ws_state_collect,
-                ws_collect_run_seconds=ws_collect_run_seconds,
-                ws_collect_max_events=ws_collect_max_events,
-                ws_state_json=ws_state_json,
-                ws_state_max_age_seconds=ws_state_max_age_seconds,
-                enable_progressive_scaling=enable_progressive_scaling,
-                scaling_lookback_runs=scaling_lookback_runs,
-                scaling_green_runs_per_step=scaling_green_runs_per_step,
-                scaling_step_live_submissions=scaling_step_live_submissions,
-                scaling_step_live_cost_dollars=scaling_step_live_cost_dollars,
-                scaling_step_daily_risk_cap_dollars=scaling_step_daily_risk_cap_dollars,
-                scaling_hard_max_live_submissions_per_day=scaling_hard_max_live_submissions_per_day,
-                scaling_hard_max_live_cost_per_day_dollars=scaling_hard_max_live_cost_per_day_dollars,
-                scaling_hard_max_daily_risk_cap_dollars=scaling_hard_max_daily_risk_cap_dollars,
-                now=run_started_at,
+        while True:
+            attempt_started_at = run_started_at + timedelta(seconds=run_inner_elapsed_seconds)
+            try:
+                autopilot_summary = _run_autopilot_attempt(
+                    attempt_started_at=attempt_started_at,
+                    live_enabled=allow_live_orders_effective,
+                )
+            except KeyboardInterrupt:
+                interrupted = True
+                break
+            except Exception as exc:  # pragma: no cover - defensive runtime path
+                autopilot_summary = {
+                    "status": "error",
+                    "error": str(exc),
+                    "output_file": None,
+                }
+
+            upstream_incident, upstream_reasons = _detect_upstream_incident(autopilot_summary)
+            healthy_run = _is_healthy_run(autopilot_summary) and not upstream_incident
+            autopilot_attempts.append(
+                {
+                    "attempt": len(autopilot_attempts) + 1,
+                    "started_at": attempt_started_at.isoformat(),
+                    "allow_live_orders_effective": allow_live_orders_effective,
+                    "autopilot_status": autopilot_summary.get("status"),
+                    "autopilot_output_file": autopilot_summary.get("output_file"),
+                    "upstream_incident_detected": upstream_incident,
+                    "upstream_incident_reasons": upstream_reasons,
+                    "healthy_run": healthy_run,
+                }
             )
-        except KeyboardInterrupt:
-            interrupted = True
-            break
-        except Exception as exc:  # pragma: no cover - defensive runtime path
-            autopilot_summary = {
-                "status": "error",
-                "error": str(exc),
-                "output_file": None,
-            }
+            if not upstream_incident:
+                self_healed = self_heal_attempts_used > 0
+                break
 
-        run_index += 1
-        total_runs += 1
-        upstream_incident, upstream_reasons = _detect_upstream_incident(autopilot_summary)
-        healthy_run = _is_healthy_run(autopilot_summary) and not upstream_incident
-
-        if upstream_incident:
-            consecutive_upstream_failures += 1
-            consecutive_healthy_runs = 0
-            total_upstream_failures += 1
-            last_upstream_incident_at = run_started_at
             if run_dns_doctor_on_upstream:
                 remediation_dns_summary = dns_doctor_runner(
                     env_file=env_file,
@@ -341,6 +370,37 @@ def run_kalshi_watchdog(
                     timeout_seconds=max(0.25, min(3.0, timeout_seconds / 6.0)),
                 )
                 dns_remediations_attempted += 1
+                remediation_dns_runs.append(
+                    {
+                        "attempt": len(remediation_dns_runs) + 1,
+                        "status": remediation_dns_summary.get("status"),
+                        "output_file": remediation_dns_summary.get("output_file"),
+                    }
+                )
+
+            if kill_switch_active_before_run or self_heal_attempts_used >= safe_self_heal_attempts:
+                break
+            self_heal_attempts_used += 1
+            if safe_self_heal_pause > 0:
+                try:
+                    sleep_fn(safe_self_heal_pause)
+                except KeyboardInterrupt:
+                    interrupted = True
+                    break
+                run_inner_elapsed_seconds += safe_self_heal_pause
+
+        if interrupted and not autopilot_attempts:
+            break
+
+        run_index += 1
+        total_runs += 1
+        elapsed_seconds += run_inner_elapsed_seconds
+
+        if upstream_incident:
+            consecutive_upstream_failures += 1
+            consecutive_healthy_runs = 0
+            total_upstream_failures += 1
+            last_upstream_incident_at = run_started_at
 
             if (
                 safe_cooldown_seconds > 0
@@ -387,9 +447,14 @@ def run_kalshi_watchdog(
                 "kill_switch_until_before_run": _to_iso(kill_switch_until_before_run),
                 "autopilot_status": autopilot_summary.get("status"),
                 "autopilot_output_file": autopilot_summary.get("output_file"),
+                "autopilot_attempts_total": len(autopilot_attempts),
+                "autopilot_attempts": autopilot_attempts,
                 "upstream_incident_detected": upstream_incident,
                 "upstream_incident_reasons": upstream_reasons,
                 "healthy_run": healthy_run,
+                "self_heal_attempts_used": self_heal_attempts_used,
+                "self_healed": self_healed,
+                "self_heal_pause_seconds": safe_self_heal_pause,
                 "consecutive_upstream_failures": consecutive_upstream_failures,
                 "consecutive_healthy_runs": consecutive_healthy_runs,
                 "kill_switch_engaged": kill_switch_engaged_this_run,
@@ -398,6 +463,7 @@ def run_kalshi_watchdog(
                 "kill_switch_until_after_run": _to_iso(kill_switch_until),
                 "remediation_dns_status": (remediation_dns_summary or {}).get("status"),
                 "remediation_dns_output_file": (remediation_dns_summary or {}).get("output_file"),
+                "remediation_dns_runs": remediation_dns_runs,
                 "sleep_seconds_before_next_run": next_sleep_seconds,
             }
         )
@@ -418,9 +484,9 @@ def run_kalshi_watchdog(
         }
         state_path.write_text(json.dumps(state_payload, indent=2), encoding="utf-8")
 
-        if not run_forever and run_index >= target_loops:
+        if interrupted:
             break
-        if run_forever and interrupted:
+        if not run_forever and run_index >= target_loops:
             break
         if next_sleep_seconds > 0:
             try:
@@ -460,6 +526,8 @@ def run_kalshi_watchdog(
         "healthy_runs_to_clear_kill_switch": safe_clear_runs,
         "upstream_retry_backoff_base_seconds": safe_upstream_backoff_base,
         "upstream_retry_backoff_max_seconds": safe_upstream_backoff_max,
+        "self_heal_attempts_per_run": safe_self_heal_attempts,
+        "self_heal_pause_seconds": safe_self_heal_pause,
         "dns_remediations_attempted": dns_remediations_attempted,
         "kill_switch_engagements": kill_switch_engagements,
         "kill_switch_releases": kill_switch_releases,

@@ -334,7 +334,7 @@ python -m betbot.cli kalshi-autopilot \
   --allow-live-orders
 ```
 
-Use `kalshi-watchdog` for continuous autonomous operation with persistent live kill-switch memory. It keeps running autopilot loops, retries with upstream backoff, runs remediation DNS checks after upstream incidents, and automatically disables live orders when repeated upstream failures cross the escalation threshold.
+Use `kalshi-watchdog` for continuous autonomous operation with persistent live kill-switch memory. It keeps running autopilot loops, performs in-loop self-heal retries (`--self-heal-attempts-per-loop`, `--self-heal-pause-seconds`) when upstream DNS/network failures appear, applies upstream backoff, runs remediation DNS checks, and only then escalates to kill-switch mode if failures persist.
 
 Example:
 
@@ -342,6 +342,8 @@ Example:
 python -m betbot.cli kalshi-watchdog \
   --env-file data/research/account_onboarding.local.env \
   --allow-live-orders \
+  --self-heal-attempts-per-loop 2 \
+  --self-heal-pause-seconds 10 \
   --loops 0
 ```
 
