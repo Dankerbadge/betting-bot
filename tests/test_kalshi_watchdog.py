@@ -293,6 +293,54 @@ class KalshiWatchdogTests(unittest.TestCase):
                 "skipped_already_covered_by_autopilot",
             )
 
+    def test_watchdog_scales_timeout_and_ws_collect_across_in_loop_retries(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            env_file = base / "env.txt"
+            env_file.write_text("KALSHI_ENV=prod\n", encoding="utf-8")
+
+            autopilot_calls = 0
+            seen_timeouts: list[float] = []
+            seen_ws_collect_windows: list[float] = []
+
+            def fake_autopilot(**kwargs: Any) -> dict[str, Any]:
+                nonlocal autopilot_calls
+                autopilot_calls += 1
+                seen_timeouts.append(float(kwargs["timeout_seconds"]))
+                seen_ws_collect_windows.append(float(kwargs["ws_collect_run_seconds"]))
+                if autopilot_calls == 1:
+                    return _upstream_autopilot_summary(base, "first")
+                return _healthy_autopilot_summary(base, "second")
+
+            summary = run_kalshi_watchdog(
+                env_file=str(env_file),
+                output_dir=str(base),
+                allow_live_orders=True,
+                loops=1,
+                timeout_seconds=10.0,
+                ws_collect_run_seconds=40.0,
+                self_heal_attempts_per_run=1,
+                self_heal_pause_seconds=0.0,
+                self_heal_retry_timeout_multiplier=2.0,
+                self_heal_retry_timeout_cap_seconds=30.0,
+                self_heal_retry_ws_collect_increment_seconds=25.0,
+                self_heal_retry_ws_collect_max_seconds=70.0,
+                autopilot_runner=fake_autopilot,
+                sleep_fn=lambda _seconds: None,
+                now=datetime(2026, 3, 30, 3, 50, tzinfo=timezone.utc),
+            )
+
+            self.assertEqual(autopilot_calls, 2)
+            self.assertEqual(seen_timeouts, [10.0, 20.0])
+            self.assertEqual(seen_ws_collect_windows, [40.0, 65.0])
+            run_summary = summary["run_summaries"][0]
+            self.assertTrue(run_summary["self_healed"])
+            self.assertEqual(run_summary["autopilot_attempts_total"], 2)
+            self.assertEqual(run_summary["autopilot_attempts"][0]["timeout_seconds"], 10.0)
+            self.assertEqual(run_summary["autopilot_attempts"][1]["timeout_seconds"], 20.0)
+            self.assertEqual(run_summary["autopilot_attempts"][0]["ws_collect_run_seconds"], 40.0)
+            self.assertEqual(run_summary["autopilot_attempts"][1]["ws_collect_run_seconds"], 65.0)
+
 
 if __name__ == "__main__":
     unittest.main()

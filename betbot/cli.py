@@ -2815,6 +2815,30 @@ def build_parser() -> argparse.ArgumentParser:
         help="Pause between in-loop remediation retry attempts",
     )
     kalshi_watchdog.add_argument(
+        "--self-heal-retry-timeout-multiplier",
+        type=float,
+        default=1.5,
+        help="Multiplier applied to watchdog in-loop retry timeout on each autopilot re-attempt",
+    )
+    kalshi_watchdog.add_argument(
+        "--self-heal-retry-timeout-cap-seconds",
+        type=float,
+        default=45.0,
+        help="Maximum timeout used by watchdog in-loop autopilot re-attempts",
+    )
+    kalshi_watchdog.add_argument(
+        "--self-heal-retry-ws-collect-increment-seconds",
+        type=float,
+        default=15.0,
+        help="Additional websocket collect window added per watchdog in-loop autopilot re-attempt",
+    )
+    kalshi_watchdog.add_argument(
+        "--self-heal-retry-ws-collect-max-seconds",
+        type=float,
+        default=180.0,
+        help="Maximum websocket collect window used by watchdog in-loop autopilot re-attempts",
+    )
+    kalshi_watchdog.add_argument(
         "--disable-remediation-dns-doctor",
         action="store_true",
         help="Disable remediation DNS doctor runs after upstream incidents",
@@ -4397,6 +4421,10 @@ def main() -> None:
             upstream_retry_backoff_max_seconds=args.upstream_retry_backoff_max_seconds,
             self_heal_attempts_per_run=args.self_heal_attempts_per_loop,
             self_heal_pause_seconds=args.self_heal_pause_seconds,
+            self_heal_retry_timeout_multiplier=args.self_heal_retry_timeout_multiplier,
+            self_heal_retry_timeout_cap_seconds=args.self_heal_retry_timeout_cap_seconds,
+            self_heal_retry_ws_collect_increment_seconds=args.self_heal_retry_ws_collect_increment_seconds,
+            self_heal_retry_ws_collect_max_seconds=args.self_heal_retry_ws_collect_max_seconds,
             run_dns_doctor_on_upstream=not args.disable_remediation_dns_doctor,
             kill_switch_state_json=args.kill_switch_state_json,
         )

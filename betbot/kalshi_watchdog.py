@@ -244,6 +244,10 @@ def run_kalshi_watchdog(
     upstream_retry_backoff_max_seconds: float = 300.0,
     self_heal_attempts_per_run: int = 2,
     self_heal_pause_seconds: float = 10.0,
+    self_heal_retry_timeout_multiplier: float = 1.5,
+    self_heal_retry_timeout_cap_seconds: float = 45.0,
+    self_heal_retry_ws_collect_increment_seconds: float = 15.0,
+    self_heal_retry_ws_collect_max_seconds: float = 180.0,
     run_dns_doctor_on_upstream: bool = True,
     kill_switch_state_json: str | None = None,
     autopilot_runner: AutopilotRunner = run_kalshi_autopilot,
@@ -276,6 +280,16 @@ def run_kalshi_watchdog(
     safe_upstream_backoff_max = max(safe_upstream_backoff_base, float(upstream_retry_backoff_max_seconds))
     safe_self_heal_attempts = max(0, int(self_heal_attempts_per_run))
     safe_self_heal_pause = max(0.0, float(self_heal_pause_seconds))
+    safe_self_heal_retry_timeout_multiplier = max(1.0, float(self_heal_retry_timeout_multiplier))
+    safe_self_heal_retry_timeout_cap_seconds = max(
+        max(0.25, float(timeout_seconds)),
+        float(self_heal_retry_timeout_cap_seconds),
+    )
+    safe_self_heal_retry_ws_collect_increment_seconds = max(0.0, float(self_heal_retry_ws_collect_increment_seconds))
+    safe_self_heal_retry_ws_collect_max_seconds = max(
+        max(1.0, float(ws_collect_run_seconds)),
+        float(self_heal_retry_ws_collect_max_seconds),
+    )
 
     target_loops = int(loops)
     run_forever = target_loops == 0
@@ -294,7 +308,13 @@ def run_kalshi_watchdog(
     elapsed_seconds = 0.0
     interrupted = False
 
-    def _run_autopilot_attempt(*, attempt_started_at: datetime, live_enabled: bool) -> dict[str, Any]:
+    def _run_autopilot_attempt(
+        *,
+        attempt_started_at: datetime,
+        live_enabled: bool,
+        attempt_timeout_seconds: float,
+        attempt_ws_collect_run_seconds: float,
+    ) -> dict[str, Any]:
         return autopilot_runner(
             env_file=env_file,
             output_dir=output_dir,
@@ -305,7 +325,7 @@ def run_kalshi_watchdog(
             allow_live_orders=live_enabled,
             cycles=autopilot_cycles,
             sleep_between_cycles_seconds=autopilot_sleep_between_cycles_seconds,
-            timeout_seconds=timeout_seconds,
+            timeout_seconds=attempt_timeout_seconds,
             planning_bankroll_dollars=planning_bankroll_dollars,
             daily_risk_cap_dollars=daily_risk_cap_dollars,
             contracts_per_order=contracts_per_order,
@@ -318,7 +338,7 @@ def run_kalshi_watchdog(
             preflight_run_dns_doctor=preflight_run_dns_doctor,
             preflight_run_live_smoke=preflight_run_live_smoke,
             preflight_run_ws_state_collect=preflight_run_ws_state_collect,
-            ws_collect_run_seconds=ws_collect_run_seconds,
+            ws_collect_run_seconds=attempt_ws_collect_run_seconds,
             ws_collect_max_events=ws_collect_max_events,
             ws_state_json=ws_state_json,
             ws_state_max_age_seconds=ws_state_max_age_seconds,
@@ -369,10 +389,23 @@ def run_kalshi_watchdog(
 
         while True:
             attempt_started_at = run_started_at + timedelta(seconds=run_inner_elapsed_seconds)
+            attempt_index = len(autopilot_attempts)
+            attempt_timeout_seconds = min(
+                max(0.25, float(timeout_seconds))
+                * (safe_self_heal_retry_timeout_multiplier**attempt_index),
+                safe_self_heal_retry_timeout_cap_seconds,
+            )
+            attempt_ws_collect_run_seconds = min(
+                max(1.0, float(ws_collect_run_seconds))
+                + attempt_index * safe_self_heal_retry_ws_collect_increment_seconds,
+                safe_self_heal_retry_ws_collect_max_seconds,
+            )
             try:
                 autopilot_summary = _run_autopilot_attempt(
                     attempt_started_at=attempt_started_at,
                     live_enabled=allow_live_orders_effective,
+                    attempt_timeout_seconds=attempt_timeout_seconds,
+                    attempt_ws_collect_run_seconds=attempt_ws_collect_run_seconds,
                 )
             except KeyboardInterrupt:
                 interrupted = True
@@ -396,6 +429,8 @@ def run_kalshi_watchdog(
                     "upstream_incident_detected": upstream_incident,
                     "upstream_incident_reasons": upstream_reasons,
                     "healthy_run": healthy_run,
+                    "timeout_seconds": attempt_timeout_seconds,
+                    "ws_collect_run_seconds": attempt_ws_collect_run_seconds,
                 }
             )
             if not upstream_incident:
@@ -505,6 +540,10 @@ def run_kalshi_watchdog(
                 "self_heal_attempts_used": self_heal_attempts_used,
                 "self_healed": self_healed,
                 "self_heal_pause_seconds": safe_self_heal_pause,
+                "self_heal_retry_timeout_multiplier": safe_self_heal_retry_timeout_multiplier,
+                "self_heal_retry_timeout_cap_seconds": safe_self_heal_retry_timeout_cap_seconds,
+                "self_heal_retry_ws_collect_increment_seconds": safe_self_heal_retry_ws_collect_increment_seconds,
+                "self_heal_retry_ws_collect_max_seconds": safe_self_heal_retry_ws_collect_max_seconds,
                 "consecutive_upstream_failures": consecutive_upstream_failures,
                 "consecutive_healthy_runs": consecutive_healthy_runs,
                 "kill_switch_engaged": kill_switch_engaged_this_run,
@@ -587,6 +626,10 @@ def run_kalshi_watchdog(
         "preflight_retry_ws_collect_max_seconds": preflight_retry_ws_collect_max_seconds,
         "self_heal_attempts_per_run": safe_self_heal_attempts,
         "self_heal_pause_seconds": safe_self_heal_pause,
+        "self_heal_retry_timeout_multiplier": safe_self_heal_retry_timeout_multiplier,
+        "self_heal_retry_timeout_cap_seconds": safe_self_heal_retry_timeout_cap_seconds,
+        "self_heal_retry_ws_collect_increment_seconds": safe_self_heal_retry_ws_collect_increment_seconds,
+        "self_heal_retry_ws_collect_max_seconds": safe_self_heal_retry_ws_collect_max_seconds,
         "dns_remediations_attempted": dns_remediations_attempted,
         "dns_remediations_skipped_due_autopilot": dns_remediations_skipped_due_autopilot,
         "kill_switch_engagements": kill_switch_engagements,
