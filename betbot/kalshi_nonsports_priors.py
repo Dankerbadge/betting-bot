@@ -25,6 +25,17 @@ PRIOR_FIELDNAMES = [
     "last_evidence_at",
 ]
 
+_WEATHER_HISTORY_PASSTHROUGH_FIELDS = (
+    "contract_family",
+    "weather_station_history_status",
+    "weather_station_history_cache_hit",
+    "weather_station_history_cache_fallback_used",
+    "weather_station_history_cache_fresh",
+    "weather_station_history_cache_age_seconds",
+    "weather_station_history_live_ready",
+    "weather_station_history_live_ready_reason",
+)
+
 
 def _is_orderable_price(price: float | None) -> bool:
     return price is not None and 0.0 < price < 1.0
@@ -291,64 +302,67 @@ def build_prior_rows(
             if latest_no_bid is not None
             else ""
         )
-        enriched.append(
-            {
-                "market_ticker": ticker,
-                "category": str(latest.get("category") or "") if latest else "",
-                "market_title": str(latest.get("market_title") or "") if latest else "",
-                "close_time": str(latest.get("close_time") or "") if latest else "",
-                "hours_to_close": _parse_float(str(latest.get("hours_to_close") or "")) if latest else "",
-                "fair_yes_probability": fair_yes_probability if fair_yes_probability is not None else "",
-                "fair_yes_probability_low": fair_yes_probability_low if fair_yes_probability_low is not None else "",
-                "fair_yes_probability_high": fair_yes_probability_high if fair_yes_probability_high is not None else "",
-                "fair_yes_probability_conservative": (
-                    fair_yes_probability_conservative if fair_yes_probability_conservative is not None else ""
-                ),
-                "fair_no_probability": fair_no_probability if fair_no_probability is not None else "",
-                "fair_no_probability_low": fair_no_probability_low if fair_no_probability_low is not None else "",
-                "fair_no_probability_high": fair_no_probability_high if fair_no_probability_high is not None else "",
-                "fair_no_probability_conservative": (
-                    fair_no_probability_conservative if fair_no_probability_conservative is not None else ""
-                ),
-                "confidence": confidence if confidence is not None else "",
-                "evidence_count": evidence_count,
-                "evidence_quality": evidence_quality if evidence_quality is not None else "",
-                "source_type": source_type,
-                "last_evidence_at": last_evidence_at,
-                "latest_yes_bid_dollars": latest_yes_bid if latest_yes_bid is not None else "",
-                "latest_yes_ask_dollars": latest_yes_ask if latest_yes_ask is not None else "",
-                "latest_no_bid_dollars": latest_no_bid if latest_no_bid is not None else "",
-                "latest_no_ask_dollars": latest_no_ask if latest_no_ask is not None else "",
-                "market_mid_probability": market_mid if market_mid is not None else "",
-                "market_no_mid_probability": no_mid if no_mid is not None else "",
-                "edge_to_yes_bid": edge_to_yes_bid,
-                "edge_to_yes_ask": edge_to_yes_ask,
-                "edge_to_yes_ask_net_fees": edge_to_yes_ask_net,
-                "edge_to_mid": edge_to_mid,
-                "edge_to_no_bid": edge_to_no_bid,
-                "edge_to_no_bid_net_fees": edge_to_no_bid_net,
-                "edge_to_no_ask": edge_to_no_ask,
-                "edge_to_no_ask_net_fees": edge_to_no_ask_net,
-                "edge_to_no_mid": edge_to_no_mid,
-                "edge_to_yes_bid_net_fees": edge_to_yes_bid_net,
-                "estimated_taker_fee_per_contract_yes": taker_fee_yes,
-                "estimated_taker_fee_per_contract_no": taker_fee_no,
-                "estimated_maker_fee_per_contract_yes": maker_fee_yes,
-                "estimated_maker_fee_per_contract_no": maker_fee_no,
-                "best_entry_side": best_entry_side,
-                "best_entry_edge": best_entry_edge,
-                "best_entry_edge_net_fees": best_entry_edge_net_fees,
-                "best_entry_price_dollars": best_entry_price,
-                "best_maker_entry_side": best_maker_entry_side,
-                "best_maker_entry_edge": best_maker_entry_edge,
-                "best_maker_entry_edge_net_fees": best_maker_entry_edge_net_fees,
-                "best_maker_entry_price_dollars": best_maker_entry_price,
-                "matched_live_market": latest is not None,
-                "thesis": str(row.get("thesis") or ""),
-                "source_note": str(row.get("source_note") or ""),
-                "updated_at": str(row.get("updated_at") or ""),
-            }
-        )
+        enriched_row = {
+            "market_ticker": ticker,
+            "category": str(latest.get("category") or "") if latest else "",
+            "market_title": str(latest.get("market_title") or "") if latest else "",
+            "close_time": str(latest.get("close_time") or "") if latest else "",
+            "hours_to_close": _parse_float(str(latest.get("hours_to_close") or "")) if latest else "",
+            "fair_yes_probability": fair_yes_probability if fair_yes_probability is not None else "",
+            "fair_yes_probability_low": fair_yes_probability_low if fair_yes_probability_low is not None else "",
+            "fair_yes_probability_high": fair_yes_probability_high if fair_yes_probability_high is not None else "",
+            "fair_yes_probability_conservative": (
+                fair_yes_probability_conservative if fair_yes_probability_conservative is not None else ""
+            ),
+            "fair_no_probability": fair_no_probability if fair_no_probability is not None else "",
+            "fair_no_probability_low": fair_no_probability_low if fair_no_probability_low is not None else "",
+            "fair_no_probability_high": fair_no_probability_high if fair_no_probability_high is not None else "",
+            "fair_no_probability_conservative": (
+                fair_no_probability_conservative if fair_no_probability_conservative is not None else ""
+            ),
+            "confidence": confidence if confidence is not None else "",
+            "evidence_count": evidence_count,
+            "evidence_quality": evidence_quality if evidence_quality is not None else "",
+            "source_type": source_type,
+            "last_evidence_at": last_evidence_at,
+            "latest_yes_bid_dollars": latest_yes_bid if latest_yes_bid is not None else "",
+            "latest_yes_ask_dollars": latest_yes_ask if latest_yes_ask is not None else "",
+            "latest_no_bid_dollars": latest_no_bid if latest_no_bid is not None else "",
+            "latest_no_ask_dollars": latest_no_ask if latest_no_ask is not None else "",
+            "market_mid_probability": market_mid if market_mid is not None else "",
+            "market_no_mid_probability": no_mid if no_mid is not None else "",
+            "edge_to_yes_bid": edge_to_yes_bid,
+            "edge_to_yes_ask": edge_to_yes_ask,
+            "edge_to_yes_ask_net_fees": edge_to_yes_ask_net,
+            "edge_to_mid": edge_to_mid,
+            "edge_to_no_bid": edge_to_no_bid,
+            "edge_to_no_bid_net_fees": edge_to_no_bid_net,
+            "edge_to_no_ask": edge_to_no_ask,
+            "edge_to_no_ask_net_fees": edge_to_no_ask_net,
+            "edge_to_no_mid": edge_to_no_mid,
+            "edge_to_yes_bid_net_fees": edge_to_yes_bid_net,
+            "estimated_taker_fee_per_contract_yes": taker_fee_yes,
+            "estimated_taker_fee_per_contract_no": taker_fee_no,
+            "estimated_maker_fee_per_contract_yes": maker_fee_yes,
+            "estimated_maker_fee_per_contract_no": maker_fee_no,
+            "best_entry_side": best_entry_side,
+            "best_entry_edge": best_entry_edge,
+            "best_entry_edge_net_fees": best_entry_edge_net_fees,
+            "best_entry_price_dollars": best_entry_price,
+            "best_maker_entry_side": best_maker_entry_side,
+            "best_maker_entry_edge": best_maker_entry_edge,
+            "best_maker_entry_edge_net_fees": best_maker_entry_edge_net_fees,
+            "best_maker_entry_price_dollars": best_maker_entry_price,
+            "matched_live_market": latest is not None,
+            "thesis": str(row.get("thesis") or ""),
+            "source_note": str(row.get("source_note") or ""),
+            "updated_at": str(row.get("updated_at") or ""),
+        }
+        for passthrough_key in _WEATHER_HISTORY_PASSTHROUGH_FIELDS:
+            passthrough_value = row.get(passthrough_key)
+            if passthrough_value not in (None, ""):
+                enriched_row[passthrough_key] = passthrough_value
+        enriched.append(enriched_row)
 
     enriched.sort(
         key=lambda row: (

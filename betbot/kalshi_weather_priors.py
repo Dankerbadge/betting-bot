@@ -77,6 +77,13 @@ WEATHER_PRIOR_EXTRA_FIELDS = [
     "observation_window_local_start",
     "observation_window_local_end",
     "observation_window_local_source",
+    "weather_station_history_status",
+    "weather_station_history_cache_hit",
+    "weather_station_history_cache_fallback_used",
+    "weather_station_history_cache_fresh",
+    "weather_station_history_cache_age_seconds",
+    "weather_station_history_live_ready",
+    "weather_station_history_live_ready_reason",
     "threshold_expression",
     "rule_text_hash_sha256",
 ]
@@ -112,6 +119,13 @@ WEATHER_PRIOR_OUTPUT_FIELDNAMES = [
     "observation_window_local_start",
     "observation_window_local_end",
     "observation_window_local_source",
+    "weather_station_history_status",
+    "weather_station_history_cache_hit",
+    "weather_station_history_cache_fallback_used",
+    "weather_station_history_cache_fresh",
+    "weather_station_history_cache_age_seconds",
+    "weather_station_history_live_ready",
+    "weather_station_history_live_ready_reason",
     "threshold_expression",
     "rule_text_hash_sha256",
 ]
@@ -172,6 +186,53 @@ def _parse_datetime(value: str) -> datetime | None:
 
 def _clamp_probability(value: float) -> float:
     return round(min(0.999, max(0.001, float(value))), 6)
+
+
+def _as_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value or "").strip().lower()
+    return text in {"1", "true", "yes", "y", "t"}
+
+
+def _history_live_health(history_payload: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(history_payload, dict):
+        return {
+            "status": "missing",
+            "cache_hit": False,
+            "cache_fallback_used": False,
+            "cache_fresh": False,
+            "cache_age_seconds": None,
+            "live_ready": False,
+            "live_ready_reason": "missing_history_payload",
+        }
+    status = str(history_payload.get("status") or "").strip().lower() or "unknown"
+    cache_hit = _as_bool(history_payload.get("cache_hit"))
+    cache_fallback_used = _as_bool(history_payload.get("cache_fallback_used"))
+    cache_fresh = _as_bool(history_payload.get("cache_fresh"))
+    cache_age_seconds_raw = _parse_float(history_payload.get("cache_age_seconds"))
+    cache_age_seconds = round(cache_age_seconds_raw, 3) if isinstance(cache_age_seconds_raw, float) else None
+    live_ready = status in {"ready", "ready_partial"}
+    reason = "ready"
+    if not live_ready:
+        reason = f"status_{status}"
+    elif cache_fallback_used:
+        live_ready = False
+        reason = "cache_fallback_used"
+    elif cache_hit and not cache_fresh:
+        live_ready = False
+        reason = "stale_cache_entry"
+    return {
+        "status": status,
+        "cache_hit": cache_hit,
+        "cache_fallback_used": cache_fallback_used,
+        "cache_fresh": cache_fresh,
+        "cache_age_seconds": cache_age_seconds,
+        "live_ready": live_ready,
+        "live_ready_reason": reason,
+    }
 
 
 def _latest_market_rows(history_rows: list[dict[str, str]]) -> dict[str, dict[str, str]]:
@@ -409,19 +470,35 @@ def _period_window(
             settlement_zone = timezone.utc
         start_minutes = _minutes_from_clock(observation_window_local_start)
         end_minutes = _minutes_from_clock(observation_window_local_end)
+        has_explicit_window = start_minutes is not None and end_minutes is not None
+        overnight_window = has_explicit_window and bool(start_minutes > end_minutes)
+        next_settlement_date = target_settlement_date + timedelta(days=1)
         settlement_day_periods: list[dict[str, Any]] = []
         for period in periods:
             start_time = _parse_datetime(str(period.get("startTime") or ""))
             if start_time is None:
                 continue
             local_start = start_time.astimezone(settlement_zone)
-            if local_start.date() != target_settlement_date:
-                continue
-            if start_minutes is not None and end_minutes is not None:
-                minute_of_day = (local_start.hour * 60) + local_start.minute
-                if start_minutes <= end_minutes:
-                    if minute_of_day < start_minutes or minute_of_day > end_minutes:
-                        continue
+            local_date = local_start.date()
+            minute_of_day = (local_start.hour * 60) + local_start.minute
+
+            if not has_explicit_window:
+                if local_date != target_settlement_date:
+                    continue
+            elif not overnight_window:
+                if local_date != target_settlement_date:
+                    continue
+                if minute_of_day < start_minutes or minute_of_day > end_minutes:
+                    continue
+            else:
+                in_target_day_segment = (
+                    local_date == target_settlement_date and minute_of_day >= start_minutes
+                )
+                in_next_day_segment = (
+                    local_date == next_settlement_date and minute_of_day <= end_minutes
+                )
+                if not in_target_day_segment and not in_next_day_segment:
+                    continue
             settlement_day_periods.append(period)
         if settlement_day_periods:
             return settlement_day_periods
@@ -636,15 +713,18 @@ def _build_daily_rain_prior(
         f"periods_used={len(pop_values)}",
         f"forecast_updated_at={updated_at or 'unknown'}",
     ]
+    history_health = _history_live_health(history_payload)
     window_start = str(settlement.get("observation_window_local_start") or "").strip()
     window_end = str(settlement.get("observation_window_local_end") or "").strip()
     if window_start and window_end:
         source_parts.append(f"settlement_window_local={window_start}-{window_end}")
     if isinstance(history_payload, dict):
-        source_parts.append(f"ncei_cdo_status={history_payload.get('status')}")
+        source_parts.append(f"ncei_cdo_status={history_health.get('status')}")
         source_parts.append(f"historical_years={climatology_count}")
         if climatology_frequency is not None:
             source_parts.append(f"historical_rain_freq={climatology_frequency:.4f}")
+        source_parts.append(f"station_history_live_ready={history_health.get('live_ready')}")
+        source_parts.append(f"station_history_live_ready_reason={history_health.get('live_ready_reason')}")
     source_parts.append(f"execution_guarded_probability={execution_probability:.4f}")
 
     return (
@@ -801,13 +881,16 @@ def _build_daily_temperature_prior(
         f"temp_points={len(temperatures)}",
         f"forecast_updated_at={updated_at or 'unknown'}",
     ]
+    history_health = _history_live_health(history_payload)
     window_start = str(settlement.get("observation_window_local_start") or "").strip()
     window_end = str(settlement.get("observation_window_local_end") or "").strip()
     if window_start and window_end:
         source_parts.append(f"settlement_window_local={window_start}-{window_end}")
     if isinstance(history_payload, dict):
-        source_parts.append(f"ncei_cdo_status={history_payload.get('status')}")
+        source_parts.append(f"ncei_cdo_status={history_health.get('status')}")
         source_parts.append(f"historical_samples={climatology_count}")
+        source_parts.append(f"station_history_live_ready={history_health.get('live_ready')}")
+        source_parts.append(f"station_history_live_ready_reason={history_health.get('live_ready_reason')}")
     source_parts.append(f"execution_guarded_probability={execution_probability:.4f}")
 
     return (
@@ -1025,6 +1108,7 @@ def run_kalshi_weather_priors(
         generated: dict[str, Any] | None = None
         skip_reason: str | None = None
         history_payload: dict[str, Any] | None = None
+        history_health: dict[str, Any] | None = None
         if family in {"daily_rain", "daily_temperature"}:
             station_id = _infer_station_id(row, str(settlement.get("settlement_station") or ""))
             month_value, day_value = _target_month_day(row=row, settlement=settlement, now=captured_at)
@@ -1068,6 +1152,7 @@ def run_kalshi_weather_priors(
                 history_payload = station_history_cache.get(cache_key)
                 history_status = str((history_payload or {}).get("status") or "").strip().lower() or "unknown"
                 history_fetch_status_counts[history_status] = history_fetch_status_counts.get(history_status, 0) + 1
+            history_health = _history_live_health(history_payload)
         if family == "daily_rain":
             try:
                 generated, skip_reason = _build_daily_rain_prior(
@@ -1150,6 +1235,41 @@ def run_kalshi_weather_priors(
                 "observation_window_local_source": str(settlement.get("observation_window_local_source") or "").strip(),
                 "threshold_expression": str(settlement.get("threshold_expression") or "").strip(),
                 "rule_text_hash_sha256": str(settlement.get("rule_text_hash_sha256") or "").strip(),
+                "weather_station_history_status": (
+                    str((history_health or {}).get("status") or "").strip()
+                    if family in {"daily_rain", "daily_temperature"}
+                    else ""
+                ),
+                "weather_station_history_cache_hit": (
+                    bool((history_health or {}).get("cache_hit"))
+                    if family in {"daily_rain", "daily_temperature"}
+                    else ""
+                ),
+                "weather_station_history_cache_fallback_used": (
+                    bool((history_health or {}).get("cache_fallback_used"))
+                    if family in {"daily_rain", "daily_temperature"}
+                    else ""
+                ),
+                "weather_station_history_cache_fresh": (
+                    bool((history_health or {}).get("cache_fresh"))
+                    if family in {"daily_rain", "daily_temperature"}
+                    else ""
+                ),
+                "weather_station_history_cache_age_seconds": (
+                    (history_health or {}).get("cache_age_seconds")
+                    if family in {"daily_rain", "daily_temperature"}
+                    else ""
+                ),
+                "weather_station_history_live_ready": (
+                    bool((history_health or {}).get("live_ready"))
+                    if family in {"daily_rain", "daily_temperature"}
+                    else ""
+                ),
+                "weather_station_history_live_ready_reason": (
+                    str((history_health or {}).get("live_ready_reason") or "").strip()
+                    if family in {"daily_rain", "daily_temperature"}
+                    else ""
+                ),
             }
         )
         generated_rows.append(generated)

@@ -161,6 +161,77 @@ class KalshiMicroPriorPlanTests(unittest.TestCase):
             self.assertTrue(Path(summary["output_csv"]).exists())
             self.assertTrue(Path(summary["output_file"]).exists())
 
+    def test_run_kalshi_micro_prior_plan_surfaces_top_weather_history_health(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            history_csv = base / "history.csv"
+            priors_csv = base / "priors.csv"
+            _write_csv(
+                history_csv,
+                HISTORY_FIELDNAMES,
+                [
+                    {
+                        "captured_at": "2026-03-30T21:00:00+00:00",
+                        "category": "Climate and Weather",
+                        "market_ticker": "KXRAINNYC-26MAR30",
+                        "market_title": "Will it rain in NYC tonight?",
+                        "close_time": "2026-03-31T03:59:00Z",
+                        "hours_to_close": "7",
+                        "yes_bid_dollars": "0.35",
+                        "yes_ask_dollars": "0.36",
+                    }
+                ],
+            )
+            prior_fieldnames = PRIOR_FIELDNAMES + [
+                "contract_family",
+                "weather_station_history_status",
+                "weather_station_history_cache_hit",
+                "weather_station_history_cache_fallback_used",
+                "weather_station_history_cache_fresh",
+                "weather_station_history_cache_age_seconds",
+                "weather_station_history_live_ready",
+                "weather_station_history_live_ready_reason",
+            ]
+            _write_csv(
+                priors_csv,
+                prior_fieldnames,
+                [
+                    {
+                        "market_ticker": "KXRAINNYC-26MAR30",
+                        "fair_yes_probability": "0.75",
+                        "confidence": "0.8",
+                        "thesis": "Weather edge",
+                        "source_note": "Synthetic test",
+                        "updated_at": "2026-03-30T21:00:00+00:00",
+                        "contract_family": "daily_rain",
+                        "weather_station_history_status": "rate_limited",
+                        "weather_station_history_cache_hit": "True",
+                        "weather_station_history_cache_fallback_used": "False",
+                        "weather_station_history_cache_fresh": "False",
+                        "weather_station_history_cache_age_seconds": "90000",
+                        "weather_station_history_live_ready": "False",
+                        "weather_station_history_live_ready_reason": "status_rate_limited",
+                    }
+                ],
+            )
+
+            summary = run_kalshi_micro_prior_plan(
+                priors_csv=str(priors_csv),
+                history_csv=str(history_csv),
+                output_dir=str(base),
+                now=datetime(2026, 3, 30, 21, 5, tzinfo=timezone.utc),
+            )
+
+            self.assertEqual(summary["status"], "ready")
+            self.assertEqual(summary["top_market_ticker"], "KXRAINNYC-26MAR30")
+            self.assertEqual(summary["top_market_contract_family"], "daily_rain")
+            self.assertEqual(summary["top_market_weather_station_history_status"], "rate_limited")
+            self.assertFalse(summary["top_market_weather_station_history_live_ready"])
+            self.assertEqual(
+                summary["top_market_weather_station_history_live_ready_reason"],
+                "status_rate_limited",
+            )
+
     def test_build_micro_prior_plans_skips_zero_cost_endpoint_quotes(self) -> None:
         enriched_rows = build_prior_rows(
             prior_rows=[

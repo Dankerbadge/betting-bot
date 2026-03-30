@@ -160,6 +160,10 @@ class KalshiWeatherPriorsTests(unittest.TestCase):
                 probability = float(row["fair_yes_probability"])
                 self.assertGreaterEqual(probability, 0.001)
                 self.assertLessEqual(probability, 0.999)
+            rain_row = next(row for row in rows if row["market_ticker"] == "KXRAINNYC-26MAR29")
+            self.assertEqual(rain_row["weather_station_history_status"], "ready")
+            self.assertEqual(rain_row["weather_station_history_live_ready"], "True")
+            self.assertEqual(rain_row["weather_station_history_live_ready_reason"], "ready")
 
     def test_run_kalshi_weather_priors_protects_manual_rows(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -452,6 +456,85 @@ class KalshiWeatherPriorsTests(unittest.TestCase):
             self.assertEqual(generated["observation_window_local_start"], "06:00")
             self.assertEqual(generated["observation_window_local_end"], "06:59")
             self.assertIn("settlement_window_local=06:00-06:59", generated["source_note"])
+
+    def test_run_kalshi_weather_priors_handles_overnight_settlement_windows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            history_csv = base / "history.csv"
+            priors_csv = base / "priors.csv"
+            _write_csv(
+                history_csv,
+                HISTORY_FIELDNAMES,
+                [
+                    {
+                        "captured_at": "2026-03-31T00:00:00+00:00",
+                        "category": "Climate and Weather",
+                        "series_ticker": "KXRAINNYC",
+                        "event_ticker": "KXRAINNYC-26MAR31",
+                        "market_ticker": "KXRAINNYC-26MAR31",
+                        "event_title": "Will it rain in NYC overnight?",
+                        "market_title": "Will it rain in NYC overnight?",
+                        "rules_primary": (
+                            "If measurable rain is recorded at station KJFK between 6:00 PM and 6:00 AM local time, "
+                            "this market resolves to Yes."
+                        ),
+                        "close_time": "2026-03-31T12:00:00+00:00",
+                        "hours_to_close": "12",
+                        "yes_bid_dollars": "0.40",
+                        "yes_ask_dollars": "0.42",
+                        "spread_dollars": "0.02",
+                    },
+                ],
+            )
+            _write_csv(priors_csv, PRIOR_FIELDNAMES, [])
+
+            def fake_station_forecast_fetcher(*, station_id: str, timeout_seconds: float):
+                self.assertEqual(station_id, "KJFK")
+                return {
+                    "status": "ready",
+                    "station_id": station_id,
+                    "forecast_updated_at": "2026-03-31T00:00:00+00:00",
+                    "periods": [
+                        {
+                            "startTime": "2026-03-31T16:00:00+00:00",  # 12:00 local (exclude)
+                            "temperature": 58,
+                            "probabilityOfPrecipitation": {"value": 90},
+                        },
+                        {
+                            "startTime": "2026-03-31T22:00:00+00:00",  # 18:00 local (include)
+                            "temperature": 55,
+                            "probabilityOfPrecipitation": {"value": 20},
+                        },
+                        {
+                            "startTime": "2026-04-01T06:00:00+00:00",  # 02:00 local next day (include)
+                            "temperature": 50,
+                            "probabilityOfPrecipitation": {"value": 30},
+                        },
+                    ],
+                }
+
+            summary = run_kalshi_weather_priors(
+                priors_csv=str(priors_csv),
+                history_csv=str(history_csv),
+                output_dir=str(base),
+                station_forecast_fetcher=fake_station_forecast_fetcher,
+                station_history_fetcher=lambda **kwargs: {"status": "disabled_missing_token"},
+                anomaly_series_fetcher=lambda **kwargs: {"status": "ready", "values": [0.0] * 24},
+                now=datetime(2026, 3, 31, 0, 5, tzinfo=timezone.utc),
+            )
+
+            self.assertEqual(summary["status"], "ready")
+            self.assertEqual(summary["generated_priors"], 1)
+
+            with Path(summary["output_csv"]).open("r", newline="", encoding="utf-8") as handle:
+                rows = [dict(row) for row in csv.DictReader(handle)]
+            self.assertEqual(len(rows), 1)
+            generated = rows[0]
+            # Overnight window should include 18:00 local same-day + early next-day periods only.
+            self.assertAlmostEqual(float(generated["model_probability_raw"]), 0.44, places=3)
+            self.assertEqual(generated["observation_window_local_start"], "18:00")
+            self.assertEqual(generated["observation_window_local_end"], "06:00")
+            self.assertIn("settlement_window_local=18:00-06:00", generated["source_note"])
 
 
 if __name__ == "__main__":
