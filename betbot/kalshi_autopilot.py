@@ -22,6 +22,7 @@ _UPSTREAM_TOKENS = (
     "upstream",
     "rate_limited",
     "network_error",
+    "network error",
     "name or service not known",
     "nodename nor servname",
     "temporary failure in name resolution",
@@ -60,6 +61,50 @@ def _preflight_has_upstream_issue(*, blockers: list[str], preflight: dict[str, A
         status = _as_status(value.get("status"))
         if _matches_upstream_pattern(status):
             return True
+    return False
+
+
+def _is_transient_http_status(value: Any) -> bool:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return False
+    return parsed in {408, 425, 429, 500, 502, 503, 504}
+
+
+def _live_smoke_has_upstream_issue(summary: dict[str, Any]) -> bool:
+    if _matches_upstream_pattern(_as_status(summary.get("status"))):
+        return True
+
+    failed_rows = summary.get("failed")
+    if isinstance(failed_rows, list):
+        for row in failed_rows:
+            if not isinstance(row, dict):
+                continue
+            if _matches_upstream_pattern(str(row.get("message") or "")):
+                return True
+            if _is_transient_http_status(row.get("http_status")):
+                return True
+
+    checks = summary.get("checks")
+    if isinstance(checks, list):
+        for check in checks:
+            if not isinstance(check, dict):
+                continue
+            if bool(check.get("ok")):
+                continue
+            if _matches_upstream_pattern(str(check.get("message") or "")):
+                return True
+            if _is_transient_http_status(check.get("http_status")):
+                return True
+            details = check.get("details")
+            if not isinstance(details, dict):
+                continue
+            network_errors = details.get("network_errors")
+            if isinstance(network_errors, list):
+                for error in network_errors:
+                    if _matches_upstream_pattern(str(error or "")):
+                        return True
     return False
 
 
@@ -237,13 +282,18 @@ def run_kalshi_autopilot(
                 include_odds_provider_check=preflight_live_smoke_include_odds_provider_check,
             )
             smoke_status = _as_status(attempt_smoke_summary.get("status"))
+            smoke_upstream_issue = _live_smoke_has_upstream_issue(attempt_smoke_summary)
             if smoke_status != "passed":
                 attempt_gate_pass = False
-                attempt_blockers.append(f"live_smoke_{smoke_status or 'failed'}")
+                if smoke_upstream_issue:
+                    attempt_blockers.append("live_smoke_upstream_error")
+                else:
+                    attempt_blockers.append(f"live_smoke_{smoke_status or 'failed'}")
             attempt_preflight["live_smoke"] = {
                 "status": attempt_smoke_summary.get("status"),
                 "checks_failed": attempt_smoke_summary.get("checks_failed"),
                 "output_file": attempt_smoke_summary.get("output_file"),
+                "upstream_incident_detected": smoke_upstream_issue,
             }
 
         attempt_ws_collect_summary: dict[str, Any] | None = None

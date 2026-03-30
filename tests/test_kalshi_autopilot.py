@@ -157,6 +157,125 @@ class KalshiAutopilotTests(unittest.TestCase):
             self.assertEqual(summary["preflight_dns_remediation_skipped_runs"], 1)
             self.assertTrue(supervisor_kwargs["allow_live_orders"])
 
+    def test_run_kalshi_autopilot_self_heals_when_live_smoke_failed_is_network_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            env_file = base / "env.txt"
+            env_file.write_text("KALSHI_ENV=prod\n", encoding="utf-8")
+
+            smoke_calls = 0
+
+            def fake_live_smoke(**kwargs: Any) -> dict[str, Any]:
+                nonlocal smoke_calls
+                smoke_calls += 1
+                if smoke_calls == 1:
+                    return {
+                        "status": "failed",
+                        "checks_failed": 1,
+                        "failed": [
+                            {
+                                "component": "kalshi",
+                                "target": "/portfolio/balance",
+                                "message": "Network error: [Errno 8] nodename nor servname provided, or not known",
+                                "http_status": None,
+                            }
+                        ],
+                        "output_file": str(base / "smoke_failed_network.json"),
+                    }
+                return {
+                    "status": "passed",
+                    "checks_failed": 0,
+                    "failed": [],
+                    "output_file": str(base / "smoke_pass.json"),
+                }
+
+            summary = run_kalshi_autopilot(
+                env_file=str(env_file),
+                output_dir=str(base),
+                allow_live_orders=False,
+                preflight_run_dns_doctor=False,
+                preflight_self_heal_attempts=1,
+                preflight_self_heal_pause_seconds=0.0,
+                live_smoke_runner=fake_live_smoke,
+                ws_collect_runner=lambda **_: {
+                    "status": "ready",
+                    "gate_pass": True,
+                    "events_logged": 5,
+                    "ws_url_used": "wss://api.elections.kalshi.com/trade-api/ws/v2",
+                    "output_file": str(base / "ws.json"),
+                    "ws_state_json": str(base / "kalshi_ws_state_latest.json"),
+                },
+                supervisor_runner=lambda **_: {
+                    "status": "ready",
+                    "cycles_with_failures": 0,
+                    "cycles_with_unremediated_failures": 0,
+                    "output_file": str(base / "kalshi_supervisor_summary.json"),
+                },
+                now=datetime(2026, 3, 30, 1, 7, tzinfo=timezone.utc),
+            )
+
+            self.assertEqual(smoke_calls, 2)
+            self.assertTrue(summary["preflight_self_healed"])
+            self.assertEqual(summary["preflight_self_heal_used"], 1)
+            self.assertIn("live_smoke_upstream_error", summary["preflight_attempts"][0]["blockers"])
+
+    def test_run_kalshi_autopilot_does_not_retry_non_upstream_live_smoke_failure_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            env_file = base / "env.txt"
+            env_file.write_text("KALSHI_ENV=prod\n", encoding="utf-8")
+
+            smoke_calls = 0
+
+            def fake_live_smoke(**kwargs: Any) -> dict[str, Any]:
+                nonlocal smoke_calls
+                smoke_calls += 1
+                return {
+                    "status": "failed",
+                    "checks_failed": 1,
+                    "failed": [
+                        {
+                            "component": "kalshi",
+                            "target": "/portfolio/balance",
+                            "message": "Unexpected response from Kalshi: JSON object keys: error",
+                            "http_status": 401,
+                        }
+                    ],
+                    "output_file": str(base / "smoke_failed_auth.json"),
+                }
+
+            summary = run_kalshi_autopilot(
+                env_file=str(env_file),
+                output_dir=str(base),
+                allow_live_orders=True,
+                preflight_run_dns_doctor=False,
+                preflight_self_heal_attempts=2,
+                preflight_self_heal_pause_seconds=0.0,
+                live_smoke_runner=fake_live_smoke,
+                ws_collect_runner=lambda **_: {
+                    "status": "ready",
+                    "gate_pass": True,
+                    "events_logged": 2,
+                    "ws_url_used": "wss://api.elections.kalshi.com/trade-api/ws/v2",
+                    "output_file": str(base / "ws.json"),
+                    "ws_state_json": str(base / "kalshi_ws_state_latest.json"),
+                },
+                supervisor_runner=lambda **_: {
+                    "status": "ready",
+                    "cycles_with_failures": 0,
+                    "cycles_with_unremediated_failures": 0,
+                    "output_file": str(base / "kalshi_supervisor_summary.json"),
+                },
+                now=datetime(2026, 3, 30, 1, 8, tzinfo=timezone.utc),
+            )
+
+            self.assertEqual(smoke_calls, 1)
+            self.assertFalse(summary["preflight_gate_pass"])
+            self.assertFalse(summary["preflight_self_healed"])
+            self.assertEqual(summary["preflight_self_heal_used"], 0)
+            self.assertEqual(summary["preflight_attempts_total"], 1)
+            self.assertIn("live_smoke_failed", summary["preflight_blockers"])
+
     def test_run_kalshi_autopilot_scales_retry_timeout_and_ws_collect_window(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)

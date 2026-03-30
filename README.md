@@ -328,6 +328,7 @@ Use `kalshi-autopilot` for a single guarded execution pass: DNS/smoke/websocket 
 Preflight retries are adaptive: timeout and websocket-collect windows can expand per retry (`--preflight-retry-timeout-multiplier`, `--preflight-retry-ws-collect-increment-seconds`).
 When a preflight retry succeeds with a higher timeout, autopilot carries that effective timeout into the supervisor pass instead of dropping back to the lower base timeout.
 Autopilot preflight smoke is Kalshi-focused by default; include odds-provider smoke only when needed via `--preflight-live-smoke-include-odds-provider`.
+Kalshi live-smoke network failures now count as upstream incidents for preflight self-heal retries (instead of being treated as generic non-retryable smoke failures).
 
 Example:
 
