@@ -570,7 +570,7 @@ class LivePaperTests(unittest.TestCase):
                 affiliate_ids=("19", "23"),
                 enrich_candidates=True,
                 enrichment_csv=str(evidence_csv),
-                enrichment_freshness_hours=48.0,
+                enrichment_freshness_hours=2400.0,
                 http_get_json=fake_http_get_json,  # type: ignore[arg-type]
             )
 

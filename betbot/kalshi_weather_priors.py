@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import csv
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 import inspect
 import json
 import math
@@ -373,8 +373,30 @@ def _infer_station_id(row: dict[str, str], settlement_station: str) -> str:
     return ""
 
 
-def _period_window(periods: list[dict[str, Any]], *, now: datetime, hours_to_close: float | None) -> list[dict[str, Any]]:
-    horizon_hours = min(48.0, max(6.0, hours_to_close if isinstance(hours_to_close, (int, float)) else 24.0))
+def _period_window(
+    periods: list[dict[str, Any]],
+    *,
+    now: datetime,
+    hours_to_close: float | None,
+    settlement_timezone_name: str,
+    target_settlement_date: date | None,
+) -> list[dict[str, Any]]:
+    if isinstance(target_settlement_date, date):
+        try:
+            settlement_zone = ZoneInfo(settlement_timezone_name)
+        except ZoneInfoNotFoundError:
+            settlement_zone = timezone.utc
+        settlement_day_periods: list[dict[str, Any]] = []
+        for period in periods:
+            start_time = _parse_datetime(str(period.get("startTime") or ""))
+            if start_time is None:
+                continue
+            if start_time.astimezone(settlement_zone).date() == target_settlement_date:
+                settlement_day_periods.append(period)
+        if settlement_day_periods:
+            return settlement_day_periods
+
+    horizon_hours = min(72.0, max(6.0, hours_to_close if isinstance(hours_to_close, (int, float)) else 24.0))
     cutoff = now + timedelta(hours=float(horizon_hours))
     selected: list[dict[str, Any]] = []
     for period in periods:
@@ -411,12 +433,12 @@ def _settlement_timezone_name(settlement: dict[str, Any], row: dict[str, Any]) -
     return "America/New_York"
 
 
-def _target_month_day(
+def _target_settlement_local_datetime(
     *,
     row: dict[str, Any],
     settlement: dict[str, Any],
     now: datetime,
-) -> tuple[int, int]:
+) -> datetime:
     timezone_name = _settlement_timezone_name(settlement, row)
     close_dt = _parse_datetime(str(row.get("close_time") or ""))
     if close_dt is None:
@@ -432,6 +454,16 @@ def _target_month_day(
     if str(settlement.get("local_day_boundary") or "").strip().lower() == "local_day":
         if local_dt.hour <= 6:
             local_dt = local_dt - timedelta(days=1)
+    return local_dt
+
+
+def _target_month_day(
+    *,
+    row: dict[str, Any],
+    settlement: dict[str, Any],
+    now: datetime,
+) -> tuple[int, int]:
+    local_dt = _target_settlement_local_datetime(row=row, settlement=settlement, now=now)
     return (local_dt.month, local_dt.day)
 
 
@@ -498,7 +530,15 @@ def _build_daily_rain_prior(
     if not isinstance(periods, list) or not periods:
         return None, "station_forecast_missing_periods"
 
-    scoped_periods = _period_window(periods, now=now, hours_to_close=_parse_float(row.get("hours_to_close")))
+    settlement_timezone_name = _settlement_timezone_name(settlement, row)
+    target_local_dt = _target_settlement_local_datetime(row=row, settlement=settlement, now=now)
+    scoped_periods = _period_window(
+        periods,
+        now=now,
+        hours_to_close=_parse_float(row.get("hours_to_close")),
+        settlement_timezone_name=settlement_timezone_name,
+        target_settlement_date=target_local_dt.date(),
+    )
     pop_values: list[float] = []
     for period in scoped_periods:
         probability_payload = period.get("probabilityOfPrecipitation")
@@ -514,17 +554,17 @@ def _build_daily_rain_prior(
     no_rain_probability = 1.0
     for value in pop_values:
         no_rain_probability *= (1.0 - value)
-    model_probability_raw = 1.0 - no_rain_probability
+    model_probability_raw_unclamped = 1.0 - no_rain_probability
     climatology_frequency = None
     if isinstance(history_payload, dict):
         rain_frequency = history_payload.get("rain_day_frequency")
         if isinstance(rain_frequency, (int, float)):
             climatology_frequency = max(0.0, min(1.0, float(rain_frequency)))
     if climatology_frequency is not None:
-        model_probability_raw = 0.78 * model_probability_raw + 0.22 * climatology_frequency
-    model_probability = _clamp_probability(model_probability_raw)
+        model_probability_raw_unclamped = 0.78 * model_probability_raw_unclamped + 0.22 * climatology_frequency
+    model_probability = _clamp_probability(model_probability_raw_unclamped)
     execution_probability = _execution_guard_probability(
-        model_probability_raw,
+        model_probability_raw_unclamped,
         row,
         max_deviation=0.50,
         midpoint_blend_weight=0.06,
@@ -554,8 +594,8 @@ def _build_daily_rain_prior(
         6,
     )
     interval_half_width = max(0.04, min(0.30, 0.28 - 0.22 * confidence))
-    low = _clamp_probability(model_probability - interval_half_width)
-    high = _clamp_probability(model_probability + interval_half_width)
+    low = _clamp_probability(execution_probability - interval_half_width)
+    high = _clamp_probability(execution_probability + interval_half_width)
     thesis_suffix = ""
     if climatology_frequency is not None:
         thesis_suffix = f" Blended with {climatology_count}y station climatology rain frequency {climatology_frequency:.1%}."
@@ -578,13 +618,14 @@ def _build_daily_rain_prior(
             "market_title": str(row.get("market_title") or "").strip(),
             "close_time": str(row.get("close_time") or "").strip(),
             "hours_to_close": str(row.get("hours_to_close") or "").strip(),
-            "fair_yes_probability": model_probability,
-            "fair_yes_probability_low": min(low, model_probability),
-            "fair_yes_probability_high": max(high, model_probability),
+            "fair_yes_probability": execution_probability,
+            "fair_yes_probability_low": min(low, execution_probability),
+            "fair_yes_probability_high": max(high, execution_probability),
             "confidence": confidence,
             "thesis": (
                 f"NWS hourly precipitation probabilities for station {station_id} imply a "
-                f"{model_probability:.1%} chance of measurable rain before market close."
+                f"{execution_probability:.1%} execution-guarded chance of measurable rain for "
+                f"{target_local_dt.strftime('%Y-%m-%d')} settlement."
                 f"{thesis_suffix}"
             ),
             "source_note": "; ".join(source_parts),
@@ -599,7 +640,7 @@ def _build_daily_rain_prior(
             "contract_family": "daily_rain",
             "resolution_source_type": "weather_forecast",
             "model_name": "weather_rain_pop_historical_v2",
-            "model_probability_raw": model_probability,
+            "model_probability_raw": round(float(model_probability_raw_unclamped), 6),
             "execution_probability_guarded": execution_probability,
             "market_midpoint_probability": market_midpoint if market_midpoint is not None else "",
         },
@@ -633,7 +674,15 @@ def _build_daily_temperature_prior(
     if not isinstance(periods, list) or not periods:
         return None, "station_forecast_missing_periods"
 
-    scoped_periods = _period_window(periods, now=now, hours_to_close=_parse_float(row.get("hours_to_close")))
+    settlement_timezone_name = _settlement_timezone_name(settlement, row)
+    target_local_dt = _target_settlement_local_datetime(row=row, settlement=settlement, now=now)
+    scoped_periods = _period_window(
+        periods,
+        now=now,
+        hours_to_close=_parse_float(row.get("hours_to_close")),
+        settlement_timezone_name=settlement_timezone_name,
+        target_settlement_date=target_local_dt.date(),
+    )
     temperatures: list[float] = []
     for period in scoped_periods:
         temperature = _parse_float(period.get("temperature"))
@@ -670,12 +719,18 @@ def _build_daily_temperature_prior(
         forecast_sigma=sigma_forecast,
         climatology_values=climatology_values,
     )
-    probability_raw = _threshold_probability(threshold_kind, threshold_a, threshold_b, expected_temperature, sigma)
-    if probability_raw is None:
+    probability_raw_unclamped = _threshold_probability(
+        threshold_kind,
+        threshold_a,
+        threshold_b,
+        expected_temperature,
+        sigma,
+    )
+    if probability_raw_unclamped is None:
         return None, "unsupported_threshold_expression"
-    model_probability = _clamp_probability(probability_raw)
+    model_probability = _clamp_probability(probability_raw_unclamped)
     execution_probability = _execution_guard_probability(
-        probability_raw,
+        probability_raw_unclamped,
         row,
         max_deviation=0.50,
         midpoint_blend_weight=0.06,
@@ -694,8 +749,8 @@ def _build_daily_temperature_prior(
         6,
     )
     interval_half_width = max(0.05, min(0.32, 0.30 - 0.21 * confidence))
-    low = _clamp_probability(model_probability - interval_half_width)
-    high = _clamp_probability(model_probability + interval_half_width)
+    low = _clamp_probability(execution_probability - interval_half_width)
+    high = _clamp_probability(execution_probability + interval_half_width)
     updated_at = str(forecast.get("forecast_updated_at") or "").strip()
     thesis_suffix = ""
     if climatology_count:
@@ -720,13 +775,15 @@ def _build_daily_temperature_prior(
             "market_title": str(row.get("market_title") or "").strip(),
             "close_time": str(row.get("close_time") or "").strip(),
             "hours_to_close": str(row.get("hours_to_close") or "").strip(),
-            "fair_yes_probability": model_probability,
-            "fair_yes_probability_low": min(low, model_probability),
-            "fair_yes_probability_high": max(high, model_probability),
+            "fair_yes_probability": execution_probability,
+            "fair_yes_probability_low": min(low, execution_probability),
+            "fair_yes_probability_high": max(high, execution_probability),
             "confidence": confidence,
             "thesis": (
-                f"NWS hourly temperatures at {station_id} imply about {model_probability:.1%} for the "
+                f"NWS hourly temperatures at {station_id} imply about {execution_probability:.1%} "
+                "execution-guarded probability for the "
                 f"contract threshold ({threshold_expression}) using expected {expected_label} {expected_temperature:.1f}F."
+                f" Settlement day: {target_local_dt.strftime('%Y-%m-%d')}."
                 f"{thesis_suffix}"
             ),
             "source_note": "; ".join(source_parts),
@@ -741,7 +798,7 @@ def _build_daily_temperature_prior(
             "contract_family": "daily_temperature",
             "resolution_source_type": "weather_forecast",
             "model_name": "weather_temperature_threshold_historical_v2",
-            "model_probability_raw": model_probability,
+            "model_probability_raw": round(float(probability_raw_unclamped), 6),
             "execution_probability_guarded": execution_probability,
             "market_midpoint_probability": market_midpoint if market_midpoint is not None else "",
         },
@@ -779,12 +836,12 @@ def _build_monthly_anomaly_prior(
         trend = 0.0
     projected = latest + trend
     sigma = max(0.05, pstdev(recent_window[-60:]) if len(recent_window) > 3 else 0.09)
-    probability_raw = _threshold_probability(threshold_kind, threshold_a, threshold_b, projected, sigma)
-    if probability_raw is None:
+    probability_raw_unclamped = _threshold_probability(threshold_kind, threshold_a, threshold_b, projected, sigma)
+    if probability_raw_unclamped is None:
         return None, "unsupported_threshold_expression"
-    model_probability = _clamp_probability(probability_raw)
+    model_probability = _clamp_probability(probability_raw_unclamped)
     execution_probability = _execution_guard_probability(
-        probability_raw,
+        probability_raw_unclamped,
         row,
         max_deviation=0.50,
         midpoint_blend_weight=0.08,
@@ -793,8 +850,8 @@ def _build_monthly_anomaly_prior(
 
     confidence = round(min(0.9, max(0.3, 0.43 + min(0.25, len(recent_window) / 400.0))), 6)
     interval_half_width = max(0.06, min(0.34, 0.31 - 0.20 * confidence))
-    low = _clamp_probability(model_probability - interval_half_width)
-    high = _clamp_probability(model_probability + interval_half_width)
+    low = _clamp_probability(execution_probability - interval_half_width)
+    high = _clamp_probability(execution_probability + interval_half_width)
 
     end_year = noaa_series_payload.get("end_year")
     end_month = noaa_series_payload.get("end_month")
@@ -809,13 +866,13 @@ def _build_monthly_anomaly_prior(
             "market_title": str(row.get("market_title") or "").strip(),
             "close_time": str(row.get("close_time") or "").strip(),
             "hours_to_close": str(row.get("hours_to_close") or "").strip(),
-            "fair_yes_probability": model_probability,
-            "fair_yes_probability_low": min(low, model_probability),
-            "fair_yes_probability_high": max(high, model_probability),
+            "fair_yes_probability": execution_probability,
+            "fair_yes_probability_low": min(low, execution_probability),
+            "fair_yes_probability_high": max(high, execution_probability),
             "confidence": confidence,
             "thesis": (
                 "NOAA global land-ocean anomaly trend and variance imply "
-                f"{model_probability:.1%} for threshold ({threshold_expression})."
+                f"{execution_probability:.1%} execution-guarded probability for threshold ({threshold_expression})."
             ),
             "source_note": (
                 f"noaa_global_land_ocean_anomaly_series:{noaa_series_payload.get('series_url', '')}; "
@@ -830,7 +887,7 @@ def _build_monthly_anomaly_prior(
             "contract_family": "monthly_climate_anomaly",
             "resolution_source_type": "climate_archive",
             "model_name": "weather_monthly_anomaly_threshold_v2",
-            "model_probability_raw": model_probability,
+            "model_probability_raw": round(float(probability_raw_unclamped), 6),
             "execution_probability_guarded": execution_probability,
             "market_midpoint_probability": market_midpoint if market_midpoint is not None else "",
         },

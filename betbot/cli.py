@@ -1771,9 +1771,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     kalshi_micro_prior_trader.add_argument(
         "--enforce-ws-state-authority",
+        dest="enforce_ws_state_authority",
         action="store_true",
-        help="Fail closed for live orders unless websocket state is ready (not missing/stale/desynced)",
+        help="Fail closed for live orders unless websocket state is ready (not missing/stale/desynced). Default: enabled.",
     )
+    kalshi_micro_prior_trader.add_argument(
+        "--disable-enforce-ws-state-authority",
+        dest="enforce_ws_state_authority",
+        action="store_false",
+        help="Disable websocket-state authority gating (not recommended for unattended live mode)",
+    )
+    kalshi_micro_prior_trader.set_defaults(enforce_ws_state_authority=True)
     kalshi_micro_prior_trader.add_argument(
         "--ws-state-json",
         default=None,
@@ -1803,7 +1811,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     kalshi_micro_prior_trader.add_argument(
         "--auto-weather-allowed-contract-families",
-        default="daily_rain,daily_temperature,monthly_climate_anomaly",
+        default="daily_rain,daily_temperature",
         help="Comma-separated weather contract families for weather-prior refresh",
     )
     kalshi_micro_prior_trader.add_argument(

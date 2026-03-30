@@ -418,7 +418,6 @@ def run_kalshi_micro_prior_trader(
     auto_weather_allowed_contract_families: tuple[str, ...] = (
         "daily_rain",
         "daily_temperature",
-        "monthly_climate_anomaly",
     ),
     auto_refresh_priors: bool = True,
     auto_prior_max_markets: int = 15,
