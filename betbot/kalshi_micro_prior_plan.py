@@ -85,6 +85,20 @@ def _as_int(value: Any) -> int | None:
     return int(numeric)
 
 
+def _as_bool(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in {"1", "true", "yes", "y", "t"}:
+            return True
+        if text in {"0", "false", "no", "n", "f"}:
+            return False
+    return None
+
+
 def _load_csv_rows(path: Path) -> list[dict[str, str]]:
     if not path.exists():
         return []
@@ -1300,6 +1314,18 @@ def run_kalshi_micro_prior_plan(
         allowed_canonical_niches=normalized_allowed_niches,
         max_rows=25,
     )
+    top_plan = plans[0] if plans else {}
+    top_market_ticker = str(top_plan.get("market_ticker") or "").strip()
+    top_enriched_row = {}
+    if top_market_ticker:
+        top_enriched_row = next(
+            (row for row in enriched_rows if str(row.get("market_ticker") or "").strip() == top_market_ticker),
+            {},
+        )
+    top_weather_station_history_cache_age_seconds = _as_float(
+        top_enriched_row.get("weather_station_history_cache_age_seconds")
+    )
+    top_weather_station_history_live_ready = _as_bool(top_enriched_row.get("weather_station_history_live_ready"))
 
     summary = {
         "captured_at": captured_at.isoformat(),
@@ -1371,79 +1397,115 @@ def run_kalshi_micro_prior_plan(
         "canonical_unmapped_counts_by_niche_guess": canonical_unmapped_analysis["counts_by_niche_guess"],
         "canonical_unmapped_top_markets": canonical_unmapped_analysis["top_markets"],
         "planned_orders": len(plans),
-        "top_market_ticker": plans[0]["market_ticker"] if plans else None,
-        "top_market_title": plans[0]["market_title"] if plans else None,
-        "top_market_close_time": plans[0]["close_time"] if plans else None,
-        "top_market_hours_to_close": plans[0]["hours_to_close"] if plans else None,
-        "top_market_side": plans[0]["side"] if plans else None,
-        "top_market_canonical_ticker": plans[0]["canonical_ticker"] if plans else None,
-        "top_market_canonical_niche": plans[0]["canonical_niche"] if plans else None,
-        "top_market_canonical_release_cluster": plans[0]["canonical_release_cluster"] if plans else None,
-        "top_market_canonical_policy_applied": plans[0]["canonical_policy_applied"] if plans else None,
-        "top_market_canonical_mapping_match_type": plans[0]["canonical_mapping_match_type"] if plans else None,
-        "top_market_canonical_mapping_match_key": plans[0]["canonical_mapping_match_key"] if plans else None,
-        "top_market_maker_entry_price_dollars": plans[0]["maker_entry_price_dollars"] if plans else None,
-        "top_market_maker_entry_edge": plans[0]["maker_entry_edge"] if plans else None,
-        "top_market_maker_entry_edge_net_fees": plans[0]["maker_entry_edge_net_fees"] if plans else None,
-        "top_market_maker_entry_edge_net_total": plans[0]["maker_entry_edge_net_total"] if plans else None,
+        "top_market_ticker": top_plan.get("market_ticker") if plans else None,
+        "top_market_title": top_plan.get("market_title") if plans else None,
+        "top_market_close_time": top_plan.get("close_time") if plans else None,
+        "top_market_hours_to_close": top_plan.get("hours_to_close") if plans else None,
+        "top_market_side": top_plan.get("side") if plans else None,
+        "top_market_contract_family": (
+            str(top_enriched_row.get("contract_family") or "").strip() or None
+            if top_enriched_row
+            else None
+        ),
+        "top_market_weather_station_history_status": (
+            str(top_enriched_row.get("weather_station_history_status") or "").strip() or None
+            if top_enriched_row
+            else None
+        ),
+        "top_market_weather_station_history_cache_hit": (
+            _as_bool(top_enriched_row.get("weather_station_history_cache_hit"))
+            if top_enriched_row
+            else None
+        ),
+        "top_market_weather_station_history_cache_fallback_used": (
+            _as_bool(top_enriched_row.get("weather_station_history_cache_fallback_used"))
+            if top_enriched_row
+            else None
+        ),
+        "top_market_weather_station_history_cache_fresh": (
+            _as_bool(top_enriched_row.get("weather_station_history_cache_fresh"))
+            if top_enriched_row
+            else None
+        ),
+        "top_market_weather_station_history_cache_age_seconds": (
+            top_weather_station_history_cache_age_seconds
+            if isinstance(top_weather_station_history_cache_age_seconds, float)
+            else None
+        ),
+        "top_market_weather_station_history_live_ready": top_weather_station_history_live_ready,
+        "top_market_weather_station_history_live_ready_reason": (
+            str(top_enriched_row.get("weather_station_history_live_ready_reason") or "").strip() or None
+            if top_enriched_row
+            else None
+        ),
+        "top_market_canonical_ticker": top_plan.get("canonical_ticker") if plans else None,
+        "top_market_canonical_niche": top_plan.get("canonical_niche") if plans else None,
+        "top_market_canonical_release_cluster": top_plan.get("canonical_release_cluster") if plans else None,
+        "top_market_canonical_policy_applied": top_plan.get("canonical_policy_applied") if plans else None,
+        "top_market_canonical_mapping_match_type": top_plan.get("canonical_mapping_match_type") if plans else None,
+        "top_market_canonical_mapping_match_key": top_plan.get("canonical_mapping_match_key") if plans else None,
+        "top_market_maker_entry_price_dollars": top_plan.get("maker_entry_price_dollars") if plans else None,
+        "top_market_maker_entry_edge": top_plan.get("maker_entry_edge") if plans else None,
+        "top_market_maker_entry_edge_net_fees": top_plan.get("maker_entry_edge_net_fees") if plans else None,
+        "top_market_maker_entry_edge_net_total": top_plan.get("maker_entry_edge_net_total") if plans else None,
         "top_market_maker_entry_edge_conservative": (
-            plans[0]["maker_entry_edge_conservative"] if plans else None
+            top_plan.get("maker_entry_edge_conservative") if plans else None
         ),
         "top_market_maker_entry_edge_conservative_net_fees": (
-            plans[0]["maker_entry_edge_conservative_net_fees"] if plans else None
+            top_plan.get("maker_entry_edge_conservative_net_fees") if plans else None
         ),
         "top_market_maker_entry_edge_conservative_net_total": (
-            plans[0]["maker_entry_edge_conservative_net_total"] if plans else None
+            top_plan.get("maker_entry_edge_conservative_net_total") if plans else None
         ),
         "top_market_incentive_bonus_per_contract_dollars": (
-            plans[0]["incentive_bonus_per_contract_dollars"] if plans else None
+            top_plan.get("incentive_bonus_per_contract_dollars") if plans else None
         ),
-        "top_market_estimated_entry_cost_dollars": plans[0]["estimated_entry_cost_dollars"] if plans else None,
-        "top_market_estimated_entry_fee_dollars": plans[0]["estimated_entry_fee_dollars"] if plans else None,
-        "top_market_expected_incentive_value_dollars": plans[0]["expected_incentive_value_dollars"] if plans else None,
-        "top_market_expected_value_dollars": plans[0]["expected_value_dollars"] if plans else None,
-        "top_market_expected_value_net_dollars": plans[0]["expected_value_net_dollars"] if plans else None,
+        "top_market_estimated_entry_cost_dollars": top_plan.get("estimated_entry_cost_dollars") if plans else None,
+        "top_market_estimated_entry_fee_dollars": top_plan.get("estimated_entry_fee_dollars") if plans else None,
+        "top_market_expected_incentive_value_dollars": top_plan.get("expected_incentive_value_dollars") if plans else None,
+        "top_market_expected_value_dollars": top_plan.get("expected_value_dollars") if plans else None,
+        "top_market_expected_value_net_dollars": top_plan.get("expected_value_net_dollars") if plans else None,
         "top_market_expected_value_conservative_dollars": (
-            plans[0]["expected_value_conservative_dollars"] if plans else None
+            top_plan.get("expected_value_conservative_dollars") if plans else None
         ),
         "top_market_expected_value_conservative_net_dollars": (
-            plans[0]["expected_value_conservative_net_dollars"] if plans else None
+            top_plan.get("expected_value_conservative_net_dollars") if plans else None
         ),
-        "top_market_expected_roi_on_cost": plans[0]["expected_roi_on_cost"] if plans else None,
-        "top_market_expected_roi_on_cost_net": plans[0]["expected_roi_on_cost_net"] if plans else None,
+        "top_market_expected_roi_on_cost": top_plan.get("expected_roi_on_cost") if plans else None,
+        "top_market_expected_roi_on_cost_net": top_plan.get("expected_roi_on_cost_net") if plans else None,
         "top_market_expected_roi_on_cost_conservative": (
-            plans[0]["expected_roi_on_cost_conservative"] if plans else None
+            top_plan.get("expected_roi_on_cost_conservative") if plans else None
         ),
         "top_market_expected_roi_on_cost_conservative_net": (
-            plans[0]["expected_roi_on_cost_conservative_net"] if plans else None
+            top_plan.get("expected_roi_on_cost_conservative_net") if plans else None
         ),
-        "top_market_expected_value_per_day_dollars": plans[0]["expected_value_per_day_dollars"] if plans else None,
+        "top_market_expected_value_per_day_dollars": top_plan.get("expected_value_per_day_dollars") if plans else None,
         "top_market_expected_value_per_day_net_dollars": (
-            plans[0]["expected_value_per_day_net_dollars"] if plans else None
+            top_plan.get("expected_value_per_day_net_dollars") if plans else None
         ),
         "top_market_expected_value_per_day_conservative_dollars": (
-            plans[0]["expected_value_per_day_conservative_dollars"] if plans else None
+            top_plan.get("expected_value_per_day_conservative_dollars") if plans else None
         ),
         "top_market_expected_value_per_day_conservative_net_dollars": (
-            plans[0]["expected_value_per_day_conservative_net_dollars"] if plans else None
+            top_plan.get("expected_value_per_day_conservative_net_dollars") if plans else None
         ),
-        "top_market_expected_roi_per_day": plans[0]["expected_roi_per_day"] if plans else None,
-        "top_market_expected_roi_per_day_net": plans[0]["expected_roi_per_day_net"] if plans else None,
+        "top_market_expected_roi_per_day": top_plan.get("expected_roi_per_day") if plans else None,
+        "top_market_expected_roi_per_day_net": top_plan.get("expected_roi_per_day_net") if plans else None,
         "top_market_expected_roi_per_day_conservative": (
-            plans[0]["expected_roi_per_day_conservative"] if plans else None
+            top_plan.get("expected_roi_per_day_conservative") if plans else None
         ),
         "top_market_expected_roi_per_day_conservative_net": (
-            plans[0]["expected_roi_per_day_conservative_net"] if plans else None
+            top_plan.get("expected_roi_per_day_conservative_net") if plans else None
         ),
-        "top_market_estimated_max_profit_dollars": plans[0]["estimated_max_profit_dollars"] if plans else None,
-        "top_market_estimated_max_loss_dollars": plans[0]["estimated_max_loss_dollars"] if plans else None,
-        "top_market_max_profit_roi_on_cost": plans[0]["max_profit_roi_on_cost"] if plans else None,
-        "top_market_fair_probability": plans[0]["fair_probability"] if plans else None,
+        "top_market_estimated_max_profit_dollars": top_plan.get("estimated_max_profit_dollars") if plans else None,
+        "top_market_estimated_max_loss_dollars": top_plan.get("estimated_max_loss_dollars") if plans else None,
+        "top_market_max_profit_roi_on_cost": top_plan.get("max_profit_roi_on_cost") if plans else None,
+        "top_market_fair_probability": top_plan.get("fair_probability") if plans else None,
         "top_market_fair_probability_conservative": (
-            plans[0]["fair_probability_conservative"] if plans else None
+            top_plan.get("fair_probability_conservative") if plans else None
         ),
-        "top_market_confidence": plans[0]["confidence"] if plans else None,
-        "top_market_thesis": plans[0]["thesis"] if plans else None,
+        "top_market_confidence": top_plan.get("confidence") if plans else None,
+        "top_market_thesis": top_plan.get("thesis") if plans else None,
         "total_planned_cost_dollars": round(sum(float(plan["estimated_entry_cost_dollars"]) for plan in plans), 4),
         "actual_live_balance_dollars": round(live_balance_cents / 100.0, 2) if live_balance_cents is not None else None,
         "actual_live_balance_source": balance_source,
