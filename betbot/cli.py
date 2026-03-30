@@ -15,6 +15,7 @@ from betbot.dns_guard import run_dns_doctor
 from betbot.io import load_candidates
 from betbot.kalshi_focus_dossier import run_kalshi_focus_dossier
 from betbot.kalshi_execution_frontier import run_kalshi_execution_frontier
+from betbot.kalshi_autopilot import run_kalshi_autopilot
 from betbot.kalshi_micro_execute import run_kalshi_micro_execute
 from betbot.kalshi_micro_gate import run_kalshi_micro_gate
 from betbot.kalshi_micro_prior_execute import run_kalshi_micro_prior_execute
@@ -2274,6 +2275,186 @@ def build_parser() -> argparse.ArgumentParser:
     )
     kalshi_supervisor.add_argument("--output-dir", default="outputs", help="Output directory")
 
+    kalshi_autopilot = subparsers.add_parser(
+        "kalshi-autopilot",
+        help="Run fully-guarded autonomous live development loop with preflight gates and progressive scaling",
+    )
+    kalshi_autopilot.add_argument(
+        "--env-file",
+        default="data/research/account_onboarding.env.template",
+        help="Path to env-style file with runtime settings",
+    )
+    kalshi_autopilot.add_argument(
+        "--priors-csv",
+        default="data/research/kalshi_nonsports_priors.csv",
+        help="CSV of user-supplied fair probabilities for specific Kalshi non-sports markets",
+    )
+    kalshi_autopilot.add_argument(
+        "--history-csv",
+        default="outputs/kalshi_nonsports_history.csv",
+        help="Stable history CSV path from kalshi-nonsports-capture",
+    )
+    kalshi_autopilot.add_argument("--ledger-csv", default=None, help="Optional ledger CSV path override")
+    kalshi_autopilot.add_argument(
+        "--book-db-path",
+        default=None,
+        help="Optional SQLite portfolio-book path; defaults to outputs/kalshi_portfolio_book.sqlite3",
+    )
+    kalshi_autopilot.add_argument(
+        "--allow-live-orders",
+        action="store_true",
+        help="Request live mode (still subject to automated safety gates)",
+    )
+    kalshi_autopilot.add_argument("--cycles", type=int, default=1, help="Number of supervisor cycles to run")
+    kalshi_autopilot.add_argument(
+        "--sleep-between-cycles-seconds",
+        type=float,
+        default=20.0,
+        help="Delay between supervisor cycles",
+    )
+    kalshi_autopilot.add_argument(
+        "--timeout-seconds",
+        type=float,
+        default=15.0,
+        help="HTTP timeout for reads or writes",
+    )
+    kalshi_autopilot.add_argument(
+        "--planning-bankroll",
+        type=float,
+        default=40.0,
+        help="Reference bankroll for planning fractions",
+    )
+    kalshi_autopilot.add_argument(
+        "--daily-risk-cap",
+        type=float,
+        default=3.0,
+        help="Maximum total notional cost planned for one run",
+    )
+    kalshi_autopilot.add_argument("--contracts-per-order", type=int, default=1, help="Contracts per planned order")
+    kalshi_autopilot.add_argument("--max-orders", type=int, default=3, help="Maximum number of planned orders")
+    kalshi_autopilot.add_argument(
+        "--min-maker-edge",
+        type=float,
+        default=0.005,
+        help="Minimum maker-entry edge required to include a prior-backed plan",
+    )
+    kalshi_autopilot.add_argument(
+        "--min-maker-edge-net-fees",
+        type=float,
+        default=0.0,
+        help="Minimum maker-entry edge net estimated fees required to include a prior-backed plan",
+    )
+    kalshi_autopilot.add_argument(
+        "--max-entry-price",
+        type=float,
+        default=0.99,
+        help="Maximum maker-entry price allowed for a planned order",
+    )
+    kalshi_autopilot.add_argument(
+        "--max-live-submissions-per-day",
+        type=int,
+        default=3,
+        help="New submission slots accrued per trading day (unused slots carry forward)",
+    )
+    kalshi_autopilot.add_argument(
+        "--max-live-cost-per-day",
+        type=float,
+        default=3.0,
+        help="Maximum estimated notional cost submitted live per trading day",
+    )
+    kalshi_autopilot.add_argument(
+        "--disable-preflight-dns-doctor",
+        action="store_true",
+        help="Skip DNS preflight gate",
+    )
+    kalshi_autopilot.add_argument(
+        "--disable-preflight-live-smoke",
+        action="store_true",
+        help="Skip live-smoke preflight gate",
+    )
+    kalshi_autopilot.add_argument(
+        "--disable-preflight-ws-state-collect",
+        action="store_true",
+        help="Skip websocket-state preflight gate",
+    )
+    kalshi_autopilot.add_argument(
+        "--ws-collect-run-seconds",
+        type=float,
+        default=45.0,
+        help="Seconds to collect websocket state during preflight",
+    )
+    kalshi_autopilot.add_argument(
+        "--ws-collect-max-events",
+        type=int,
+        default=250,
+        help="Maximum websocket events to collect during preflight",
+    )
+    kalshi_autopilot.add_argument(
+        "--ws-state-json",
+        default=None,
+        help="Path to websocket-state JSON snapshot; defaults to outputs/kalshi_ws_state_latest.json",
+    )
+    kalshi_autopilot.add_argument(
+        "--ws-state-max-age-seconds",
+        type=float,
+        default=30.0,
+        help="Maximum allowed websocket-state age before live orders are blocked",
+    )
+    kalshi_autopilot.add_argument(
+        "--disable-progressive-scaling",
+        action="store_true",
+        help="Disable adaptive scale-up logic based on consecutive green autopilot runs",
+    )
+    kalshi_autopilot.add_argument(
+        "--scaling-lookback-runs",
+        type=int,
+        default=20,
+        help="How many recent autopilot summaries to inspect for scaling signal",
+    )
+    kalshi_autopilot.add_argument(
+        "--scaling-green-runs-per-step",
+        type=int,
+        default=3,
+        help="Consecutive green runs required before each scaling step",
+    )
+    kalshi_autopilot.add_argument(
+        "--scaling-step-live-submissions",
+        type=int,
+        default=1,
+        help="Additional live submissions per day per scaling step",
+    )
+    kalshi_autopilot.add_argument(
+        "--scaling-step-live-cost-dollars",
+        type=float,
+        default=1.0,
+        help="Additional live cost cap per day per scaling step",
+    )
+    kalshi_autopilot.add_argument(
+        "--scaling-step-daily-risk-cap-dollars",
+        type=float,
+        default=1.0,
+        help="Additional daily risk cap per scaling step",
+    )
+    kalshi_autopilot.add_argument(
+        "--scaling-hard-max-live-submissions-per-day",
+        type=int,
+        default=12,
+        help="Absolute upper bound for live submissions per day after scaling",
+    )
+    kalshi_autopilot.add_argument(
+        "--scaling-hard-max-live-cost-per-day-dollars",
+        type=float,
+        default=12.0,
+        help="Absolute upper bound for live cost per day after scaling",
+    )
+    kalshi_autopilot.add_argument(
+        "--scaling-hard-max-daily-risk-cap-dollars",
+        type=float,
+        default=12.0,
+        help="Absolute upper bound for daily risk cap after scaling",
+    )
+    kalshi_autopilot.add_argument("--output-dir", default="outputs", help="Output directory")
+
     kalshi_micro_plan = subparsers.add_parser(
         "kalshi-micro-plan",
         help="Build a tiny read-only Kalshi order plan for a small bankroll",
@@ -3739,6 +3920,44 @@ def main() -> None:
             enforce_ws_state_authority=not args.disable_enforce_ws_state_authority,
             ws_state_json=args.ws_state_json,
             ws_state_max_age_seconds=args.ws_state_max_age_seconds,
+        )
+    elif args.command == "kalshi-autopilot":
+        summary = run_kalshi_autopilot(
+            env_file=args.env_file,
+            output_dir=args.output_dir,
+            priors_csv=args.priors_csv,
+            history_csv=args.history_csv,
+            ledger_csv=args.ledger_csv,
+            book_db_path=args.book_db_path,
+            allow_live_orders=args.allow_live_orders,
+            cycles=args.cycles,
+            sleep_between_cycles_seconds=args.sleep_between_cycles_seconds,
+            timeout_seconds=args.timeout_seconds,
+            planning_bankroll_dollars=args.planning_bankroll,
+            daily_risk_cap_dollars=args.daily_risk_cap,
+            contracts_per_order=args.contracts_per_order,
+            max_orders=args.max_orders,
+            min_maker_edge=args.min_maker_edge,
+            min_maker_edge_net_fees=args.min_maker_edge_net_fees,
+            max_entry_price_dollars=args.max_entry_price,
+            max_live_submissions_per_day=args.max_live_submissions_per_day,
+            max_live_cost_per_day_dollars=args.max_live_cost_per_day,
+            preflight_run_dns_doctor=not args.disable_preflight_dns_doctor,
+            preflight_run_live_smoke=not args.disable_preflight_live_smoke,
+            preflight_run_ws_state_collect=not args.disable_preflight_ws_state_collect,
+            ws_collect_run_seconds=args.ws_collect_run_seconds,
+            ws_collect_max_events=args.ws_collect_max_events,
+            ws_state_json=args.ws_state_json,
+            ws_state_max_age_seconds=args.ws_state_max_age_seconds,
+            enable_progressive_scaling=not args.disable_progressive_scaling,
+            scaling_lookback_runs=args.scaling_lookback_runs,
+            scaling_green_runs_per_step=args.scaling_green_runs_per_step,
+            scaling_step_live_submissions=args.scaling_step_live_submissions,
+            scaling_step_live_cost_dollars=args.scaling_step_live_cost_dollars,
+            scaling_step_daily_risk_cap_dollars=args.scaling_step_daily_risk_cap_dollars,
+            scaling_hard_max_live_submissions_per_day=args.scaling_hard_max_live_submissions_per_day,
+            scaling_hard_max_live_cost_per_day_dollars=args.scaling_hard_max_live_cost_per_day_dollars,
+            scaling_hard_max_daily_risk_cap_dollars=args.scaling_hard_max_daily_risk_cap_dollars,
         )
     elif args.command == "kalshi-micro-plan":
         summary = run_kalshi_micro_plan(
