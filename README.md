@@ -337,6 +337,7 @@ python -m betbot.cli kalshi-autopilot \
 ```
 
 Use `kalshi-watchdog` for continuous autonomous operation with persistent live kill-switch memory. It keeps running autopilot loops, performs in-loop self-heal retries (`--self-heal-attempts-per-loop`, `--self-heal-pause-seconds`) when upstream DNS/network failures appear, applies upstream backoff, runs remediation DNS checks, and only then escalates to kill-switch mode if failures persist.
+The watchdog deduplicates remediation work: it skips outer DNS-doctor runs when the autopilot attempt already performed DNS checks/remediation.
 
 Example:
 

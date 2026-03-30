@@ -153,7 +153,8 @@ class KalshiAutopilotTests(unittest.TestCase):
             self.assertEqual(summary["preflight_attempts_total"], 2)
             self.assertEqual(summary["preflight_self_heal_used"], 1)
             self.assertEqual(smoke_calls, 2)
-            self.assertGreaterEqual(dns_remediation_calls, 3)
+            self.assertEqual(dns_remediation_calls, 2)
+            self.assertEqual(summary["preflight_dns_remediation_skipped_runs"], 1)
             self.assertTrue(supervisor_kwargs["allow_live_orders"])
 
     def test_run_kalshi_autopilot_allows_live_when_preflight_ready(self) -> None:

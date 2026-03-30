@@ -169,6 +169,7 @@ def run_kalshi_autopilot(
     preflight_upstream_incident_detected = False
     preflight_self_heal_used = 0
     preflight_dns_remediation_runs: list[dict[str, Any]] = []
+    preflight_dns_remediation_skipped_runs = 0
 
     safe_preflight_self_heal_attempts = max(0, int(preflight_self_heal_attempts))
     safe_preflight_self_heal_pause_seconds = max(0.0, float(preflight_self_heal_pause_seconds))
@@ -278,7 +279,8 @@ def run_kalshi_autopilot(
             break
 
         preflight_self_heal_used += 1
-        if preflight_self_heal_run_dns_doctor:
+        should_run_between_attempt_dns = bool(preflight_self_heal_run_dns_doctor and not preflight_run_dns_doctor)
+        if should_run_between_attempt_dns:
             remediation_dns_summary = dns_doctor_runner(
                 env_file=env_file,
                 output_dir=output_dir,
@@ -291,6 +293,8 @@ def run_kalshi_autopilot(
                     "output_file": remediation_dns_summary.get("output_file"),
                 }
             )
+        elif preflight_self_heal_run_dns_doctor and preflight_run_dns_doctor:
+            preflight_dns_remediation_skipped_runs += 1
         if safe_preflight_self_heal_pause_seconds > 0:
             time.sleep(safe_preflight_self_heal_pause_seconds)
 
@@ -377,6 +381,7 @@ def run_kalshi_autopilot(
         "preflight_self_healed": preflight_self_healed,
         "preflight_upstream_incident_detected": preflight_upstream_incident_detected,
         "preflight_dns_remediation_runs": preflight_dns_remediation_runs,
+        "preflight_dns_remediation_skipped_runs": preflight_dns_remediation_skipped_runs,
         "effective_ws_state_json": effective_ws_state_json,
         "enable_progressive_scaling": enable_progressive_scaling,
         "scaling_lookback_runs": scaling_lookback_runs,

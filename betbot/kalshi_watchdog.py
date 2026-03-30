@@ -128,6 +128,27 @@ def _is_healthy_run(autopilot_summary: dict[str, Any]) -> bool:
     )
 
 
+def _autopilot_has_dns_activity(autopilot_summary: dict[str, Any]) -> bool:
+    summary_file = str(autopilot_summary.get("dns_doctor_summary_file") or "").strip()
+    if summary_file:
+        return True
+
+    preflight = autopilot_summary.get("preflight")
+    if isinstance(preflight, dict):
+        dns_payload = preflight.get("dns_doctor")
+        if isinstance(dns_payload, dict):
+            if str(dns_payload.get("status") or "").strip():
+                return True
+            if str(dns_payload.get("output_file") or "").strip():
+                return True
+
+    remediation_runs = autopilot_summary.get("preflight_dns_remediation_runs")
+    if isinstance(remediation_runs, list) and remediation_runs:
+        return True
+
+    return False
+
+
 def _load_kill_switch_state(path: Path, *, now: datetime) -> dict[str, Any]:
     defaults: dict[str, Any] = {
         "updated_at": now.isoformat(),
@@ -263,6 +284,7 @@ def run_kalshi_watchdog(
 
     run_summaries: list[dict[str, Any]] = []
     dns_remediations_attempted = 0
+    dns_remediations_skipped_due_autopilot = 0
     kill_switch_engagements = 0
     kill_switch_releases = 0
     elapsed_seconds = 0.0
@@ -325,6 +347,7 @@ def run_kalshi_watchdog(
         allow_live_orders_effective = bool(allow_live_orders and not kill_switch_active_before_run)
         remediation_dns_summary: dict[str, Any] | None = None
         remediation_dns_runs: list[dict[str, Any]] = []
+        remediation_dns_skipped_due_autopilot = 0
         kill_switch_engaged_this_run = False
         kill_switch_released_this_run = False
         autopilot_attempts: list[dict[str, Any]] = []
@@ -372,19 +395,30 @@ def run_kalshi_watchdog(
                 break
 
             if run_dns_doctor_on_upstream:
-                remediation_dns_summary = dns_doctor_runner(
-                    env_file=env_file,
-                    output_dir=output_dir,
-                    timeout_seconds=max(0.25, min(3.0, timeout_seconds / 6.0)),
-                )
-                dns_remediations_attempted += 1
-                remediation_dns_runs.append(
-                    {
-                        "attempt": len(remediation_dns_runs) + 1,
-                        "status": remediation_dns_summary.get("status"),
-                        "output_file": remediation_dns_summary.get("output_file"),
-                    }
-                )
+                if _autopilot_has_dns_activity(autopilot_summary):
+                    remediation_dns_skipped_due_autopilot += 1
+                    dns_remediations_skipped_due_autopilot += 1
+                    remediation_dns_runs.append(
+                        {
+                            "attempt": len(remediation_dns_runs) + 1,
+                            "status": "skipped_already_covered_by_autopilot",
+                            "output_file": None,
+                        }
+                    )
+                else:
+                    remediation_dns_summary = dns_doctor_runner(
+                        env_file=env_file,
+                        output_dir=output_dir,
+                        timeout_seconds=max(0.25, min(3.0, timeout_seconds / 6.0)),
+                    )
+                    dns_remediations_attempted += 1
+                    remediation_dns_runs.append(
+                        {
+                            "attempt": len(remediation_dns_runs) + 1,
+                            "status": remediation_dns_summary.get("status"),
+                            "output_file": remediation_dns_summary.get("output_file"),
+                        }
+                    )
 
             if kill_switch_active_before_run or self_heal_attempts_used >= safe_self_heal_attempts:
                 break
@@ -472,6 +506,7 @@ def run_kalshi_watchdog(
                 "remediation_dns_status": (remediation_dns_summary or {}).get("status"),
                 "remediation_dns_output_file": (remediation_dns_summary or {}).get("output_file"),
                 "remediation_dns_runs": remediation_dns_runs,
+                "remediation_dns_skipped_due_autopilot": remediation_dns_skipped_due_autopilot,
                 "sleep_seconds_before_next_run": next_sleep_seconds,
             }
         )
@@ -541,6 +576,7 @@ def run_kalshi_watchdog(
         "self_heal_attempts_per_run": safe_self_heal_attempts,
         "self_heal_pause_seconds": safe_self_heal_pause,
         "dns_remediations_attempted": dns_remediations_attempted,
+        "dns_remediations_skipped_due_autopilot": dns_remediations_skipped_due_autopilot,
         "kill_switch_engagements": kill_switch_engagements,
         "kill_switch_releases": kill_switch_releases,
         "total_runs_lifetime": total_runs,

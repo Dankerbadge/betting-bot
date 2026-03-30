@@ -33,6 +33,30 @@ def _upstream_autopilot_summary(base: Path, suffix: str) -> dict[str, Any]:
     }
 
 
+def _upstream_autopilot_summary_without_dns(base: Path, suffix: str) -> dict[str, Any]:
+    return {
+        "status": "guarded_dry_run",
+        "preflight_gate_pass": False,
+        "preflight_blockers": ["ws_state_upstream_error"],
+        "preflight": {
+            "ws_state_collect": {"status": "upstream_error"},
+        },
+        "supervisor_status": "ready",
+        "supervisor_summary": {
+            "cycle_summaries": [
+                {
+                    "exchange_status": {
+                        "dns_error": False,
+                        "network_error": "temporary upstream timeout",
+                    },
+                    "final_failure_reasons": ["capture_status:upstream_error"],
+                }
+            ]
+        },
+        "output_file": str(base / f"autopilot_upstream_no_dns_{suffix}.json"),
+    }
+
+
 def _healthy_autopilot_summary(base: Path, suffix: str) -> dict[str, Any]:
     return {
         "status": "ready",
@@ -147,7 +171,7 @@ class KalshiWatchdogTests(unittest.TestCase):
                 nonlocal autopilot_calls
                 autopilot_calls += 1
                 if autopilot_calls == 1:
-                    return _upstream_autopilot_summary(base, "first")
+                    return _upstream_autopilot_summary_without_dns(base, "first")
                 return _healthy_autopilot_summary(base, "second")
 
             def fake_dns_doctor(**kwargs: Any) -> dict[str, Any]:
@@ -223,13 +247,51 @@ class KalshiWatchdogTests(unittest.TestCase):
 
             self.assertEqual(autopilot_calls, 2)
             self.assertEqual(allow_live_args, [True, True])
-            self.assertEqual(dns_calls, 1)
+            self.assertEqual(dns_calls, 0)
             self.assertFalse(summary["kill_switch_active"])
             run_summary = summary["run_summaries"][0]
             self.assertTrue(run_summary["self_healed"])
             self.assertEqual(run_summary["self_heal_attempts_used"], 1)
             self.assertEqual(run_summary["autopilot_attempts_total"], 2)
             self.assertEqual(run_summary["autopilot_status"], "ready")
+            self.assertEqual(run_summary["remediation_dns_skipped_due_autopilot"], 1)
+
+    def test_watchdog_skips_dns_remediation_if_autopilot_already_checked_dns(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            env_file = base / "env.txt"
+            env_file.write_text("KALSHI_ENV=prod\n", encoding="utf-8")
+            dns_calls = 0
+
+            def fake_dns_doctor(**kwargs: Any) -> dict[str, Any]:
+                nonlocal dns_calls
+                dns_calls += 1
+                return {
+                    "status": "passed",
+                    "output_file": str(base / "dns_doctor_watchdog.json"),
+                }
+
+            summary = run_kalshi_watchdog(
+                env_file=str(env_file),
+                output_dir=str(base),
+                allow_live_orders=True,
+                loops=1,
+                self_heal_attempts_per_run=0,
+                autopilot_runner=lambda **_: _upstream_autopilot_summary(base, "single"),
+                dns_doctor_runner=fake_dns_doctor,
+                sleep_fn=lambda _seconds: None,
+                now=datetime(2026, 3, 30, 3, 40, tzinfo=timezone.utc),
+            )
+
+            self.assertEqual(dns_calls, 0)
+            self.assertEqual(summary["dns_remediations_attempted"], 0)
+            self.assertEqual(summary["dns_remediations_skipped_due_autopilot"], 1)
+            run_summary = summary["run_summaries"][0]
+            self.assertEqual(run_summary["remediation_dns_skipped_due_autopilot"], 1)
+            self.assertEqual(
+                run_summary["remediation_dns_runs"][0]["status"],
+                "skipped_already_covered_by_autopilot",
+            )
 
 
 if __name__ == "__main__":
