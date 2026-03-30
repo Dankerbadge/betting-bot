@@ -369,7 +369,13 @@ class KalshiSupervisorTests(unittest.TestCase):
             self.assertEqual(cycle["trader_attempts"][1]["capture_scan_search_health_status"], "ready")
             self.assertEqual(cycle["trader_attempts"][0]["timeout_seconds"], 10.0)
             self.assertEqual(cycle["trader_attempts"][1]["timeout_seconds"], 20.0)
-            self.assertEqual(cycle["remediation_actions"][0]["retry_timeout_seconds"], 10.0)
+            self.assertEqual(cycle["remediation_actions"][0]["retry_timeout_seconds"], 20.0)
+            self.assertTrue(cycle["remediation_actions"][0]["exchange_status_refresh_skipped"])
+            self.assertEqual(
+                cycle["remediation_actions"][0]["exchange_status_refresh_skip_reason"],
+                "live_orders_not_requested",
+            )
+            self.assertEqual(len(cycle["exchange_status_history"]), 1)
 
     def test_run_kalshi_supervisor_forces_dry_run_after_capture_failure(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -417,6 +423,11 @@ class KalshiSupervisorTests(unittest.TestCase):
             cycle = summary["cycle_summaries"][0]
             self.assertTrue(cycle["remediation_applied"])
             self.assertIn("force_dry_run_stale_capture", cycle["remediation_actions"][0]["actions"])
+            self.assertTrue(cycle["remediation_actions"][0]["exchange_status_refresh_skipped"])
+            self.assertEqual(
+                cycle["remediation_actions"][0]["exchange_status_refresh_skip_reason"],
+                "forced_dry_run",
+            )
 
     def test_run_kalshi_supervisor_does_not_retry_no_real_candidates(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

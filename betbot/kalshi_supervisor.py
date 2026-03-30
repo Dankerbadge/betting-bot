@@ -331,6 +331,14 @@ def run_kalshi_supervisor(
         max(0.25, float(timeout_seconds)),
         float(failure_remediation_timeout_cap_seconds),
     )
+
+    def _failure_remediation_timeout_for_attempt(attempt_index: int) -> float:
+        return min(
+            max(0.25, float(timeout_seconds))
+            * (failure_remediation_timeout_multiplier_safe**max(0, int(attempt_index))),
+            failure_remediation_timeout_cap_seconds_safe,
+        )
+
     exchange_status_heal_attempts = max(0, int(exchange_status_self_heal_attempts))
     exchange_status_heal_pause_seconds = max(0.0, float(exchange_status_self_heal_pause_seconds))
     exchange_status_heal_timeout_multiplier = max(1.0, float(exchange_status_self_heal_timeout_multiplier))
@@ -416,11 +424,7 @@ def run_kalshi_supervisor(
         for attempt_index in range(max_retries + 1):
             attempt_now = cycle_started_at + timedelta(milliseconds=attempt_index)
             live_enabled_for_attempt = cycle_live_enabled and not force_dry_run
-            attempt_timeout_seconds = min(
-                max(0.25, float(timeout_seconds))
-                * (failure_remediation_timeout_multiplier_safe**attempt_index),
-                failure_remediation_timeout_cap_seconds_safe,
-            )
+            attempt_timeout_seconds = _failure_remediation_timeout_for_attempt(attempt_index)
             try:
                 trader_summary = run_kalshi_micro_prior_trader(
                     env_file=env_file,
@@ -540,19 +544,31 @@ def run_kalshi_supervisor(
             if wait_seconds > 0:
                 time.sleep(wait_seconds)
 
-            exchange_status = _read_exchange_status(
-                env_file=env_file,
-                timeout_seconds=attempt_timeout_seconds,
-                http_get_json=throttled_get,
-            )
-            exchange_status_history.append(exchange_status)
-            cycle_live_enabled = allow_live_orders and bool(exchange_status.get("trading_active"))
+            retry_timeout_seconds = _failure_remediation_timeout_for_attempt(attempt_index + 1)
+            exchange_status_refresh_skipped = False
+            exchange_status_refresh_skip_reason = ""
+            if not allow_live_orders:
+                exchange_status_refresh_skipped = True
+                exchange_status_refresh_skip_reason = "live_orders_not_requested"
+            elif force_dry_run:
+                exchange_status_refresh_skipped = True
+                exchange_status_refresh_skip_reason = "forced_dry_run"
+            else:
+                exchange_status = _read_exchange_status(
+                    env_file=env_file,
+                    timeout_seconds=retry_timeout_seconds,
+                    http_get_json=throttled_get,
+                )
+                exchange_status_history.append(exchange_status)
+                cycle_live_enabled = allow_live_orders and bool(exchange_status.get("trading_active"))
             remediation_actions.append(
                 {
                     "attempt": attempt_index + 1,
                     "actions": action_flags,
                     "wait_seconds": wait_seconds,
-                    "retry_timeout_seconds": attempt_timeout_seconds,
+                    "retry_timeout_seconds": retry_timeout_seconds,
+                    "exchange_status_refresh_skipped": exchange_status_refresh_skipped,
+                    "exchange_status_refresh_skip_reason": exchange_status_refresh_skip_reason,
                     "exchange_status_http": exchange_status.get("http_status"),
                     "exchange_dns_error": exchange_status.get("dns_error"),
                     "exchange_network_error": exchange_status.get("network_error"),
@@ -566,11 +582,7 @@ def run_kalshi_supervisor(
         if run_arb_scan_each_cycle:
             for attempt_index in range(max_retries + 1):
                 arb_attempt_now = cycle_started_at + timedelta(milliseconds=100 + attempt_index)
-                arb_attempt_timeout_seconds = min(
-                    max(0.25, float(timeout_seconds))
-                    * (failure_remediation_timeout_multiplier_safe**attempt_index),
-                    failure_remediation_timeout_cap_seconds_safe,
-                )
+                arb_attempt_timeout_seconds = _failure_remediation_timeout_for_attempt(attempt_index)
                 try:
                     arb_summary = run_kalshi_arb_scan(
                         env_file=env_file,
