@@ -108,6 +108,18 @@ def _live_smoke_has_upstream_issue(summary: dict[str, Any]) -> bool:
     return False
 
 
+def _has_retryable_ws_state_gate_failure(blockers: list[str]) -> bool:
+    retryable = {
+        "ws_state_stale",
+        "ws_state_empty",
+        "ws_state_desynced",
+    }
+    for blocker in blockers:
+        if str(blocker or "").strip().lower() in retryable:
+            return True
+    return False
+
+
 def _is_green_autopilot_run(payload: dict[str, Any]) -> bool:
     if _as_status(payload.get("status")) != "ready":
         return False
@@ -189,6 +201,7 @@ def run_kalshi_autopilot(
     preflight_self_heal_attempts: int = 2,
     preflight_self_heal_pause_seconds: float = 10.0,
     preflight_self_heal_upstream_only: bool = True,
+    preflight_self_heal_retry_ws_state_gate_failures: bool = True,
     preflight_self_heal_run_dns_doctor: bool = True,
     preflight_retry_timeout_multiplier: float = 1.5,
     preflight_retry_timeout_cap_seconds: float = 45.0,
@@ -354,7 +367,8 @@ def run_kalshi_autopilot(
         if preflight_attempt_index >= safe_preflight_self_heal_attempts:
             break
         if preflight_self_heal_upstream_only and not attempt_upstream_incident:
-            break
+            if not (preflight_self_heal_retry_ws_state_gate_failures and _has_retryable_ws_state_gate_failure(attempt_blockers)):
+                break
 
         preflight_self_heal_used += 1
         should_run_between_attempt_dns = bool(preflight_self_heal_run_dns_doctor and not preflight_run_dns_doctor)
@@ -469,6 +483,7 @@ def run_kalshi_autopilot(
         "preflight_self_heal_attempts": safe_preflight_self_heal_attempts,
         "preflight_self_heal_pause_seconds": safe_preflight_self_heal_pause_seconds,
         "preflight_self_heal_upstream_only": preflight_self_heal_upstream_only,
+        "preflight_self_heal_retry_ws_state_gate_failures": preflight_self_heal_retry_ws_state_gate_failures,
         "preflight_self_heal_run_dns_doctor": preflight_self_heal_run_dns_doctor,
         "preflight_live_smoke_include_odds_provider_check": preflight_live_smoke_include_odds_provider_check,
         "preflight_retry_timeout_multiplier": safe_preflight_retry_timeout_multiplier,

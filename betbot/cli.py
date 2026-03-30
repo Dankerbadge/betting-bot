@@ -2477,6 +2477,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Allow preflight remediation retries for non-upstream failures too",
     )
     kalshi_autopilot.add_argument(
+        "--disable-preflight-self-heal-retry-ws-state-gate-failures",
+        action="store_true",
+        help="Disable retries for websocket-state stale/empty/desynced gate failures in upstream-only mode",
+    )
+    kalshi_autopilot.add_argument(
         "--disable-preflight-self-heal-dns-remediation",
         action="store_true",
         help="Disable remediation DNS-doctor runs between preflight retries",
@@ -2735,6 +2740,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--disable-preflight-self-heal-upstream-only",
         action="store_true",
         help="Allow preflight remediation retries for non-upstream failures too",
+    )
+    kalshi_watchdog.add_argument(
+        "--disable-preflight-self-heal-retry-ws-state-gate-failures",
+        action="store_true",
+        help="Disable retries for websocket-state stale/empty/desynced gate failures in upstream-only mode",
     )
     kalshi_watchdog.add_argument(
         "--disable-preflight-self-heal-dns-remediation",
@@ -4403,6 +4413,7 @@ def main() -> None:
             preflight_self_heal_attempts=args.preflight_self_heal_attempts,
             preflight_self_heal_pause_seconds=args.preflight_self_heal_pause_seconds,
             preflight_self_heal_upstream_only=not args.disable_preflight_self_heal_upstream_only,
+            preflight_self_heal_retry_ws_state_gate_failures=not args.disable_preflight_self_heal_retry_ws_state_gate_failures,
             preflight_self_heal_run_dns_doctor=not args.disable_preflight_self_heal_dns_remediation,
             preflight_retry_timeout_multiplier=args.preflight_retry_timeout_multiplier,
             preflight_retry_timeout_cap_seconds=args.preflight_retry_timeout_cap_seconds,
@@ -4454,6 +4465,7 @@ def main() -> None:
             preflight_self_heal_attempts=args.preflight_self_heal_attempts,
             preflight_self_heal_pause_seconds=args.preflight_self_heal_pause_seconds,
             preflight_self_heal_upstream_only=not args.disable_preflight_self_heal_upstream_only,
+            preflight_self_heal_retry_ws_state_gate_failures=not args.disable_preflight_self_heal_retry_ws_state_gate_failures,
             preflight_self_heal_run_dns_doctor=not args.disable_preflight_self_heal_dns_remediation,
             preflight_retry_timeout_multiplier=args.preflight_retry_timeout_multiplier,
             preflight_retry_timeout_cap_seconds=args.preflight_retry_timeout_cap_seconds,

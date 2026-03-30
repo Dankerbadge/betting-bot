@@ -373,6 +373,30 @@ class KalshiWatchdogTests(unittest.TestCase):
 
             self.assertEqual(include_odds_flags, [True])
 
+    def test_watchdog_passes_retryable_ws_state_gate_toggle_to_autopilot(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            env_file = base / "env.txt"
+            env_file.write_text("KALSHI_ENV=prod\n", encoding="utf-8")
+            ws_retry_flags: list[bool] = []
+
+            def fake_autopilot(**kwargs: Any) -> dict[str, Any]:
+                ws_retry_flags.append(bool(kwargs["preflight_self_heal_retry_ws_state_gate_failures"]))
+                return _healthy_autopilot_summary(base, str(len(ws_retry_flags)))
+
+            run_kalshi_watchdog(
+                env_file=str(env_file),
+                output_dir=str(base),
+                allow_live_orders=False,
+                loops=1,
+                preflight_self_heal_retry_ws_state_gate_failures=False,
+                autopilot_runner=fake_autopilot,
+                sleep_fn=lambda _seconds: None,
+                now=datetime(2026, 3, 30, 4, 5, tzinfo=timezone.utc),
+            )
+
+            self.assertEqual(ws_retry_flags, [False])
+
 
 if __name__ == "__main__":
     unittest.main()
