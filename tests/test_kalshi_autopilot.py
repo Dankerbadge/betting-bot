@@ -230,6 +230,46 @@ class KalshiAutopilotTests(unittest.TestCase):
             self.assertEqual(summary["effective_supervisor_timeout_seconds"], 20.0)
             self.assertEqual(supervisor_kwargs["timeout_seconds"], 20.0)
 
+    def test_run_kalshi_autopilot_live_smoke_skips_odds_provider_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            env_file = base / "env.txt"
+            env_file.write_text("KALSHI_ENV=prod\n", encoding="utf-8")
+            include_odds_flags: list[bool] = []
+
+            def fake_live_smoke(**kwargs: Any) -> dict[str, Any]:
+                include_odds_flags.append(bool(kwargs["include_odds_provider_check"]))
+                return {
+                    "status": "passed",
+                    "checks_failed": [],
+                    "output_file": str(base / "smoke_pass.json"),
+                }
+
+            run_kalshi_autopilot(
+                env_file=str(env_file),
+                output_dir=str(base),
+                allow_live_orders=False,
+                preflight_run_dns_doctor=False,
+                live_smoke_runner=fake_live_smoke,
+                ws_collect_runner=lambda **_: {
+                    "status": "ready",
+                    "gate_pass": True,
+                    "events_logged": 3,
+                    "ws_url_used": "wss://api.elections.kalshi.com/trade-api/ws/v2",
+                    "output_file": str(base / "ws.json"),
+                    "ws_state_json": str(base / "kalshi_ws_state_latest.json"),
+                },
+                supervisor_runner=lambda **_: {
+                    "status": "ready",
+                    "cycles_with_failures": 0,
+                    "cycles_with_unremediated_failures": 0,
+                    "output_file": str(base / "kalshi_supervisor_summary.json"),
+                },
+                now=datetime(2026, 3, 30, 1, 12, tzinfo=timezone.utc),
+            )
+
+            self.assertEqual(include_odds_flags, [False])
+
     def test_run_kalshi_autopilot_allows_live_when_preflight_ready(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)

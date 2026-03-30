@@ -2427,6 +2427,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Skip live-smoke preflight gate",
     )
     kalshi_autopilot.add_argument(
+        "--preflight-live-smoke-include-odds-provider",
+        action="store_true",
+        help="Include odds-provider smoke check in autopilot preflight (Kalshi-only by default)",
+    )
+    kalshi_autopilot.add_argument(
         "--disable-preflight-ws-state-collect",
         action="store_true",
         help="Skip websocket-state preflight gate",
@@ -2680,6 +2685,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--disable-preflight-live-smoke",
         action="store_true",
         help="Skip live-smoke preflight gate inside autopilot",
+    )
+    kalshi_watchdog.add_argument(
+        "--preflight-live-smoke-include-odds-provider",
+        action="store_true",
+        help="Include odds-provider smoke check in watchdog/autopilot preflight (Kalshi-only by default)",
     )
     kalshi_watchdog.add_argument(
         "--disable-preflight-ws-state-collect",
@@ -4384,6 +4394,7 @@ def main() -> None:
             failure_remediation_timeout_cap_seconds=args.failure_remediation_timeout_cap_seconds,
             preflight_run_dns_doctor=not args.disable_preflight_dns_doctor,
             preflight_run_live_smoke=not args.disable_preflight_live_smoke,
+            preflight_live_smoke_include_odds_provider_check=args.preflight_live_smoke_include_odds_provider,
             preflight_run_ws_state_collect=not args.disable_preflight_ws_state_collect,
             ws_collect_run_seconds=args.ws_collect_run_seconds,
             ws_collect_max_events=args.ws_collect_max_events,
@@ -4434,6 +4445,7 @@ def main() -> None:
             failure_remediation_timeout_cap_seconds=args.failure_remediation_timeout_cap_seconds,
             preflight_run_dns_doctor=not args.disable_preflight_dns_doctor,
             preflight_run_live_smoke=not args.disable_preflight_live_smoke,
+            preflight_live_smoke_include_odds_provider_check=args.preflight_live_smoke_include_odds_provider,
             preflight_run_ws_state_collect=not args.disable_preflight_ws_state_collect,
             ws_collect_run_seconds=args.ws_collect_run_seconds,
             ws_collect_max_events=args.ws_collect_max_events,

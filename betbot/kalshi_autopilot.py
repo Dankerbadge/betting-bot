@@ -135,6 +135,7 @@ def run_kalshi_autopilot(
     failure_remediation_timeout_cap_seconds: float = 45.0,
     preflight_run_dns_doctor: bool = True,
     preflight_run_live_smoke: bool = True,
+    preflight_live_smoke_include_odds_provider_check: bool = False,
     preflight_run_ws_state_collect: bool = True,
     ws_collect_run_seconds: float = 45.0,
     ws_collect_max_events: int = 250,
@@ -233,7 +234,7 @@ def run_kalshi_autopilot(
                 env_file=env_file,
                 output_dir=output_dir,
                 timeout_seconds=attempt_timeout_seconds,
-                include_odds_provider_check=True,
+                include_odds_provider_check=preflight_live_smoke_include_odds_provider_check,
             )
             smoke_status = _as_status(attempt_smoke_summary.get("status"))
             if smoke_status != "passed":
@@ -419,6 +420,7 @@ def run_kalshi_autopilot(
         "preflight_self_heal_pause_seconds": safe_preflight_self_heal_pause_seconds,
         "preflight_self_heal_upstream_only": preflight_self_heal_upstream_only,
         "preflight_self_heal_run_dns_doctor": preflight_self_heal_run_dns_doctor,
+        "preflight_live_smoke_include_odds_provider_check": preflight_live_smoke_include_odds_provider_check,
         "preflight_retry_timeout_multiplier": safe_preflight_retry_timeout_multiplier,
         "preflight_retry_timeout_cap_seconds": safe_preflight_retry_timeout_cap_seconds,
         "preflight_retry_ws_collect_increment_seconds": safe_preflight_retry_ws_collect_increment_seconds,

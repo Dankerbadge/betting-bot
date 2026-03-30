@@ -349,6 +349,30 @@ class KalshiWatchdogTests(unittest.TestCase):
             self.assertEqual(run_summary["autopilot_attempts"][0]["ws_collect_run_seconds"], 40.0)
             self.assertEqual(run_summary["autopilot_attempts"][1]["ws_collect_run_seconds"], 65.0)
 
+    def test_watchdog_passes_live_smoke_odds_flag_to_autopilot(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            env_file = base / "env.txt"
+            env_file.write_text("KALSHI_ENV=prod\n", encoding="utf-8")
+            include_odds_flags: list[bool] = []
+
+            def fake_autopilot(**kwargs: Any) -> dict[str, Any]:
+                include_odds_flags.append(bool(kwargs["preflight_live_smoke_include_odds_provider_check"]))
+                return _healthy_autopilot_summary(base, str(len(include_odds_flags)))
+
+            run_kalshi_watchdog(
+                env_file=str(env_file),
+                output_dir=str(base),
+                allow_live_orders=False,
+                loops=1,
+                preflight_live_smoke_include_odds_provider_check=True,
+                autopilot_runner=fake_autopilot,
+                sleep_fn=lambda _seconds: None,
+                now=datetime(2026, 3, 30, 4, 0, tzinfo=timezone.utc),
+            )
+
+            self.assertEqual(include_odds_flags, [True])
+
 
 if __name__ == "__main__":
     unittest.main()
