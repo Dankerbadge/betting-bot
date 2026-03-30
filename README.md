@@ -300,6 +300,26 @@ Output:
 
 - `outputs/live_smoke_*.json`
 
+## DNS Doctor And Recovery
+
+DNS outages are now handled as a recoverable network class on both HTTP and websocket paths. When system DNS resolution fails, the bot can resolve supported hosts (Kalshi/TheRundown/weather) against public resolvers and retry automatically.
+
+Use `dns-doctor` to verify host health before live cycles:
+
+```bash
+python -m betbot.cli dns-doctor \
+  --env-file data/research/account_onboarding.local.env
+```
+
+Output:
+
+- `outputs/dns_doctor_*.json`
+
+Optional controls:
+
+- `BETBOT_DISABLE_DNS_RECOVERY=1` disables recovery fallback.
+- `BETBOT_DNS_RECOVERY_ALL_HOSTS=1` enables recovery fallback for every hostname (not just supported trading/data hosts).
+
 ## Live Snapshot
 
 Use `live-snapshot` when you want a read-only JSON artifact with your current Kalshi balance plus a preview of the sports catalog from TheRundown.
