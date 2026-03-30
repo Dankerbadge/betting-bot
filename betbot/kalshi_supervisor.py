@@ -8,7 +8,7 @@ import time
 from typing import Any, Callable
 from urllib.error import URLError
 
-from betbot.dns_guard import run_dns_doctor
+from betbot.dns_guard import is_dns_resolution_error, run_dns_doctor
 from betbot.kalshi_arb_scan import run_kalshi_arb_scan
 from betbot.kalshi_micro_execute import _http_request_json
 from betbot.kalshi_micro_prior_trader import run_kalshi_micro_prior_trader
@@ -167,7 +167,7 @@ def _read_exchange_status(
                 break
             except URLError as exc:
                 network_error = str(exc.reason)
-                dns_error = "nodename nor servname" in network_error.lower() or "name or service not known" in network_error.lower()
+                dns_error = is_dns_resolution_error(exc)
                 if attempt >= max_retries:
                     status_code = None
                     payload = {"error": f"network_error: {network_error}"}
@@ -300,6 +300,8 @@ def run_kalshi_supervisor(
     exchange_status_self_heal_attempts: int = 2,
     exchange_status_self_heal_pause_seconds: float = 10.0,
     exchange_status_run_dns_doctor: bool = True,
+    exchange_status_self_heal_timeout_multiplier: float = 1.5,
+    exchange_status_self_heal_timeout_cap_seconds: float = 45.0,
     run_arb_scan_each_cycle: bool = True,
     dns_doctor_runner: DnsDoctorRunner = run_dns_doctor,
     http_get_json: HttpGetter = _http_get_json,
@@ -324,6 +326,11 @@ def run_kalshi_supervisor(
     base_backoff_seconds = max(0.0, failure_remediation_backoff_seconds)
     exchange_status_heal_attempts = max(0, int(exchange_status_self_heal_attempts))
     exchange_status_heal_pause_seconds = max(0.0, float(exchange_status_self_heal_pause_seconds))
+    exchange_status_heal_timeout_multiplier = max(1.0, float(exchange_status_self_heal_timeout_multiplier))
+    exchange_status_heal_timeout_cap_seconds = max(
+        max(0.25, float(timeout_seconds)),
+        float(exchange_status_self_heal_timeout_cap_seconds),
+    )
     cycle_summaries: list[dict[str, Any]] = []
     cycles_with_failures = 0
     cycles_with_unremediated_failures = 0
@@ -342,6 +349,11 @@ def run_kalshi_supervisor(
         exchange_status_remediation_attempts_used = 0
         if allow_live_orders and _exchange_status_has_upstream_issue(exchange_status):
             for remediation_index in range(exchange_status_heal_attempts):
+                remediation_timeout_seconds = min(
+                    max(0.25, float(timeout_seconds))
+                    * (exchange_status_heal_timeout_multiplier ** (remediation_index + 1)),
+                    exchange_status_heal_timeout_cap_seconds,
+                )
                 exchange_status_remediation_applied = True
                 remediation_dns_summary: dict[str, Any] | None = None
                 remediation_dns_error: str | None = None
@@ -350,7 +362,7 @@ def run_kalshi_supervisor(
                         remediation_dns_summary = dns_doctor_runner(
                             env_file=env_file,
                             output_dir=effective_output_dir,
-                            timeout_seconds=max(0.25, min(3.0, timeout_seconds / 6.0)),
+                            timeout_seconds=max(0.25, min(3.0, remediation_timeout_seconds / 6.0)),
                         )
                     except Exception as exc:  # pragma: no cover - defensive runtime path
                         remediation_dns_error = str(exc)
@@ -358,7 +370,7 @@ def run_kalshi_supervisor(
                     time.sleep(exchange_status_heal_pause_seconds)
                 exchange_status = _read_exchange_status(
                     env_file=env_file,
-                    timeout_seconds=timeout_seconds,
+                    timeout_seconds=remediation_timeout_seconds,
                     http_get_json=throttled_get,
                 )
                 exchange_status_history.append(exchange_status)
@@ -369,6 +381,8 @@ def run_kalshi_supervisor(
                         "dns_doctor_status": (remediation_dns_summary or {}).get("status"),
                         "dns_doctor_output_file": (remediation_dns_summary or {}).get("output_file"),
                         "dns_doctor_error": remediation_dns_error,
+                        "dns_doctor_timeout_seconds": max(0.25, min(3.0, remediation_timeout_seconds / 6.0)),
+                        "retry_timeout_seconds": remediation_timeout_seconds,
                         "sleep_seconds": exchange_status_heal_pause_seconds,
                         "exchange_status_http": exchange_status.get("http_status"),
                         "exchange_dns_error": exchange_status.get("dns_error"),
@@ -662,6 +676,8 @@ def run_kalshi_supervisor(
         "exchange_status_self_heal_attempts": exchange_status_heal_attempts,
         "exchange_status_self_heal_pause_seconds": exchange_status_heal_pause_seconds,
         "exchange_status_run_dns_doctor": exchange_status_run_dns_doctor,
+        "exchange_status_self_heal_timeout_multiplier": exchange_status_heal_timeout_multiplier,
+        "exchange_status_self_heal_timeout_cap_seconds": exchange_status_heal_timeout_cap_seconds,
         "cycles_with_failures": cycles_with_failures,
         "cycles_with_remediation": cycles_with_remediation,
         "cycles_with_unremediated_failures": cycles_with_unremediated_failures,

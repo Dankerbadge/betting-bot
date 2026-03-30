@@ -216,6 +216,25 @@ def _ws_root_for_env(env_name: str) -> str:
     return _ws_roots_for_env(env_name)[0]
 
 
+def _classify_ws_error(error: Any) -> str:
+    text = str(error or "").strip().lower()
+    if not text:
+        return "unknown_error"
+    if "nodename nor servname" in text or "name or service not known" in text or "temporary failure in name resolution" in text:
+        return "dns_resolution_error"
+    if "timed out" in text or "timeout" in text:
+        return "timeout"
+    if "status 429" in text or "rate limit" in text:
+        return "rate_limited"
+    if "ssl" in text or "tls" in text or "certificate" in text:
+        return "tls_error"
+    if "connection refused" in text or "connection reset" in text or "urlopen error" in text or "network" in text:
+        return "network_error"
+    if "status " in text:
+        return "http_error"
+    return "upstream_error"
+
+
 def _normalize_levels(levels: Any) -> list[list[str]]:
     normalized: list[list[str]] = []
     if not isinstance(levels, list):
@@ -1022,6 +1041,22 @@ def run_kalshi_ws_state_collect(
     events_path = Path(ws_events_ndjson) if ws_events_ndjson else out_dir / f"kalshi_ws_events_{stamp}.ndjson"
     events_path.parent.mkdir(parents=True, exist_ok=True)
     state_path = Path(ws_state_json) if ws_state_json else default_ws_state_path(output_dir)
+    prior_ready_state_payload: dict[str, Any] | None = None
+    prior_ready_state_authority: dict[str, Any] | None = None
+    if state_path.exists():
+        try:
+            prior_payload_candidate = json.loads(state_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            prior_payload_candidate = None
+        if isinstance(prior_payload_candidate, dict):
+            prior_authority_candidate = load_ws_state_authority(
+                ws_state_json=state_path,
+                captured_at=started_at,
+                max_staleness_seconds=max_staleness_seconds,
+            )
+            if bool(prior_authority_candidate.get("gate_pass")):
+                prior_ready_state_payload = prior_payload_candidate
+                prior_ready_state_authority = prior_authority_candidate
 
     engine = KalshiWsStateEngine(max_staleness_seconds=max_staleness_seconds)
     capture_started = time.monotonic()
@@ -1034,9 +1069,12 @@ def run_kalshi_ws_state_collect(
     subscription_requests = 0
     subscription_errors = 0
     last_error = ""
+    last_error_kind = ""
     ws_urls_attempted: list[str] = []
     ws_url_used = ""
     ws_url_failover_errors: list[str] = []
+    ws_url_failover_error_kind_counts: dict[str, int] = {}
+    ws_url_failover_error_counts_by_url: dict[str, int] = {}
 
     with events_path.open("a", encoding="utf-8") as events_handle:
         while time.monotonic() < capture_deadline:
@@ -1072,7 +1110,14 @@ def run_kalshi_ws_state_collect(
                     break
                 except (ConnectionError, OSError, socket.timeout, ValueError, RuntimeError) as exc:
                     last_error = str(exc)
+                    last_error_kind = _classify_ws_error(exc)
                     ws_url_failover_errors.append(f"{candidate_ws_url}: {last_error}")
+                    ws_url_failover_error_kind_counts[last_error_kind] = (
+                        ws_url_failover_error_kind_counts.get(last_error_kind, 0) + 1
+                    )
+                    ws_url_failover_error_counts_by_url[candidate_ws_url] = (
+                        ws_url_failover_error_counts_by_url.get(candidate_ws_url, 0) + 1
+                    )
                     try:
                         candidate_client.close()
                     except Exception:
@@ -1147,6 +1192,7 @@ def run_kalshi_ws_state_collect(
                 break
             except (ConnectionError, OSError, socket.timeout, ValueError, RuntimeError) as exc:
                 last_error = str(exc)
+                last_error_kind = _classify_ws_error(exc)
                 # Count failed handshakes toward the reconnect budget so upstream
                 # DNS/TLS outages do not spin until the full run window expires.
                 reconnects += 1
@@ -1168,9 +1214,27 @@ def run_kalshi_ws_state_collect(
         summary_payload = state_payload.get("summary")
         if isinstance(summary_payload, dict):
             summary_payload["last_error"] = last_error
+            summary_payload["last_error_kind"] = last_error_kind or _classify_ws_error(last_error)
             if int(summary_payload.get("market_count") or 0) <= 0 and int(summary_payload.get("events_processed") or 0) <= 0:
                 summary_payload["status"] = "upstream_error"
                 summary_payload["gate_pass"] = False
+    collection_status = ""
+    collection_gate_pass = False
+    summary_payload = state_payload.get("summary")
+    if isinstance(summary_payload, dict):
+        collection_status = str(summary_payload.get("status") or "").strip().lower()
+        collection_gate_pass = bool(summary_payload.get("gate_pass"))
+
+    fallback_state_used = False
+    fallback_state_reason = ""
+    fallback_state_last_event_age_seconds: float | str = ""
+    collection_failed = collection_status == "upstream_error" or (collection_status == "empty" and bool(last_error))
+    if collection_failed and prior_ready_state_payload is not None and prior_ready_state_authority is not None:
+        state_payload = prior_ready_state_payload
+        fallback_state_used = True
+        fallback_state_reason = "preserved_previous_ready_state"
+        fallback_state_last_event_age_seconds = prior_ready_state_authority.get("last_event_age_seconds") or ""
+
     _write_json_atomic(state_path, state_payload)
     summary = {
         "captured_at": finished_at.isoformat(),
@@ -1197,10 +1261,20 @@ def run_kalshi_ws_state_collect(
         "ws_events_ndjson": str(events_path),
         "ws_state_json": str(state_path),
         "last_error": last_error,
+        "last_error_kind": last_error_kind or (_classify_ws_error(last_error) if last_error else ""),
+        "status_before_fallback": collection_status,
+        "gate_pass_before_fallback": collection_gate_pass,
+        "fallback_state_used": fallback_state_used,
+        "fallback_state_reason": fallback_state_reason,
+        "fallback_state_last_event_age_seconds": fallback_state_last_event_age_seconds,
         **state_payload.get("summary", {}),
     }
     if ws_url_failover_errors:
         summary["ws_url_failover_errors"] = ws_url_failover_errors
+    if ws_url_failover_error_kind_counts:
+        summary["ws_url_failover_error_kind_counts"] = ws_url_failover_error_kind_counts
+    if ws_url_failover_error_counts_by_url:
+        summary["ws_url_failover_error_counts_by_url"] = ws_url_failover_error_counts_by_url
     summary_path = out_dir / f"kalshi_ws_state_collect_summary_{stamp}.json"
     summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
     summary["output_file"] = str(summary_path)
@@ -1243,6 +1317,7 @@ def load_ws_state_authority(
     summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else payload
     status = str(summary.get("status") or "").strip().lower()
     last_error = str(payload.get("last_error") or summary.get("last_error") or "").strip()
+    last_error_kind = str(payload.get("last_error_kind") or summary.get("last_error_kind") or "").strip().lower()
     market_count = int(_parse_int(summary.get("market_count")) or 0)
     desynced_count = int(_parse_int(summary.get("desynced_market_count")) or 0)
     last_event_at = _parse_ts(summary.get("last_event_at"))
@@ -1281,6 +1356,7 @@ def load_ws_state_authority(
         "status": status,
         "gate_pass": gate_pass,
         "reason": reason_by_status.get(status, f"ws_state_{status}"),
+        "last_error_kind": last_error_kind or (_classify_ws_error(last_error) if last_error else ""),
         "market_count": market_count,
         "desynced_market_count": desynced_count,
         "last_event_at": last_event_at.isoformat() if last_event_at is not None else "",

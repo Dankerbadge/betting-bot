@@ -157,6 +157,79 @@ class KalshiAutopilotTests(unittest.TestCase):
             self.assertEqual(summary["preflight_dns_remediation_skipped_runs"], 1)
             self.assertTrue(supervisor_kwargs["allow_live_orders"])
 
+    def test_run_kalshi_autopilot_scales_retry_timeout_and_ws_collect_window(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            env_file = base / "env.txt"
+            env_file.write_text("KALSHI_ENV=prod\n", encoding="utf-8")
+
+            smoke_calls = 0
+            smoke_timeouts: list[float] = []
+            ws_run_seconds: list[float] = []
+            supervisor_kwargs: dict[str, Any] = {}
+
+            def fake_live_smoke(**kwargs: Any) -> dict[str, Any]:
+                nonlocal smoke_calls
+                smoke_calls += 1
+                smoke_timeouts.append(float(kwargs["timeout_seconds"]))
+                if smoke_calls == 1:
+                    return {
+                        "status": "upstream_error",
+                        "checks_failed": ["kalshi"],
+                        "output_file": str(base / "smoke_fail.json"),
+                    }
+                return {
+                    "status": "passed",
+                    "checks_failed": [],
+                    "output_file": str(base / "smoke_pass.json"),
+                }
+
+            def fake_ws_collect(**kwargs: Any) -> dict[str, Any]:
+                ws_run_seconds.append(float(kwargs["run_seconds"]))
+                return {
+                    "status": "ready",
+                    "gate_pass": True,
+                    "events_logged": 12,
+                    "ws_url_used": "wss://api.elections.kalshi.com/trade-api/ws/v2",
+                    "output_file": str(base / "ws.json"),
+                    "ws_state_json": str(base / "kalshi_ws_state_latest.json"),
+                }
+
+            def fake_supervisor(**kwargs: Any) -> dict[str, Any]:
+                supervisor_kwargs.update(kwargs)
+                return {
+                    "status": "ready",
+                    "cycles_with_failures": 0,
+                    "cycles_with_unremediated_failures": 0,
+                    "output_file": str(base / "kalshi_supervisor_summary.json"),
+                }
+
+            summary = run_kalshi_autopilot(
+                env_file=str(env_file),
+                output_dir=str(base),
+                allow_live_orders=True,
+                timeout_seconds=10.0,
+                preflight_self_heal_attempts=1,
+                preflight_self_heal_pause_seconds=0.0,
+                preflight_retry_timeout_multiplier=2.0,
+                preflight_retry_timeout_cap_seconds=30.0,
+                ws_collect_run_seconds=40.0,
+                preflight_retry_ws_collect_increment_seconds=20.0,
+                preflight_retry_ws_collect_max_seconds=70.0,
+                preflight_run_dns_doctor=False,
+                live_smoke_runner=fake_live_smoke,
+                ws_collect_runner=fake_ws_collect,
+                supervisor_runner=fake_supervisor,
+                now=datetime(2026, 3, 30, 1, 10, tzinfo=timezone.utc),
+            )
+
+            self.assertEqual(summary["status"], "ready")
+            self.assertEqual(smoke_timeouts, [10.0, 20.0])
+            self.assertEqual(ws_run_seconds, [40.0, 60.0])
+            self.assertEqual(summary["preflight_attempts_total"], 2)
+            self.assertEqual(summary["effective_supervisor_timeout_seconds"], 20.0)
+            self.assertEqual(supervisor_kwargs["timeout_seconds"], 20.0)
+
     def test_run_kalshi_autopilot_allows_live_when_preflight_ready(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)

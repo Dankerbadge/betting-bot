@@ -46,6 +46,30 @@ class KalshiSupervisorTests(unittest.TestCase):
             self.assertGreaterEqual(mock_sleep.call_count, 2)
             self.assertGreaterEqual(len(status.get("api_roots_attempted", [])), 1)
 
+    def test_read_exchange_status_flags_temporary_failure_dns_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            env_file = base / "env.txt"
+            env_file.write_text("KALSHI_ENV=prod\n", encoding="utf-8")
+
+            def fake_http_get_json(
+                url: str,
+                headers: dict[str, str],
+                timeout_seconds: float,
+            ) -> tuple[int, object]:
+                raise URLError("[Errno -3] Temporary failure in name resolution")
+
+            with patch("betbot.kalshi_supervisor.time.sleep"):
+                status = _read_exchange_status(
+                    env_file=str(env_file),
+                    timeout_seconds=5.0,
+                    http_get_json=fake_http_get_json,
+                )
+
+            self.assertIsNone(status["http_status"])
+            self.assertTrue(status["dns_error"])
+            self.assertIn("temporary failure in name resolution", str(status["network_error"]).lower())
+
     def test_read_exchange_status_retries_then_succeeds(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
@@ -123,6 +147,8 @@ class KalshiSupervisorTests(unittest.TestCase):
             env_file.write_text("KALSHI_ENV=prod\n", encoding="utf-8")
             attempts = 0
             dns_calls = 0
+            dns_timeouts: list[float] = []
+            seen_timeouts: list[float] = []
 
             def fake_http_get_json(
                 url: str,
@@ -131,6 +157,7 @@ class KalshiSupervisorTests(unittest.TestCase):
             ) -> tuple[int, object]:
                 nonlocal attempts
                 attempts += 1
+                seen_timeouts.append(float(timeout_seconds))
                 if attempts <= 6:
                     raise URLError("[Errno 8] nodename nor servname provided, or not known")
                 return 200, {"trading_active": True}
@@ -138,6 +165,7 @@ class KalshiSupervisorTests(unittest.TestCase):
             def fake_dns_doctor(**kwargs: Any) -> dict[str, Any]:
                 nonlocal dns_calls
                 dns_calls += 1
+                dns_timeouts.append(float(kwargs["timeout_seconds"]))
                 return {"status": "passed", "output_file": str(base / "dns_doctor.json")}
 
             with patch("betbot.kalshi_supervisor.run_kalshi_micro_prior_trader") as mock_trader:
@@ -150,8 +178,11 @@ class KalshiSupervisorTests(unittest.TestCase):
                     output_dir=str(base),
                     cycles=1,
                     allow_live_orders=True,
+                    timeout_seconds=10.0,
                     exchange_status_self_heal_attempts=1,
                     exchange_status_self_heal_pause_seconds=0.0,
+                    exchange_status_self_heal_timeout_multiplier=2.0,
+                    exchange_status_self_heal_timeout_cap_seconds=25.0,
                     run_arb_scan_each_cycle=False,
                     dns_doctor_runner=fake_dns_doctor,
                     http_get_json=fake_http_get_json,
@@ -166,6 +197,10 @@ class KalshiSupervisorTests(unittest.TestCase):
             self.assertTrue(cycle["exchange_status_remediation_recovered"])
             self.assertEqual(cycle["exchange_status_remediation_attempts_used"], 1)
             self.assertGreaterEqual(len(cycle["exchange_status_history"]), 2)
+            self.assertIn(20.0, seen_timeouts)
+            self.assertEqual(dns_timeouts, [3.0])
+            self.assertEqual(cycle["exchange_status_remediation_actions"][0]["retry_timeout_seconds"], 20.0)
+            self.assertEqual(cycle["exchange_status_remediation_actions"][0]["dns_doctor_timeout_seconds"], 3.0)
 
     def test_run_kalshi_supervisor_normalizes_file_like_output_dir(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

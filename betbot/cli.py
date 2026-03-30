@@ -2291,6 +2291,18 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Disable DNS-doctor remediation before exchange-status retry attempts",
     )
+    kalshi_supervisor.add_argument(
+        "--exchange-status-self-heal-timeout-multiplier",
+        type=float,
+        default=1.5,
+        help="Multiplier applied to exchange-status timeout on each remediation retry",
+    )
+    kalshi_supervisor.add_argument(
+        "--exchange-status-self-heal-timeout-cap-seconds",
+        type=float,
+        default=45.0,
+        help="Maximum timeout used during exchange-status remediation retries",
+    )
     kalshi_supervisor.add_argument("--output-dir", default="outputs", help="Output directory")
 
     kalshi_autopilot = subparsers.add_parser(
@@ -2439,6 +2451,30 @@ def build_parser() -> argparse.ArgumentParser:
         "--disable-preflight-self-heal-dns-remediation",
         action="store_true",
         help="Disable remediation DNS-doctor runs between preflight retries",
+    )
+    kalshi_autopilot.add_argument(
+        "--preflight-retry-timeout-multiplier",
+        type=float,
+        default=1.5,
+        help="Multiplier applied to preflight timeout on each retry attempt",
+    )
+    kalshi_autopilot.add_argument(
+        "--preflight-retry-timeout-cap-seconds",
+        type=float,
+        default=45.0,
+        help="Maximum timeout used by adaptive preflight retries",
+    )
+    kalshi_autopilot.add_argument(
+        "--preflight-retry-ws-collect-increment-seconds",
+        type=float,
+        default=15.0,
+        help="Additional websocket collection window added per preflight retry",
+    )
+    kalshi_autopilot.add_argument(
+        "--preflight-retry-ws-collect-max-seconds",
+        type=float,
+        default=180.0,
+        help="Maximum websocket collection window used by adaptive preflight retries",
     )
     kalshi_autopilot.add_argument(
         "--disable-progressive-scaling",
@@ -2658,6 +2694,30 @@ def build_parser() -> argparse.ArgumentParser:
         "--disable-preflight-self-heal-dns-remediation",
         action="store_true",
         help="Disable remediation DNS-doctor runs between preflight retries",
+    )
+    kalshi_watchdog.add_argument(
+        "--preflight-retry-timeout-multiplier",
+        type=float,
+        default=1.5,
+        help="Multiplier applied to preflight timeout on each retry attempt",
+    )
+    kalshi_watchdog.add_argument(
+        "--preflight-retry-timeout-cap-seconds",
+        type=float,
+        default=45.0,
+        help="Maximum timeout used by adaptive preflight retries",
+    )
+    kalshi_watchdog.add_argument(
+        "--preflight-retry-ws-collect-increment-seconds",
+        type=float,
+        default=15.0,
+        help="Additional websocket collection window added per preflight retry",
+    )
+    kalshi_watchdog.add_argument(
+        "--preflight-retry-ws-collect-max-seconds",
+        type=float,
+        default=180.0,
+        help="Maximum websocket collection window used by adaptive preflight retries",
     )
     kalshi_watchdog.add_argument(
         "--disable-progressive-scaling",
@@ -4224,6 +4284,8 @@ def main() -> None:
             exchange_status_self_heal_attempts=args.exchange_status_self_heal_attempts,
             exchange_status_self_heal_pause_seconds=args.exchange_status_self_heal_pause_seconds,
             exchange_status_run_dns_doctor=not args.disable_exchange_status_dns_remediation,
+            exchange_status_self_heal_timeout_multiplier=args.exchange_status_self_heal_timeout_multiplier,
+            exchange_status_self_heal_timeout_cap_seconds=args.exchange_status_self_heal_timeout_cap_seconds,
             run_arb_scan_each_cycle=not args.disable_arb_scan,
             include_incentives=not args.disable_incentives,
             auto_refresh_priors=not args.disable_auto_refresh_priors,
@@ -4267,6 +4329,10 @@ def main() -> None:
             preflight_self_heal_pause_seconds=args.preflight_self_heal_pause_seconds,
             preflight_self_heal_upstream_only=not args.disable_preflight_self_heal_upstream_only,
             preflight_self_heal_run_dns_doctor=not args.disable_preflight_self_heal_dns_remediation,
+            preflight_retry_timeout_multiplier=args.preflight_retry_timeout_multiplier,
+            preflight_retry_timeout_cap_seconds=args.preflight_retry_timeout_cap_seconds,
+            preflight_retry_ws_collect_increment_seconds=args.preflight_retry_ws_collect_increment_seconds,
+            preflight_retry_ws_collect_max_seconds=args.preflight_retry_ws_collect_max_seconds,
             enable_progressive_scaling=not args.disable_progressive_scaling,
             scaling_lookback_runs=args.scaling_lookback_runs,
             scaling_green_runs_per_step=args.scaling_green_runs_per_step,
@@ -4311,6 +4377,10 @@ def main() -> None:
             preflight_self_heal_pause_seconds=args.preflight_self_heal_pause_seconds,
             preflight_self_heal_upstream_only=not args.disable_preflight_self_heal_upstream_only,
             preflight_self_heal_run_dns_doctor=not args.disable_preflight_self_heal_dns_remediation,
+            preflight_retry_timeout_multiplier=args.preflight_retry_timeout_multiplier,
+            preflight_retry_timeout_cap_seconds=args.preflight_retry_timeout_cap_seconds,
+            preflight_retry_ws_collect_increment_seconds=args.preflight_retry_ws_collect_increment_seconds,
+            preflight_retry_ws_collect_max_seconds=args.preflight_retry_ws_collect_max_seconds,
             enable_progressive_scaling=not args.disable_progressive_scaling,
             scaling_lookback_runs=args.scaling_lookback_runs,
             scaling_green_runs_per_step=args.scaling_green_runs_per_step,

@@ -142,6 +142,10 @@ def run_kalshi_autopilot(
     preflight_self_heal_pause_seconds: float = 10.0,
     preflight_self_heal_upstream_only: bool = True,
     preflight_self_heal_run_dns_doctor: bool = True,
+    preflight_retry_timeout_multiplier: float = 1.5,
+    preflight_retry_timeout_cap_seconds: float = 45.0,
+    preflight_retry_ws_collect_increment_seconds: float = 15.0,
+    preflight_retry_ws_collect_max_seconds: float = 180.0,
     enable_progressive_scaling: bool = True,
     scaling_lookback_runs: int = 20,
     scaling_green_runs_per_step: int = 3,
@@ -173,6 +177,16 @@ def run_kalshi_autopilot(
 
     safe_preflight_self_heal_attempts = max(0, int(preflight_self_heal_attempts))
     safe_preflight_self_heal_pause_seconds = max(0.0, float(preflight_self_heal_pause_seconds))
+    safe_preflight_retry_timeout_multiplier = max(1.0, float(preflight_retry_timeout_multiplier))
+    safe_preflight_retry_timeout_cap_seconds = max(
+        max(0.25, float(timeout_seconds)),
+        float(preflight_retry_timeout_cap_seconds),
+    )
+    safe_preflight_retry_ws_collect_increment_seconds = max(0.0, float(preflight_retry_ws_collect_increment_seconds))
+    safe_preflight_retry_ws_collect_max_seconds = max(
+        max(1.0, float(ws_collect_run_seconds)),
+        float(preflight_retry_ws_collect_max_seconds),
+    )
 
     dns_summary: dict[str, Any] | None = None
     smoke_summary: dict[str, Any] | None = None
@@ -183,13 +197,22 @@ def run_kalshi_autopilot(
         attempt_preflight: dict[str, Any] = {}
         attempt_gate_pass = True
         attempt_blockers: list[str] = []
+        attempt_timeout_seconds = min(
+            max(0.25, float(timeout_seconds)) * (safe_preflight_retry_timeout_multiplier**preflight_attempt_index),
+            safe_preflight_retry_timeout_cap_seconds,
+        )
+        attempt_ws_collect_run_seconds = min(
+            max(1.0, float(ws_collect_run_seconds))
+            + preflight_attempt_index * safe_preflight_retry_ws_collect_increment_seconds,
+            safe_preflight_retry_ws_collect_max_seconds,
+        )
 
         attempt_dns_summary: dict[str, Any] | None = None
         if preflight_run_dns_doctor:
             attempt_dns_summary = dns_doctor_runner(
                 env_file=env_file,
                 output_dir=output_dir,
-                timeout_seconds=max(0.25, min(3.0, timeout_seconds / 6.0)),
+                timeout_seconds=max(0.25, min(3.0, attempt_timeout_seconds / 6.0)),
             )
             dns_status = _as_status(attempt_dns_summary.get("status"))
             if dns_status == "failed":
@@ -207,7 +230,7 @@ def run_kalshi_autopilot(
             attempt_smoke_summary = live_smoke_runner(
                 env_file=env_file,
                 output_dir=output_dir,
-                timeout_seconds=timeout_seconds,
+                timeout_seconds=attempt_timeout_seconds,
                 include_odds_provider_check=True,
             )
             smoke_status = _as_status(attempt_smoke_summary.get("status"))
@@ -228,7 +251,7 @@ def run_kalshi_autopilot(
                 output_dir=output_dir,
                 ws_state_json=effective_ws_state_json,
                 max_staleness_seconds=ws_state_max_age_seconds,
-                run_seconds=ws_collect_run_seconds,
+                run_seconds=attempt_ws_collect_run_seconds,
                 max_events=ws_collect_max_events,
             )
             ws_status = _as_status(attempt_ws_collect_summary.get("status"))
@@ -259,6 +282,8 @@ def run_kalshi_autopilot(
                 "gate_pass": attempt_gate_pass,
                 "upstream_incident_detected": attempt_upstream_incident,
                 "blockers": list(attempt_blockers),
+                "timeout_seconds": attempt_timeout_seconds,
+                "ws_collect_run_seconds": attempt_ws_collect_run_seconds,
                 "preflight": attempt_preflight,
             }
         )
@@ -284,7 +309,7 @@ def run_kalshi_autopilot(
             remediation_dns_summary = dns_doctor_runner(
                 env_file=env_file,
                 output_dir=output_dir,
-                timeout_seconds=max(0.25, min(3.0, timeout_seconds / 6.0)),
+                timeout_seconds=max(0.25, min(3.0, attempt_timeout_seconds / 6.0)),
             )
             preflight_dns_remediation_runs.append(
                 {
@@ -299,6 +324,17 @@ def run_kalshi_autopilot(
             time.sleep(safe_preflight_self_heal_pause_seconds)
 
     preflight_self_healed = bool(preflight_gate_pass and preflight_self_heal_used > 0)
+    effective_supervisor_timeout_seconds = max(0.25, float(timeout_seconds))
+    if preflight_attempts:
+        latest_attempt_timeout = preflight_attempts[-1].get("timeout_seconds")
+        try:
+            latest_attempt_timeout_float = float(latest_attempt_timeout)
+        except (TypeError, ValueError):
+            latest_attempt_timeout_float = effective_supervisor_timeout_seconds
+        effective_supervisor_timeout_seconds = max(
+            effective_supervisor_timeout_seconds,
+            max(0.25, latest_attempt_timeout_float),
+        )
 
     recent_runs = _recent_autopilot_runs(output_dir=out_dir, lookback=scaling_lookback_runs)
     consecutive_green_runs = _count_consecutive_green_runs(recent_runs)
@@ -337,7 +373,7 @@ def run_kalshi_autopilot(
         book_db_path=book_db_path,
         cycles=cycles,
         sleep_between_cycles_seconds=sleep_between_cycles_seconds,
-        timeout_seconds=timeout_seconds,
+        timeout_seconds=effective_supervisor_timeout_seconds,
         allow_live_orders=effective_allow_live_orders,
         planning_bankroll_dollars=planning_bankroll_dollars,
         daily_risk_cap_dollars=derived_daily_risk_cap,
@@ -377,8 +413,13 @@ def run_kalshi_autopilot(
         "preflight_self_heal_pause_seconds": safe_preflight_self_heal_pause_seconds,
         "preflight_self_heal_upstream_only": preflight_self_heal_upstream_only,
         "preflight_self_heal_run_dns_doctor": preflight_self_heal_run_dns_doctor,
+        "preflight_retry_timeout_multiplier": safe_preflight_retry_timeout_multiplier,
+        "preflight_retry_timeout_cap_seconds": safe_preflight_retry_timeout_cap_seconds,
+        "preflight_retry_ws_collect_increment_seconds": safe_preflight_retry_ws_collect_increment_seconds,
+        "preflight_retry_ws_collect_max_seconds": safe_preflight_retry_ws_collect_max_seconds,
         "preflight_self_heal_used": preflight_self_heal_used,
         "preflight_self_healed": preflight_self_healed,
+        "effective_supervisor_timeout_seconds": effective_supervisor_timeout_seconds,
         "preflight_upstream_incident_detected": preflight_upstream_incident_detected,
         "preflight_dns_remediation_runs": preflight_dns_remediation_runs,
         "preflight_dns_remediation_skipped_runs": preflight_dns_remediation_skipped_runs,
