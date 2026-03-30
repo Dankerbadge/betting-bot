@@ -5,9 +5,10 @@ from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 import time
-from typing import Any
+from typing import Any, Callable
 from urllib.error import URLError
 
+from betbot.dns_guard import run_dns_doctor
 from betbot.kalshi_arb_scan import run_kalshi_arb_scan
 from betbot.kalshi_micro_execute import _http_request_json
 from betbot.kalshi_micro_prior_trader import run_kalshi_micro_prior_trader
@@ -39,6 +40,8 @@ _ARB_FAILURE_STATUSES = {
     "rate_limited",
     "error",
 }
+
+DnsDoctorRunner = Callable[..., dict[str, Any]]
 
 
 def _resolve_output_dir(output_dir: str) -> tuple[Path, str | None]:
@@ -196,6 +199,15 @@ def _as_status(value: Any) -> str:
     return str(value or "").strip().lower()
 
 
+def _exchange_status_has_upstream_issue(exchange_status: dict[str, Any]) -> bool:
+    if bool(exchange_status.get("dns_error")):
+        return True
+    network_error = str(exchange_status.get("network_error") or "").strip().lower()
+    if network_error:
+        return True
+    return exchange_status.get("http_status") is None
+
+
 def _is_no_real_candidates_state(trader_summary: dict[str, Any]) -> bool:
     status = _as_status(trader_summary.get("status"))
     prior_execute_status = _as_status(trader_summary.get("prior_execute_status"))
@@ -285,7 +297,11 @@ def run_kalshi_supervisor(
     failure_remediation_enabled: bool = True,
     failure_remediation_max_retries: int = 2,
     failure_remediation_backoff_seconds: float = 5.0,
+    exchange_status_self_heal_attempts: int = 2,
+    exchange_status_self_heal_pause_seconds: float = 10.0,
+    exchange_status_run_dns_doctor: bool = True,
     run_arb_scan_each_cycle: bool = True,
+    dns_doctor_runner: DnsDoctorRunner = run_dns_doctor,
     http_get_json: HttpGetter = _http_get_json,
     sign_request: KalshiSigner = _kalshi_sign_request,
     now: datetime | None = None,
@@ -306,6 +322,8 @@ def run_kalshi_supervisor(
 
     max_retries = max(0, failure_remediation_max_retries)
     base_backoff_seconds = max(0.0, failure_remediation_backoff_seconds)
+    exchange_status_heal_attempts = max(0, int(exchange_status_self_heal_attempts))
+    exchange_status_heal_pause_seconds = max(0.0, float(exchange_status_self_heal_pause_seconds))
     cycle_summaries: list[dict[str, Any]] = []
     cycles_with_failures = 0
     cycles_with_unremediated_failures = 0
@@ -318,6 +336,48 @@ def run_kalshi_supervisor(
             http_get_json=throttled_get,
         )
         exchange_status_history: list[dict[str, Any]] = [exchange_status]
+        exchange_status_remediation_actions: list[dict[str, Any]] = []
+        exchange_status_remediation_applied = False
+        exchange_status_remediation_recovered = False
+        exchange_status_remediation_attempts_used = 0
+        if allow_live_orders and _exchange_status_has_upstream_issue(exchange_status):
+            for remediation_index in range(exchange_status_heal_attempts):
+                exchange_status_remediation_applied = True
+                remediation_dns_summary: dict[str, Any] | None = None
+                remediation_dns_error: str | None = None
+                if exchange_status_run_dns_doctor:
+                    try:
+                        remediation_dns_summary = dns_doctor_runner(
+                            env_file=env_file,
+                            output_dir=effective_output_dir,
+                            timeout_seconds=max(0.25, min(3.0, timeout_seconds / 6.0)),
+                        )
+                    except Exception as exc:  # pragma: no cover - defensive runtime path
+                        remediation_dns_error = str(exc)
+                if exchange_status_heal_pause_seconds > 0:
+                    time.sleep(exchange_status_heal_pause_seconds)
+                exchange_status = _read_exchange_status(
+                    env_file=env_file,
+                    timeout_seconds=timeout_seconds,
+                    http_get_json=throttled_get,
+                )
+                exchange_status_history.append(exchange_status)
+                exchange_status_remediation_attempts_used += 1
+                exchange_status_remediation_actions.append(
+                    {
+                        "attempt": remediation_index + 1,
+                        "dns_doctor_status": (remediation_dns_summary or {}).get("status"),
+                        "dns_doctor_output_file": (remediation_dns_summary or {}).get("output_file"),
+                        "dns_doctor_error": remediation_dns_error,
+                        "sleep_seconds": exchange_status_heal_pause_seconds,
+                        "exchange_status_http": exchange_status.get("http_status"),
+                        "exchange_dns_error": exchange_status.get("dns_error"),
+                        "exchange_network_error": exchange_status.get("network_error"),
+                    }
+                )
+                if not _exchange_status_has_upstream_issue(exchange_status):
+                    exchange_status_remediation_recovered = True
+                    break
         cycle_live_enabled = allow_live_orders and bool(exchange_status.get("trading_active"))
 
         trader_attempts: list[dict[str, Any]] = []
@@ -527,6 +587,11 @@ def run_kalshi_supervisor(
                 "started_at": cycle_started_at.isoformat(),
                 "exchange_status": exchange_status,
                 "exchange_status_history": exchange_status_history,
+                "exchange_status_remediation_applied": exchange_status_remediation_applied,
+                "exchange_status_remediation_recovered": exchange_status_remediation_recovered,
+                "exchange_status_remediation_attempts_used": exchange_status_remediation_attempts_used,
+                "exchange_status_remediation_attempts_max": exchange_status_heal_attempts,
+                "exchange_status_remediation_actions": exchange_status_remediation_actions,
                 "live_orders_requested": allow_live_orders,
                 "live_orders_enabled_for_cycle": cycle_live_enabled,
                 "prior_trader_status": trader_summary.get("status"),
@@ -594,6 +659,9 @@ def run_kalshi_supervisor(
         "failure_remediation_enabled": failure_remediation_enabled,
         "failure_remediation_max_retries": max_retries,
         "failure_remediation_backoff_seconds": base_backoff_seconds,
+        "exchange_status_self_heal_attempts": exchange_status_heal_attempts,
+        "exchange_status_self_heal_pause_seconds": exchange_status_heal_pause_seconds,
+        "exchange_status_run_dns_doctor": exchange_status_run_dns_doctor,
         "cycles_with_failures": cycles_with_failures,
         "cycles_with_remediation": cycles_with_remediation,
         "cycles_with_unremediated_failures": cycles_with_unremediated_failures,

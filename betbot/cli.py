@@ -2274,6 +2274,23 @@ def build_parser() -> argparse.ArgumentParser:
         default=15.0,
         help="HTTP timeout for reads or writes",
     )
+    kalshi_supervisor.add_argument(
+        "--exchange-status-self-heal-attempts",
+        type=int,
+        default=2,
+        help="Remediation retries when exchange status is unavailable due to upstream issues",
+    )
+    kalshi_supervisor.add_argument(
+        "--exchange-status-self-heal-pause-seconds",
+        type=float,
+        default=10.0,
+        help="Pause between exchange-status remediation retries",
+    )
+    kalshi_supervisor.add_argument(
+        "--disable-exchange-status-dns-remediation",
+        action="store_true",
+        help="Disable DNS-doctor remediation before exchange-status retry attempts",
+    )
     kalshi_supervisor.add_argument("--output-dir", default="outputs", help="Output directory")
 
     kalshi_autopilot = subparsers.add_parser(
@@ -2400,6 +2417,28 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=30.0,
         help="Maximum allowed websocket-state age before live orders are blocked",
+    )
+    kalshi_autopilot.add_argument(
+        "--preflight-self-heal-attempts",
+        type=int,
+        default=2,
+        help="In-run preflight remediation retries before forcing dry-run",
+    )
+    kalshi_autopilot.add_argument(
+        "--preflight-self-heal-pause-seconds",
+        type=float,
+        default=10.0,
+        help="Pause between preflight remediation retries",
+    )
+    kalshi_autopilot.add_argument(
+        "--disable-preflight-self-heal-upstream-only",
+        action="store_true",
+        help="Allow preflight remediation retries for non-upstream failures too",
+    )
+    kalshi_autopilot.add_argument(
+        "--disable-preflight-self-heal-dns-remediation",
+        action="store_true",
+        help="Disable remediation DNS-doctor runs between preflight retries",
     )
     kalshi_autopilot.add_argument(
         "--disable-progressive-scaling",
@@ -2597,6 +2636,28 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=30.0,
         help="Maximum allowed websocket-state age before live orders are blocked",
+    )
+    kalshi_watchdog.add_argument(
+        "--preflight-self-heal-attempts",
+        type=int,
+        default=2,
+        help="In-run preflight remediation retries inside autopilot before forcing dry-run",
+    )
+    kalshi_watchdog.add_argument(
+        "--preflight-self-heal-pause-seconds",
+        type=float,
+        default=10.0,
+        help="Pause between preflight remediation retries inside autopilot",
+    )
+    kalshi_watchdog.add_argument(
+        "--disable-preflight-self-heal-upstream-only",
+        action="store_true",
+        help="Allow preflight remediation retries for non-upstream failures too",
+    )
+    kalshi_watchdog.add_argument(
+        "--disable-preflight-self-heal-dns-remediation",
+        action="store_true",
+        help="Disable remediation DNS-doctor runs between preflight retries",
     )
     kalshi_watchdog.add_argument(
         "--disable-progressive-scaling",
@@ -4160,6 +4221,9 @@ def main() -> None:
             failure_remediation_enabled=not args.disable_failure_remediation,
             failure_remediation_max_retries=args.failure_remediation_max_retries,
             failure_remediation_backoff_seconds=args.failure_remediation_backoff_seconds,
+            exchange_status_self_heal_attempts=args.exchange_status_self_heal_attempts,
+            exchange_status_self_heal_pause_seconds=args.exchange_status_self_heal_pause_seconds,
+            exchange_status_run_dns_doctor=not args.disable_exchange_status_dns_remediation,
             run_arb_scan_each_cycle=not args.disable_arb_scan,
             include_incentives=not args.disable_incentives,
             auto_refresh_priors=not args.disable_auto_refresh_priors,
@@ -4199,6 +4263,10 @@ def main() -> None:
             ws_collect_max_events=args.ws_collect_max_events,
             ws_state_json=args.ws_state_json,
             ws_state_max_age_seconds=args.ws_state_max_age_seconds,
+            preflight_self_heal_attempts=args.preflight_self_heal_attempts,
+            preflight_self_heal_pause_seconds=args.preflight_self_heal_pause_seconds,
+            preflight_self_heal_upstream_only=not args.disable_preflight_self_heal_upstream_only,
+            preflight_self_heal_run_dns_doctor=not args.disable_preflight_self_heal_dns_remediation,
             enable_progressive_scaling=not args.disable_progressive_scaling,
             scaling_lookback_runs=args.scaling_lookback_runs,
             scaling_green_runs_per_step=args.scaling_green_runs_per_step,
@@ -4239,6 +4307,10 @@ def main() -> None:
             ws_collect_max_events=args.ws_collect_max_events,
             ws_state_json=args.ws_state_json,
             ws_state_max_age_seconds=args.ws_state_max_age_seconds,
+            preflight_self_heal_attempts=args.preflight_self_heal_attempts,
+            preflight_self_heal_pause_seconds=args.preflight_self_heal_pause_seconds,
+            preflight_self_heal_upstream_only=not args.disable_preflight_self_heal_upstream_only,
+            preflight_self_heal_run_dns_doctor=not args.disable_preflight_self_heal_dns_remediation,
             enable_progressive_scaling=not args.disable_progressive_scaling,
             scaling_lookback_runs=args.scaling_lookback_runs,
             scaling_green_runs_per_step=args.scaling_green_runs_per_step,

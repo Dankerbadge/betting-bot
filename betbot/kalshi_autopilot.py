@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import time
 from typing import Any, Callable
 
 from betbot.dns_guard import run_dns_doctor
@@ -15,6 +16,17 @@ DnsDoctorRunner = Callable[..., dict[str, Any]]
 LiveSmokeRunner = Callable[..., dict[str, Any]]
 WsCollectRunner = Callable[..., dict[str, Any]]
 SupervisorRunner = Callable[..., dict[str, Any]]
+
+_UPSTREAM_TOKENS = (
+    "dns",
+    "upstream",
+    "rate_limited",
+    "network_error",
+    "name or service not known",
+    "nodename nor servname",
+    "temporary failure in name resolution",
+    "timeout",
+)
 
 
 def _as_status(value: Any) -> str:
@@ -29,6 +41,26 @@ def _load_json(path: Path) -> dict[str, Any] | None:
     if not isinstance(payload, dict):
         return None
     return payload
+
+
+def _matches_upstream_pattern(text: str) -> bool:
+    lowered = text.strip().lower()
+    if not lowered:
+        return False
+    return any(token in lowered for token in _UPSTREAM_TOKENS)
+
+
+def _preflight_has_upstream_issue(*, blockers: list[str], preflight: dict[str, Any]) -> bool:
+    for blocker in blockers:
+        if _matches_upstream_pattern(str(blocker or "")):
+            return True
+    for value in preflight.values():
+        if not isinstance(value, dict):
+            continue
+        status = _as_status(value.get("status"))
+        if _matches_upstream_pattern(status):
+            return True
+    return False
 
 
 def _is_green_autopilot_run(payload: dict[str, Any]) -> bool:
@@ -106,6 +138,10 @@ def run_kalshi_autopilot(
     ws_collect_max_events: int = 250,
     ws_state_json: str | None = None,
     ws_state_max_age_seconds: float = 30.0,
+    preflight_self_heal_attempts: int = 2,
+    preflight_self_heal_pause_seconds: float = 10.0,
+    preflight_self_heal_upstream_only: bool = True,
+    preflight_self_heal_run_dns_doctor: bool = True,
     enable_progressive_scaling: bool = True,
     scaling_lookback_runs: int = 20,
     scaling_green_runs_per_step: int = 3,
@@ -127,71 +163,138 @@ def run_kalshi_autopilot(
     effective_history_csv = history_csv or str(out_dir / "kalshi_nonsports_history.csv")
 
     preflight: dict[str, Any] = {}
-    preflight_gate_pass = True
+    preflight_gate_pass = False
     preflight_blockers: list[str] = []
+    preflight_attempts: list[dict[str, Any]] = []
+    preflight_upstream_incident_detected = False
+    preflight_self_heal_used = 0
+    preflight_dns_remediation_runs: list[dict[str, Any]] = []
+
+    safe_preflight_self_heal_attempts = max(0, int(preflight_self_heal_attempts))
+    safe_preflight_self_heal_pause_seconds = max(0.0, float(preflight_self_heal_pause_seconds))
 
     dns_summary: dict[str, Any] | None = None
-    if preflight_run_dns_doctor:
-        dns_summary = dns_doctor_runner(
-            env_file=env_file,
-            output_dir=output_dir,
-            timeout_seconds=max(0.25, min(3.0, timeout_seconds / 6.0)),
-        )
-        dns_status = _as_status(dns_summary.get("status"))
-        if dns_status == "failed":
-            preflight_gate_pass = False
-            preflight_blockers.append("dns_doctor_failed")
-        preflight["dns_doctor"] = {
-            "status": dns_summary.get("status"),
-            "output_file": dns_summary.get("output_file"),
-            "hosts_checked": dns_summary.get("hosts_checked"),
-            "hosts_healthy": dns_summary.get("hosts_healthy"),
-        }
-
     smoke_summary: dict[str, Any] | None = None
-    if preflight_run_live_smoke:
-        smoke_summary = live_smoke_runner(
-            env_file=env_file,
-            output_dir=output_dir,
-            timeout_seconds=timeout_seconds,
-            include_odds_provider_check=True,
-        )
-        smoke_status = _as_status(smoke_summary.get("status"))
-        if smoke_status != "passed":
-            preflight_gate_pass = False
-            preflight_blockers.append(f"live_smoke_{smoke_status or 'failed'}")
-        preflight["live_smoke"] = {
-            "status": smoke_summary.get("status"),
-            "checks_failed": smoke_summary.get("checks_failed"),
-            "output_file": smoke_summary.get("output_file"),
-        }
-
     ws_collect_summary: dict[str, Any] | None = None
     effective_ws_state_json = ws_state_json
-    if preflight_run_ws_state_collect:
-        ws_collect_summary = ws_collect_runner(
-            env_file=env_file,
-            channels=DEFAULT_WS_CHANNELS,
-            output_dir=output_dir,
-            ws_state_json=ws_state_json,
-            max_staleness_seconds=ws_state_max_age_seconds,
-            run_seconds=ws_collect_run_seconds,
-            max_events=ws_collect_max_events,
+
+    for preflight_attempt_index in range(safe_preflight_self_heal_attempts + 1):
+        attempt_preflight: dict[str, Any] = {}
+        attempt_gate_pass = True
+        attempt_blockers: list[str] = []
+
+        attempt_dns_summary: dict[str, Any] | None = None
+        if preflight_run_dns_doctor:
+            attempt_dns_summary = dns_doctor_runner(
+                env_file=env_file,
+                output_dir=output_dir,
+                timeout_seconds=max(0.25, min(3.0, timeout_seconds / 6.0)),
+            )
+            dns_status = _as_status(attempt_dns_summary.get("status"))
+            if dns_status == "failed":
+                attempt_gate_pass = False
+                attempt_blockers.append("dns_doctor_failed")
+            attempt_preflight["dns_doctor"] = {
+                "status": attempt_dns_summary.get("status"),
+                "output_file": attempt_dns_summary.get("output_file"),
+                "hosts_checked": attempt_dns_summary.get("hosts_checked"),
+                "hosts_healthy": attempt_dns_summary.get("hosts_healthy"),
+            }
+
+        attempt_smoke_summary: dict[str, Any] | None = None
+        if preflight_run_live_smoke:
+            attempt_smoke_summary = live_smoke_runner(
+                env_file=env_file,
+                output_dir=output_dir,
+                timeout_seconds=timeout_seconds,
+                include_odds_provider_check=True,
+            )
+            smoke_status = _as_status(attempt_smoke_summary.get("status"))
+            if smoke_status != "passed":
+                attempt_gate_pass = False
+                attempt_blockers.append(f"live_smoke_{smoke_status or 'failed'}")
+            attempt_preflight["live_smoke"] = {
+                "status": attempt_smoke_summary.get("status"),
+                "checks_failed": attempt_smoke_summary.get("checks_failed"),
+                "output_file": attempt_smoke_summary.get("output_file"),
+            }
+
+        attempt_ws_collect_summary: dict[str, Any] | None = None
+        if preflight_run_ws_state_collect:
+            attempt_ws_collect_summary = ws_collect_runner(
+                env_file=env_file,
+                channels=DEFAULT_WS_CHANNELS,
+                output_dir=output_dir,
+                ws_state_json=effective_ws_state_json,
+                max_staleness_seconds=ws_state_max_age_seconds,
+                run_seconds=ws_collect_run_seconds,
+                max_events=ws_collect_max_events,
+            )
+            ws_status = _as_status(attempt_ws_collect_summary.get("status"))
+            if ws_status != "ready":
+                attempt_gate_pass = False
+                attempt_blockers.append(f"ws_state_{ws_status or 'failed'}")
+            if (
+                isinstance(attempt_ws_collect_summary.get("ws_state_json"), str)
+                and attempt_ws_collect_summary.get("ws_state_json")
+            ):
+                effective_ws_state_json = str(attempt_ws_collect_summary.get("ws_state_json"))
+            attempt_preflight["ws_state_collect"] = {
+                "status": attempt_ws_collect_summary.get("status"),
+                "gate_pass": attempt_ws_collect_summary.get("gate_pass"),
+                "events_logged": attempt_ws_collect_summary.get("events_logged"),
+                "ws_url_used": attempt_ws_collect_summary.get("ws_url_used"),
+                "output_file": attempt_ws_collect_summary.get("output_file"),
+                "ws_state_json": attempt_ws_collect_summary.get("ws_state_json"),
+            }
+
+        attempt_upstream_incident = _preflight_has_upstream_issue(
+            blockers=attempt_blockers,
+            preflight=attempt_preflight,
         )
-        ws_status = _as_status(ws_collect_summary.get("status"))
-        if ws_status != "ready":
-            preflight_gate_pass = False
-            preflight_blockers.append(f"ws_state_{ws_status or 'failed'}")
-        if isinstance(ws_collect_summary.get("ws_state_json"), str) and ws_collect_summary.get("ws_state_json"):
-            effective_ws_state_json = str(ws_collect_summary.get("ws_state_json"))
-        preflight["ws_state_collect"] = {
-            "status": ws_collect_summary.get("status"),
-            "gate_pass": ws_collect_summary.get("gate_pass"),
-            "events_logged": ws_collect_summary.get("events_logged"),
-            "ws_url_used": ws_collect_summary.get("ws_url_used"),
-            "output_file": ws_collect_summary.get("output_file"),
-            "ws_state_json": ws_collect_summary.get("ws_state_json"),
-        }
+        preflight_attempts.append(
+            {
+                "attempt": preflight_attempt_index + 1,
+                "gate_pass": attempt_gate_pass,
+                "upstream_incident_detected": attempt_upstream_incident,
+                "blockers": list(attempt_blockers),
+                "preflight": attempt_preflight,
+            }
+        )
+
+        preflight = attempt_preflight
+        preflight_gate_pass = attempt_gate_pass
+        preflight_blockers = list(attempt_blockers)
+        dns_summary = attempt_dns_summary
+        smoke_summary = attempt_smoke_summary
+        ws_collect_summary = attempt_ws_collect_summary
+        preflight_upstream_incident_detected = preflight_upstream_incident_detected or attempt_upstream_incident
+
+        if attempt_gate_pass:
+            break
+        if preflight_attempt_index >= safe_preflight_self_heal_attempts:
+            break
+        if preflight_self_heal_upstream_only and not attempt_upstream_incident:
+            break
+
+        preflight_self_heal_used += 1
+        if preflight_self_heal_run_dns_doctor:
+            remediation_dns_summary = dns_doctor_runner(
+                env_file=env_file,
+                output_dir=output_dir,
+                timeout_seconds=max(0.25, min(3.0, timeout_seconds / 6.0)),
+            )
+            preflight_dns_remediation_runs.append(
+                {
+                    "attempt": len(preflight_dns_remediation_runs) + 1,
+                    "status": remediation_dns_summary.get("status"),
+                    "output_file": remediation_dns_summary.get("output_file"),
+                }
+            )
+        if safe_preflight_self_heal_pause_seconds > 0:
+            time.sleep(safe_preflight_self_heal_pause_seconds)
+
+    preflight_self_healed = bool(preflight_gate_pass and preflight_self_heal_used > 0)
 
     recent_runs = _recent_autopilot_runs(output_dir=out_dir, lookback=scaling_lookback_runs)
     consecutive_green_runs = _count_consecutive_green_runs(recent_runs)
@@ -264,6 +367,16 @@ def run_kalshi_autopilot(
         "preflight_gate_pass": preflight_gate_pass,
         "preflight_blockers": preflight_blockers,
         "preflight": preflight,
+        "preflight_attempts_total": len(preflight_attempts),
+        "preflight_attempts": preflight_attempts,
+        "preflight_self_heal_attempts": safe_preflight_self_heal_attempts,
+        "preflight_self_heal_pause_seconds": safe_preflight_self_heal_pause_seconds,
+        "preflight_self_heal_upstream_only": preflight_self_heal_upstream_only,
+        "preflight_self_heal_run_dns_doctor": preflight_self_heal_run_dns_doctor,
+        "preflight_self_heal_used": preflight_self_heal_used,
+        "preflight_self_healed": preflight_self_healed,
+        "preflight_upstream_incident_detected": preflight_upstream_incident_detected,
+        "preflight_dns_remediation_runs": preflight_dns_remediation_runs,
         "effective_ws_state_json": effective_ws_state_json,
         "enable_progressive_scaling": enable_progressive_scaling,
         "scaling_lookback_runs": scaling_lookback_runs,

@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 import json
 import tempfile
 from pathlib import Path
+from typing import Any
 import unittest
 from unittest.mock import patch
 from urllib.error import URLError
@@ -99,6 +100,7 @@ class KalshiSupervisorTests(unittest.TestCase):
                     output_dir=str(base),
                     cycles=1,
                     allow_live_orders=True,
+                    exchange_status_self_heal_attempts=0,
                     run_arb_scan_each_cycle=False,
                     http_get_json=fake_http_get_json,
                     now=datetime(2026, 3, 28, 20, 0, tzinfo=timezone.utc),
@@ -113,6 +115,57 @@ class KalshiSupervisorTests(unittest.TestCase):
             self.assertTrue(Path(summary["output_file"]).exists())
             loaded = json.loads(Path(summary["output_file"]).read_text(encoding="utf-8"))
             self.assertEqual(loaded["status"], "ready")
+
+    def test_run_kalshi_supervisor_self_heals_exchange_status_before_cycle(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            env_file = base / "env.txt"
+            env_file.write_text("KALSHI_ENV=prod\n", encoding="utf-8")
+            attempts = 0
+            dns_calls = 0
+
+            def fake_http_get_json(
+                url: str,
+                headers: dict[str, str],
+                timeout_seconds: float,
+            ) -> tuple[int, object]:
+                nonlocal attempts
+                attempts += 1
+                if attempts <= 6:
+                    raise URLError("[Errno 8] nodename nor servname provided, or not known")
+                return 200, {"trading_active": True}
+
+            def fake_dns_doctor(**kwargs: Any) -> dict[str, Any]:
+                nonlocal dns_calls
+                dns_calls += 1
+                return {"status": "passed", "output_file": str(base / "dns_doctor.json")}
+
+            with patch("betbot.kalshi_supervisor.run_kalshi_micro_prior_trader") as mock_trader:
+                mock_trader.return_value = {
+                    "status": "dry_run",
+                    "output_file": str(base / "trader.json"),
+                }
+                summary = run_kalshi_supervisor(
+                    env_file=str(env_file),
+                    output_dir=str(base),
+                    cycles=1,
+                    allow_live_orders=True,
+                    exchange_status_self_heal_attempts=1,
+                    exchange_status_self_heal_pause_seconds=0.0,
+                    run_arb_scan_each_cycle=False,
+                    dns_doctor_runner=fake_dns_doctor,
+                    http_get_json=fake_http_get_json,
+                    now=datetime(2026, 3, 28, 20, 10, tzinfo=timezone.utc),
+                )
+
+            self.assertEqual(dns_calls, 1)
+            kwargs = mock_trader.call_args.kwargs
+            self.assertTrue(kwargs["allow_live_orders"])
+            cycle = summary["cycle_summaries"][0]
+            self.assertTrue(cycle["exchange_status_remediation_applied"])
+            self.assertTrue(cycle["exchange_status_remediation_recovered"])
+            self.assertEqual(cycle["exchange_status_remediation_attempts_used"], 1)
+            self.assertGreaterEqual(len(cycle["exchange_status_history"]), 2)
 
     def test_run_kalshi_supervisor_normalizes_file_like_output_dir(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

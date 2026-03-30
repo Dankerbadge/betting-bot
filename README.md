@@ -324,13 +324,15 @@ Optional controls:
 
 ## Kalshi Autopilot And Watchdog
 
-Use `kalshi-autopilot` for a single guarded execution pass: DNS/smoke/websocket preflight gates run first, live mode is forced off if gates fail, and scaling is applied only after consecutive green runs.
+Use `kalshi-autopilot` for a single guarded execution pass: DNS/smoke/websocket preflight gates run first, automatic self-heal retries remediate and retry in-loop, and only persistent failures force dry-run.
 
 Example:
 
 ```bash
 python -m betbot.cli kalshi-autopilot \
   --env-file data/research/account_onboarding.local.env \
+  --preflight-self-heal-attempts 2 \
+  --preflight-self-heal-pause-seconds 10 \
   --allow-live-orders
 ```
 
@@ -342,10 +344,14 @@ Example:
 python -m betbot.cli kalshi-watchdog \
   --env-file data/research/account_onboarding.local.env \
   --allow-live-orders \
+  --preflight-self-heal-attempts 2 \
+  --preflight-self-heal-pause-seconds 10 \
   --self-heal-attempts-per-loop 2 \
   --self-heal-pause-seconds 10 \
   --loops 0
 ```
+
+`kalshi-supervisor` also self-heals exchange-status DNS/network failures before disabling live mode (`--exchange-status-self-heal-attempts`, `--exchange-status-self-heal-pause-seconds`).
 
 Outputs:
 
