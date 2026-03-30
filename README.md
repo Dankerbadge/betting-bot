@@ -42,6 +42,8 @@ python -m betbot.cli kalshi-nonsports-capture --env-file data/research/account_o
 python -m betbot.cli kalshi-nonsports-quality --history-csv outputs/kalshi_nonsports_history.csv
 python -m betbot.cli kalshi-nonsports-signals --history-csv outputs/kalshi_nonsports_history.csv
 python -m betbot.cli kalshi-micro-plan --env-file data/research/account_onboarding.local.env --planning-bankroll 40 --daily-risk-cap 3
+python -m betbot.cli kalshi-autopilot --env-file data/research/account_onboarding.local.env
+python -m betbot.cli kalshi-watchdog --env-file data/research/account_onboarding.local.env --allow-live-orders --loops 1
 python -m betbot.cli kalshi-micro-execute --env-file data/research/account_onboarding.local.env
 python -m betbot.cli kalshi-micro-reconcile --env-file data/research/account_onboarding.local.env
 python -m betbot.cli kalshi-micro-status --env-file data/research/account_onboarding.local.env
@@ -319,6 +321,35 @@ Optional controls:
 
 - `BETBOT_DISABLE_DNS_RECOVERY=1` disables recovery fallback.
 - `BETBOT_DNS_RECOVERY_ALL_HOSTS=1` enables recovery fallback for every hostname (not just supported trading/data hosts).
+
+## Kalshi Autopilot And Watchdog
+
+Use `kalshi-autopilot` for a single guarded execution pass: DNS/smoke/websocket preflight gates run first, live mode is forced off if gates fail, and scaling is applied only after consecutive green runs.
+
+Example:
+
+```bash
+python -m betbot.cli kalshi-autopilot \
+  --env-file data/research/account_onboarding.local.env \
+  --allow-live-orders
+```
+
+Use `kalshi-watchdog` for continuous autonomous operation with persistent live kill-switch memory. It keeps running autopilot loops, retries with upstream backoff, runs remediation DNS checks after upstream incidents, and automatically disables live orders when repeated upstream failures cross the escalation threshold.
+
+Example:
+
+```bash
+python -m betbot.cli kalshi-watchdog \
+  --env-file data/research/account_onboarding.local.env \
+  --allow-live-orders \
+  --loops 0
+```
+
+Outputs:
+
+- `outputs/kalshi_autopilot_summary_*.json`
+- `outputs/kalshi_watchdog_summary_*.json`
+- `outputs/kalshi_live_kill_switch_state.json`
 
 ## Live Snapshot
 
