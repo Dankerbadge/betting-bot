@@ -268,6 +268,7 @@ class KalshiWsStateTests(unittest.TestCase):
             )
             self.assertEqual(summary["status"], "ready")
             self.assertTrue(Path(summary["ws_state_json"]).exists())
+            self.assertTrue((base / "kalshi_ws_state_last_known_good.json").exists())
             self.assertTrue(Path(summary["output_file"]).exists())
 
     def test_normalize_ws_envelope_maps_orderbook_cents_to_dollars(self) -> None:
@@ -478,6 +479,7 @@ class KalshiWsStateTests(unittest.TestCase):
     def test_run_ws_state_collect_preserves_previous_ready_state_on_upstream_failure(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
+            current_now = datetime.now(timezone.utc)
             env_path = base / "kalshi.env"
             env_path.write_text(
                 "\n".join(
@@ -499,7 +501,7 @@ class KalshiWsStateTests(unittest.TestCase):
                             "market_count": 1,
                             "desynced_market_count": 0,
                             "events_processed": 3,
-                            "last_event_at": "2026-03-29T12:04:55+00:00",
+                            "last_event_at": (current_now - timedelta(seconds=5)).isoformat(),
                         },
                         "markets": {
                             "KXTEST-PREVIOUS-1": {
@@ -526,7 +528,7 @@ class KalshiWsStateTests(unittest.TestCase):
                 websocket_client_factory=_FailingWebSocketClient,
                 sign_request=lambda *_: "fake-signature",
                 sleep_fn=lambda seconds: None,
-                now=datetime(2026, 3, 29, 12, 5, tzinfo=timezone.utc),
+                now=current_now,
             )
             self.assertTrue(summary["fallback_state_used"])
             self.assertEqual(summary["fallback_state_reason"], "preserved_previous_ready_state")
@@ -540,7 +542,246 @@ class KalshiWsStateTests(unittest.TestCase):
 
             authority = load_ws_state_authority(
                 ws_state_json=summary["ws_state_json"],
-                captured_at=datetime(2026, 3, 29, 12, 5, 10, tzinfo=timezone.utc),
+                captured_at=current_now + timedelta(seconds=10),
+                max_staleness_seconds=30.0,
+            )
+            self.assertEqual(authority["status"], "ready")
+            self.assertTrue(authority["gate_pass"])
+
+    def test_run_ws_state_collect_preserves_previous_stale_state_on_upstream_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            current_now = datetime.now(timezone.utc)
+            env_path = base / "kalshi.env"
+            env_path.write_text(
+                "\n".join(
+                    [
+                        "KALSHI_ENV=demo",
+                        "KALSHI_ACCESS_KEY_ID=test-access-key",
+                        "KALSHI_PRIVATE_KEY_PATH=/tmp/test-private-key.pem",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            ws_state_path = base / "kalshi_ws_state_latest.json"
+            ws_state_path.write_text(
+                json.dumps(
+                    {
+                        "summary": {
+                            "status": "ready",
+                            "gate_pass": True,
+                            "market_count": 1,
+                            "desynced_market_count": 0,
+                            "events_processed": 3,
+                            "last_event_at": (current_now - timedelta(seconds=75)).isoformat(),
+                        },
+                        "markets": {
+                            "KXTEST-PREVIOUS-STALE-1": {
+                                "ticker": "KXTEST-PREVIOUS-STALE-1",
+                                "top_of_book": {
+                                    "best_yes_bid_dollars": 0.41,
+                                    "best_no_bid_dollars": 0.58,
+                                },
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            summary = run_kalshi_ws_state_collect(
+                env_file=str(env_path),
+                channels=("orderbook_snapshot",),
+                output_dir=str(base),
+                ws_state_json=str(ws_state_path),
+                max_staleness_seconds=30.0,
+                run_seconds=1.0,
+                reconnect_max_attempts=0,
+                websocket_client_factory=_FailingWebSocketClient,
+                sign_request=lambda *_: "fake-signature",
+                sleep_fn=lambda seconds: None,
+                now=current_now,
+            )
+            self.assertTrue(summary["fallback_state_used"])
+            self.assertEqual(summary["fallback_state_reason"], "preserved_previous_stale_state")
+            self.assertEqual(summary["status_before_fallback"], "upstream_error")
+            self.assertEqual(summary["status"], "stale")
+            self.assertFalse(summary["gate_pass"])
+            self.assertEqual(summary["market_count"], 1)
+            self.assertEqual(summary["desynced_market_count"], 0)
+
+            authority = load_ws_state_authority(
+                ws_state_json=summary["ws_state_json"],
+                captured_at=current_now + timedelta(seconds=10),
+                max_staleness_seconds=30.0,
+            )
+            self.assertEqual(authority["status"], "stale")
+            self.assertFalse(authority["gate_pass"])
+
+    def test_run_ws_state_collect_recovers_from_last_known_good_when_latest_already_failed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            current_now = datetime.now(timezone.utc)
+            env_path = base / "kalshi.env"
+            env_path.write_text(
+                "\n".join(
+                    [
+                        "KALSHI_ENV=demo",
+                        "KALSHI_ACCESS_KEY_ID=test-access-key",
+                        "KALSHI_PRIVATE_KEY_PATH=/tmp/test-private-key.pem",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            ws_state_path = base / "kalshi_ws_state_latest.json"
+            ws_state_path.write_text(
+                json.dumps(
+                    {
+                        "summary": {
+                            "status": "upstream_error",
+                            "gate_pass": False,
+                            "market_count": 0,
+                            "desynced_market_count": 0,
+                            "events_processed": 0,
+                            "last_error": "[Errno 8] nodename nor servname provided, or not known",
+                            "last_error_kind": "dns_resolution_error",
+                        },
+                        "markets": {},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (base / "kalshi_ws_state_last_known_good.json").write_text(
+                json.dumps(
+                    {
+                        "summary": {
+                            "status": "ready",
+                            "gate_pass": True,
+                            "market_count": 1,
+                            "desynced_market_count": 0,
+                            "events_processed": 5,
+                            "last_event_at": (current_now - timedelta(seconds=8)).isoformat(),
+                        },
+                        "markets": {
+                            "KXTEST-BACKUP-1": {
+                                "ticker": "KXTEST-BACKUP-1",
+                                "top_of_book": {
+                                    "best_yes_bid_dollars": 0.44,
+                                    "best_no_bid_dollars": 0.55,
+                                },
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            summary = run_kalshi_ws_state_collect(
+                env_file=str(env_path),
+                channels=("orderbook_snapshot",),
+                output_dir=str(base),
+                ws_state_json=str(ws_state_path),
+                max_staleness_seconds=30.0,
+                run_seconds=1.0,
+                reconnect_max_attempts=0,
+                websocket_client_factory=_FailingWebSocketClient,
+                sign_request=lambda *_: "fake-signature",
+                sleep_fn=lambda seconds: None,
+                now=current_now,
+            )
+
+            self.assertTrue(summary["fallback_state_used"])
+            self.assertTrue(summary["last_known_good_state_used"])
+            self.assertEqual(summary["fallback_state_reason"], "preserved_last_known_good_ready_state")
+            self.assertEqual(summary["status"], "ready")
+            self.assertTrue(summary["gate_pass"])
+
+            authority = load_ws_state_authority(
+                ws_state_json=summary["ws_state_json"],
+                captured_at=current_now + timedelta(seconds=10),
+                max_staleness_seconds=30.0,
+            )
+            self.assertEqual(authority["status"], "ready")
+            self.assertTrue(authority["gate_pass"])
+
+    def test_run_ws_state_collect_recovers_from_archived_ready_summary_when_backup_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            current_now = datetime.now(timezone.utc)
+            env_path = base / "kalshi.env"
+            env_path.write_text(
+                "\n".join(
+                    [
+                        "KALSHI_ENV=demo",
+                        "KALSHI_ACCESS_KEY_ID=test-access-key",
+                        "KALSHI_PRIVATE_KEY_PATH=/tmp/test-private-key.pem",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            archived_events_path = base / "kalshi_ws_events_archived.ndjson"
+            archived_events_path.write_text(
+                "\n".join(
+                    [
+                        json.dumps(
+                            {
+                                "event_type": "orderbook_snapshot",
+                                "captured_at_utc": (current_now - timedelta(seconds=20)).isoformat(),
+                                "ticker": "KXTEST-ARCHIVE-1",
+                                "sequence": 1,
+                                "orderbook_fp": {
+                                    "yes_dollars": [["0.4500", "100.00"]],
+                                    "no_dollars": [["0.5400", "100.00"]],
+                                },
+                            }
+                        )
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            archived_summary_path = base / "kalshi_ws_state_collect_summary_20260329_000000_000.json"
+            archived_summary_path.write_text(
+                json.dumps(
+                    {
+                        "captured_at": current_now.isoformat(),
+                        "status": "ready",
+                        "market_count": 1,
+                        "desynced_market_count": 0,
+                        "last_event_at": (current_now - timedelta(seconds=20)).isoformat(),
+                        "ws_events_ndjson": str(archived_events_path),
+                    }
+                ),
+                encoding="utf-8",
+            )
+            ws_state_path = base / "kalshi_ws_state_latest.json"
+
+            summary = run_kalshi_ws_state_collect(
+                env_file=str(env_path),
+                channels=("orderbook_snapshot",),
+                output_dir=str(base),
+                ws_state_json=str(ws_state_path),
+                max_staleness_seconds=30.0,
+                run_seconds=1.0,
+                reconnect_max_attempts=0,
+                websocket_client_factory=_FailingWebSocketClient,
+                sign_request=lambda *_: "fake-signature",
+                sleep_fn=lambda seconds: None,
+                now=current_now,
+            )
+
+            self.assertTrue(summary["fallback_state_used"])
+            self.assertTrue(summary["archived_state_recovery_used"])
+            self.assertEqual(summary["fallback_state_reason"], "replayed_archived_ready_state")
+            self.assertEqual(summary["archived_state_recovery_summary_file"], str(archived_summary_path))
+            self.assertEqual(summary["archived_state_recovery_events_ndjson"], str(archived_events_path))
+            self.assertEqual(summary["status"], "ready")
+            self.assertTrue(summary["gate_pass"])
+            self.assertTrue((base / "kalshi_ws_state_last_known_good.json").exists())
+
+            authority = load_ws_state_authority(
+                ws_state_json=summary["ws_state_json"],
+                captured_at=current_now + timedelta(seconds=5),
                 max_staleness_seconds=30.0,
             )
             self.assertEqual(authority["status"], "ready")

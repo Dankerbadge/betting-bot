@@ -23,7 +23,7 @@ from betbot.live_snapshot import _kalshi_balance_snapshot
 from betbot.onboarding import _is_placeholder, _parse_env_file
 
 
-LIVE_ALLOWED_CANONICAL_NICHES = ("macro_release", "weather_energy_transmission")
+LIVE_ALLOWED_CANONICAL_NICHES = ("macro_release", "weather_energy_transmission", "weather_climate")
 
 
 def _latest_market_rows(history_rows: list[dict[str, str]]) -> dict[str, dict[str, str]]:

@@ -11,13 +11,23 @@ _CITY_TIMEZONE_BY_TOKEN = {
     "boston": "America/New_York",
     "dc": "America/New_York",
     "washington": "America/New_York",
+    "philadelphia": "America/New_York",
+    "philly": "America/New_York",
+    "miami": "America/New_York",
+    "atlanta": "America/New_York",
+    "detroit": "America/New_York",
+    "minneapolis": "America/Chicago",
     "chicago": "America/Chicago",
     "dallas": "America/Chicago",
+    "houston": "America/Chicago",
     "denver": "America/Denver",
     "phoenix": "America/Phoenix",
     "la": "America/Los_Angeles",
     "los angeles": "America/Los_Angeles",
     "seattle": "America/Los_Angeles",
+    "las vegas": "America/Los_Angeles",
+    "portland": "America/Los_Angeles",
+    "salt lake city": "America/Denver",
     "sf": "America/Los_Angeles",
     "san francisco": "America/Los_Angeles",
 }
@@ -123,18 +133,30 @@ def extract_threshold_expression(rules_primary: str) -> str:
     if not text:
         return ""
     lowered = text.lower()
-    between = re.search(r"between\s+([-\d.]+)\s*-\s*([-\d.]+)", lowered)
+    between = re.search(r"between\s+([-\d.]+)\s*(?:-|to|and)\s*([-\d.]+)", lowered)
     if between:
         return f"between:{between.group(1)}:{between.group(2)}"
-    above = re.search(r"(?:above|greater than)\s+([-\d.]+)", lowered)
-    if above:
-        return f"above:{above.group(1)}"
-    below = re.search(r"(?:below|less than)\s+([-\d.]+)", lowered)
-    if below:
-        return f"below:{below.group(1)}"
-    at_least = re.search(r"(?:at least)\s+([-\d.]+)", lowered)
+    at_most = re.search(
+        r"(?:at most|no more than|less than or equal to|<=)\s*([-\d.]+)",
+        lowered,
+    )
+    if at_most:
+        return f"at_most:{at_most.group(1)}"
+    at_least = re.search(
+        r"(?:at least|greater than or equal to|>=)\s*([-\d.]+)",
+        lowered,
+    )
     if at_least:
         return f"at_least:{at_least.group(1)}"
+    above = re.search(r"(?:above|greater than|over)\s+([-\d.]+)", lowered)
+    if above:
+        return f"above:{above.group(1)}"
+    below = re.search(r"(?:below|less than|under)\s+([-\d.]+)", lowered)
+    if below:
+        return f"below:{below.group(1)}"
+    equal = re.search(r"(?:equal to|equals|exactly)\s+([-\d.]+)", lowered)
+    if equal:
+        return f"equal:{equal.group(1)}"
     return ""
 
 

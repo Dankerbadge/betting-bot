@@ -14,8 +14,79 @@ from betbot.kalshi_micro_execute import (
 )
 from betbot.kalshi_micro_ledger import default_ledger_path, summarize_trade_ledger, trading_day_for_timestamp
 from betbot.kalshi_micro_prior_plan import LIVE_ALLOWED_CANONICAL_NICHES, run_kalshi_micro_prior_plan
+from betbot.kalshi_nonsports_quality import _parse_timestamp, load_history_rows
+from betbot.kalshi_weather_settlement import build_weather_settlement_spec
 from betbot.live_smoke import HttpGetter, KalshiSigner, _http_get_json, _kalshi_sign_request
 from betbot.onboarding import _parse_env_file
+
+
+_DAILY_WEATHER_CONTRACT_FAMILIES = {"daily_rain", "daily_temperature", "daily_snow"}
+
+
+def _latest_history_rows(history_rows: list[dict[str, str]]) -> dict[str, dict[str, str]]:
+    grouped: dict[str, list[dict[str, str]]] = {}
+    for row in history_rows:
+        ticker = str(row.get("market_ticker") or "").strip()
+        if ticker:
+            grouped.setdefault(ticker, []).append(row)
+
+    latest: dict[str, dict[str, str]] = {}
+    for ticker, rows in grouped.items():
+        rows_sorted = sorted(
+            rows,
+            key=lambda row: _parse_timestamp(str(row.get("captured_at") or "")) or datetime.min.replace(tzinfo=timezone.utc),
+        )
+        latest[ticker] = rows_sorted[-1]
+    return latest
+
+
+def _daily_weather_board_summary(history_csv: str) -> dict[str, Any]:
+    path = Path(history_csv)
+    if not path.exists():
+        return {
+            "status": "missing_history",
+            "history_csv": str(path),
+            "latest_markets": 0,
+            "weather_markets_total": 0,
+            "daily_weather_markets_total": 0,
+            "weather_family_counts": {},
+            "daily_weather_family_counts": {},
+            "daily_weather_tickers": [],
+            "contract_family_by_ticker": {},
+        }
+
+    history_rows = load_history_rows(path)
+    latest_rows = _latest_history_rows(history_rows)
+    weather_family_counts: dict[str, int] = {}
+    daily_weather_family_counts: dict[str, int] = {}
+    daily_weather_tickers: list[str] = []
+    contract_family_by_ticker: dict[str, str] = {}
+
+    for ticker, row in latest_rows.items():
+        settlement = build_weather_settlement_spec(row)
+        contract_family = str(settlement.get("contract_family") or "").strip().lower()
+        if contract_family:
+            contract_family_by_ticker[ticker] = contract_family
+        if contract_family in {"non_weather", "weather_other", ""}:
+            continue
+        weather_family_counts[contract_family] = weather_family_counts.get(contract_family, 0) + 1
+        if contract_family in _DAILY_WEATHER_CONTRACT_FAMILIES:
+            daily_weather_family_counts[contract_family] = daily_weather_family_counts.get(contract_family, 0) + 1
+            daily_weather_tickers.append(ticker)
+
+    return {
+        "status": "ready",
+        "history_csv": str(path),
+        "latest_markets": len(latest_rows),
+        "weather_markets_total": sum(weather_family_counts.values()),
+        "daily_weather_markets_total": sum(daily_weather_family_counts.values()),
+        "weather_family_counts": dict(sorted(weather_family_counts.items(), key=lambda item: (-item[1], item[0]))),
+        "daily_weather_family_counts": dict(
+            sorted(daily_weather_family_counts.items(), key=lambda item: (-item[1], item[0]))
+        ),
+        "daily_weather_tickers": sorted(daily_weather_tickers)[:25],
+        "contract_family_by_ticker": contract_family_by_ticker,
+    }
 
 
 def build_prior_trade_gate_decision(
@@ -28,6 +99,10 @@ def build_prior_trade_gate_decision(
     min_live_maker_edge: float,
     min_live_maker_edge_net_fees: float,
     allowed_canonical_niches: tuple[str, ...] | None = None,
+    top_market_contract_family: str | None = None,
+    daily_weather_board_summary: dict[str, Any] | None = None,
+    enforce_daily_weather_live_only: bool = False,
+    require_daily_weather_board_coverage: bool = False,
 ) -> dict[str, Any]:
     live_submissions_today = int(ledger_summary.get("live_submissions_today") or 0)
     live_submitted_cost_today = float(ledger_summary.get("live_submitted_cost_today") or 0.0)
@@ -60,11 +135,14 @@ def build_prior_trade_gate_decision(
     top_market_side = str(plan_summary.get("top_market_side") or "")
     top_market_canonical_ticker = plan_summary.get("top_market_canonical_ticker")
     top_market_canonical_niche = str(plan_summary.get("top_market_canonical_niche") or "").strip().lower()
+    top_market_contract_family_normalized = str(top_market_contract_family or "").strip().lower()
     top_market_canonical_policy_applied = plan_summary.get("top_market_canonical_policy_applied")
     top_market_maker_entry_edge = plan_summary.get("top_market_maker_entry_edge")
     top_market_maker_entry_edge_net_fees = plan_summary.get("top_market_maker_entry_edge_net_fees")
     funding_gap_dollars = plan_summary.get("funding_gap_dollars")
     actual_live_balance_dollars = plan_summary.get("actual_live_balance_dollars")
+    daily_weather_markets_total = int((daily_weather_board_summary or {}).get("daily_weather_markets_total") or 0)
+    daily_weather_family_counts = dict((daily_weather_board_summary or {}).get("daily_weather_family_counts") or {})
 
     blockers: list[str] = []
     if actual_live_balance_dollars is None:
@@ -103,6 +181,18 @@ def build_prior_trade_gate_decision(
             blockers.append("Top prior-backed plan is missing canonical policy coverage.")
         elif top_market_canonical_niche not in normalized_allowed_niches:
             blockers.append("Top prior-backed plan is outside allowed live niches.")
+    if require_daily_weather_board_coverage and daily_weather_markets_total <= 0:
+        blockers.append(
+            "No daily weather markets are present in the captured board snapshot; refusing live mode until board coverage is restored."
+        )
+    if (
+        enforce_daily_weather_live_only
+        and planned_orders > 0
+        and top_market_contract_family_normalized not in _DAILY_WEATHER_CONTRACT_FAMILIES
+    ):
+        blockers.append(
+            "Daily-weather-only live mode is enabled, but the top prior-backed plan is not a daily weather contract."
+        )
 
     gate_pass = len(blockers) == 0
     gate_status = "pass" if gate_pass else "hold"
@@ -115,6 +205,14 @@ def build_prior_trade_gate_decision(
             gate_status = "needs_funding"
         elif live_submission_budget_remaining <= 0 or live_cost_budget_remaining <= 0:
             gate_status = "cap_reached"
+        elif require_daily_weather_board_coverage and daily_weather_markets_total <= 0:
+            gate_status = "daily_weather_board_missing"
+        elif (
+            enforce_daily_weather_live_only
+            and planned_orders > 0
+            and top_market_contract_family_normalized not in _DAILY_WEATHER_CONTRACT_FAMILIES
+        ):
+            gate_status = "daily_weather_only"
         elif planned_orders <= 0:
             gate_status = "no_candidates"
         elif positive_maker_entry_markets <= 0:
@@ -156,8 +254,13 @@ def build_prior_trade_gate_decision(
         "top_market_side": top_market_side or None,
         "top_market_canonical_ticker": top_market_canonical_ticker,
         "top_market_canonical_niche": top_market_canonical_niche or None,
+        "top_market_contract_family": top_market_contract_family_normalized or None,
         "top_market_canonical_policy_applied": top_market_canonical_policy_applied,
         "allowed_canonical_niches": sorted(normalized_allowed_niches) if normalized_allowed_niches else None,
+        "daily_weather_live_only_enforced": bool(enforce_daily_weather_live_only),
+        "daily_weather_board_coverage_required": bool(require_daily_weather_board_coverage),
+        "daily_weather_markets_total": daily_weather_markets_total,
+        "daily_weather_family_counts": daily_weather_family_counts,
         "top_market_maker_entry_price_dollars": plan_summary.get("top_market_maker_entry_price_dollars"),
         "top_market_maker_entry_edge": top_market_maker_entry_edge,
         "top_market_maker_entry_edge_net_fees": top_market_maker_entry_edge_net_fees,
@@ -221,6 +324,8 @@ def run_kalshi_micro_prior_execute(
     enforce_ws_state_authority: bool = False,
     ws_state_json: str | None = None,
     ws_state_max_age_seconds: float = 30.0,
+    enforce_daily_weather_live_only: bool = False,
+    require_daily_weather_board_coverage_for_live: bool = False,
     http_request_json: AuthenticatedRequester = _http_request_json,
     http_get_json: HttpGetter = _http_get_json,
     sign_request: KalshiSigner = _kalshi_sign_request,
@@ -234,9 +339,16 @@ def run_kalshi_micro_prior_execute(
     ledger_path = Path(ledger_csv) if ledger_csv else default_ledger_path(output_dir)
     effective_book_db_path = Path(book_db_path) if book_db_path else default_book_db_path(output_dir)
     enforce_canonical_dataset_effective = bool(enforce_canonical_dataset)
-    allowed_live_canonical_niches = (
-        LIVE_ALLOWED_CANONICAL_NICHES if (allow_live_orders or enforce_canonical_dataset_effective) else None
+    daily_weather_live_only_effective = bool(allow_live_orders and enforce_daily_weather_live_only)
+    require_daily_weather_board_coverage_effective = bool(
+        allow_live_orders and require_daily_weather_board_coverage_for_live
     )
+    if daily_weather_live_only_effective:
+        allowed_live_canonical_niches = ("weather_climate",)
+    else:
+        allowed_live_canonical_niches = (
+            LIVE_ALLOWED_CANONICAL_NICHES if (allow_live_orders or enforce_canonical_dataset_effective) else None
+        )
     enforce_live_quality_filters = bool(allow_live_orders or enforce_canonical_dataset_effective)
     effective_min_entry_price_dollars = (
         max(0.0, float(min_live_entry_price_dollars)) if enforce_live_quality_filters else 0.0
@@ -254,6 +366,7 @@ def run_kalshi_micro_prior_execute(
     default_max_hours_by_niche = {
         "macro_release": 168.0,
         "weather_energy_transmission": 72.0,
+        "weather_climate": 36.0,
     }
     effective_max_hours_to_close_by_niche = dict(default_max_hours_by_niche)
     if isinstance(max_live_hours_to_close_by_niche, dict):
@@ -274,6 +387,7 @@ def run_kalshi_micro_prior_execute(
     require_canonical_mapping_for_live_effective = (
         True if (allow_live_orders or enforce_canonical_dataset_effective) else False
     )
+    weather_board_summary_raw = _daily_weather_board_summary(history_csv)
 
     plan_summary = run_kalshi_micro_prior_plan(
         env_file=env_file,
@@ -304,6 +418,14 @@ def run_kalshi_micro_prior_execute(
         sign_request=sign_request,
         now=captured_at,
     )
+    top_market_ticker = str(plan_summary.get("top_market_ticker") or "").strip()
+    contract_family_by_ticker = dict(weather_board_summary_raw.get("contract_family_by_ticker") or {})
+    top_market_contract_family = str(contract_family_by_ticker.get(top_market_ticker) or "").strip().lower()
+    weather_board_summary = {
+        key: value
+        for key, value in weather_board_summary_raw.items()
+        if key != "contract_family_by_ticker"
+    }
     ledger_summary_before = summarize_trade_ledger(
         path=ledger_path,
         timezone_name=timezone_name,
@@ -322,6 +444,10 @@ def run_kalshi_micro_prior_execute(
         min_live_maker_edge=min_live_maker_edge,
         min_live_maker_edge_net_fees=min_live_maker_edge_net_fees,
         allowed_canonical_niches=allowed_live_canonical_niches,
+        top_market_contract_family=top_market_contract_family or None,
+        daily_weather_board_summary=weather_board_summary,
+        enforce_daily_weather_live_only=daily_weather_live_only_effective,
+        require_daily_weather_board_coverage=require_daily_weather_board_coverage_effective,
     )
 
     def prior_plan_adapter(**kwargs: Any) -> dict[str, Any]:
@@ -390,7 +516,12 @@ def run_kalshi_micro_prior_execute(
         "require_canonical_mapping_for_live_effective": require_canonical_mapping_for_live_effective,
         "enforce_canonical_dataset": enforce_canonical_dataset,
         "enforce_canonical_dataset_effective": enforce_canonical_dataset_effective,
+        "enforce_daily_weather_live_only": bool(enforce_daily_weather_live_only),
+        "daily_weather_live_only_effective": daily_weather_live_only_effective,
+        "require_daily_weather_board_coverage_for_live": bool(require_daily_weather_board_coverage_for_live),
+        "require_daily_weather_board_coverage_effective": require_daily_weather_board_coverage_effective,
         "allowed_live_canonical_niches": list(allowed_live_canonical_niches) if allowed_live_canonical_niches else None,
+        "weather_board_summary": weather_board_summary,
         "plan_canonical_policy_enabled": plan_summary.get("canonical_policy_enabled"),
         "plan_canonical_policy_reason": plan_summary.get("canonical_policy_reason"),
         "plan_matched_live_markets_with_canonical_policy": plan_summary.get(

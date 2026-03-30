@@ -249,7 +249,7 @@ class KalshiNonSportsScanTests(unittest.TestCase):
                 nonlocal attempts
                 attempts += 1
                 if attempts < 3:
-                    raise URLError("[Errno 8] nodename nor servname provided, or not known")
+                    raise URLError("connection reset by peer")
                 return 200, {
                     "events": [
                         {
@@ -420,6 +420,39 @@ class KalshiNonSportsScanTests(unittest.TestCase):
             self.assertEqual(len(requested_urls), 2)
             self.assertIn("api.elections.kalshi.com", requested_urls[0])
             self.assertIn("trading-api.kalshi.com", requested_urls[1])
+
+    def test_run_kalshi_nonsports_scan_stops_retrying_terminal_dns_on_last_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            env_file = base / "env.txt"
+            env_file.write_text("KALSHI_ENV=prod\n", encoding="utf-8")
+            requested_urls: list[str] = []
+
+            def fake_http_get_json(
+                url: str,
+                headers: dict[str, str],
+                timeout_seconds: float,
+            ) -> tuple[int, object]:
+                requested_urls.append(url)
+                raise URLError("[Errno 8] nodename nor servname provided, or not known")
+
+            with patch("betbot.kalshi_nonsports_scan.time.sleep") as mock_sleep:
+                summary = run_kalshi_nonsports_scan(
+                    env_file=str(env_file),
+                    output_dir=str(base),
+                    http_get_json=fake_http_get_json,
+                    now=datetime(2026, 3, 27, 21, 0, tzinfo=timezone.utc),
+                )
+
+            self.assertEqual(summary["status"], "upstream_error")
+            self.assertEqual(summary["search_health_status"], "error")
+            self.assertEqual(summary["network_retries_used"], 2)
+            self.assertEqual(summary["search_retries_total"], 2)
+            self.assertEqual(summary["api_root_failovers_used"], 1)
+            self.assertEqual(summary["page_requests"], 2)
+            self.assertEqual(len(requested_urls), 2)
+            self.assertEqual(mock_sleep.call_count, 0)
+            self.assertIn("nodename nor servname", str(summary["events_error"]))
 
 
 if __name__ == "__main__":

@@ -23,6 +23,10 @@ def default_ws_state_path(output_dir: str) -> Path:
     return Path(output_dir) / "kalshi_ws_state_latest.json"
 
 
+def default_ws_state_last_known_good_path(output_dir: str) -> Path:
+    return Path(output_dir) / "kalshi_ws_state_last_known_good.json"
+
+
 KALSHI_WS_PATH = "/trade-api/ws/v2"
 DEFAULT_WS_CHANNELS = (
     "orderbook_snapshot",
@@ -47,6 +51,11 @@ _WS_TICKER_DISCOVERY_PATTERNS = (
     "kalshi_micro_execute_summary_*.json",
 )
 _WS_TICKER_DISCOVERY_MAX = 20
+_WS_ARCHIVE_RECOVERY_PATTERNS = (
+    "kalshi_ws_state_collect_summary_*.json",
+    "kalshi_ws_state_summary_*.json",
+)
+_WS_ARCHIVE_RECOVERY_MAX = 20
 
 
 def _parse_float(value: Any) -> float | None:
@@ -88,6 +97,126 @@ def _parse_ts(value: Any) -> datetime | None:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
+
+
+def _load_reusable_ws_state(
+    *,
+    state_path: Path,
+    captured_at: datetime,
+    max_staleness_seconds: float,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    if not state_path.exists():
+        return None, None
+    try:
+        payload_candidate = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None, None
+    if not isinstance(payload_candidate, dict):
+        return None, None
+    authority_candidate = load_ws_state_authority(
+        ws_state_json=state_path,
+        captured_at=captured_at,
+        max_staleness_seconds=max_staleness_seconds,
+    )
+    prior_status = str(authority_candidate.get("status") or "").strip().lower()
+    prior_market_count = int(_parse_int(authority_candidate.get("market_count")) or 0)
+    prior_desynced_count = int(_parse_int(authority_candidate.get("desynced_market_count")) or 0)
+    if prior_status in {"ready", "stale"} and prior_market_count > 0 and prior_desynced_count <= 0:
+        return payload_candidate, authority_candidate
+    return None, None
+
+
+def _replay_ws_events_payload(
+    *,
+    events_path: Path,
+    captured_at: datetime,
+    max_staleness_seconds: float,
+) -> tuple[dict[str, Any] | None, int, int]:
+    if not events_path.exists():
+        return None, 0, 0
+    engine = KalshiWsStateEngine(max_staleness_seconds=max_staleness_seconds)
+    processed_lines = 0
+    parse_errors = 0
+    try:
+        with events_path.open("r", encoding="utf-8") as handle:
+            for raw_line in handle:
+                line = raw_line.strip()
+                if not line:
+                    continue
+                processed_lines += 1
+                try:
+                    payload = json.loads(line)
+                except json.JSONDecodeError:
+                    parse_errors += 1
+                    continue
+                if not isinstance(payload, dict):
+                    continue
+                engine.ingest_event(payload)
+    except OSError:
+        return None, 0, 0
+    return engine.serialize(now=captured_at), processed_lines, parse_errors
+
+
+def _load_reusable_ws_state_from_archives(
+    *,
+    output_dir: Path,
+    captured_at: datetime,
+    max_staleness_seconds: float,
+    state_path: Path,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None, str, str]:
+    candidates: list[Path] = []
+    seen: set[Path] = set()
+    for pattern in _WS_ARCHIVE_RECOVERY_PATTERNS:
+        for candidate in sorted(output_dir.glob(pattern), key=lambda path: path.stat().st_mtime, reverse=True):
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            candidates.append(candidate)
+            if len(candidates) >= _WS_ARCHIVE_RECOVERY_MAX:
+                break
+        if len(candidates) >= _WS_ARCHIVE_RECOVERY_MAX:
+            break
+
+    for summary_path in candidates:
+        try:
+            summary_payload = json.loads(summary_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(summary_payload, dict):
+            continue
+        summary_status = str(summary_payload.get("status") or "").strip().lower()
+        summary_market_count = int(_parse_int(summary_payload.get("market_count")) or 0)
+        summary_desynced_count = int(_parse_int(summary_payload.get("desynced_market_count")) or 0)
+        if summary_status not in {"ready", "stale"} or summary_market_count <= 0 or summary_desynced_count > 0:
+            continue
+        raw_events_path = summary_payload.get("ws_events_ndjson")
+        if not isinstance(raw_events_path, str) or not raw_events_path.strip():
+            continue
+        events_path = Path(raw_events_path)
+        if not events_path.is_absolute():
+            events_path = output_dir / events_path
+        payload_candidate, _, _ = _replay_ws_events_payload(
+            events_path=events_path,
+            captured_at=captured_at,
+            max_staleness_seconds=max_staleness_seconds,
+        )
+        if payload_candidate is None:
+            continue
+        try:
+            _write_json_atomic(state_path, payload_candidate)
+            authority_candidate = load_ws_state_authority(
+                ws_state_json=state_path,
+                captured_at=captured_at,
+                max_staleness_seconds=max_staleness_seconds,
+            )
+        except OSError:
+            continue
+        prior_status = str(authority_candidate.get("status") or "").strip().lower()
+        prior_market_count = int(_parse_int(authority_candidate.get("market_count")) or 0)
+        prior_desynced_count = int(_parse_int(authority_candidate.get("desynced_market_count")) or 0)
+        if prior_status in {"ready", "stale"} and prior_market_count > 0 and prior_desynced_count <= 0:
+            return payload_candidate, authority_candidate, str(summary_path), str(events_path)
+    return None, None, "", ""
 
 
 def _normalize_market_ticker(value: Any) -> str:
@@ -928,30 +1057,32 @@ def run_kalshi_ws_state_replay(
         raise ValueError(f"events_ndjson not found: {events_path}")
 
     captured_at = now or datetime.now(timezone.utc)
-    engine = KalshiWsStateEngine(max_staleness_seconds=max_staleness_seconds)
-    processed_lines = 0
-    parse_errors = 0
-    with events_path.open("r", encoding="utf-8") as handle:
-        for raw_line in handle:
-            line = raw_line.strip()
-            if not line:
-                continue
-            processed_lines += 1
-            try:
-                payload = json.loads(line)
-            except json.JSONDecodeError:
-                parse_errors += 1
-                continue
-            if not isinstance(payload, dict):
-                continue
-            engine.ingest_event(payload)
+    state_payload, processed_lines, parse_errors = _replay_ws_events_payload(
+        events_path=events_path,
+        captured_at=captured_at,
+        max_staleness_seconds=max_staleness_seconds,
+    )
+    if state_payload is None:
+        raise ValueError(f"Unable to replay websocket events from {events_path}")
 
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     state_path = Path(ws_state_json) if ws_state_json else default_ws_state_path(output_dir)
-    state_payload = engine.serialize(now=captured_at)
+    last_known_good_path = default_ws_state_last_known_good_path(output_dir)
     state_path.parent.mkdir(parents=True, exist_ok=True)
     state_path.write_text(json.dumps(state_payload, indent=2), encoding="utf-8")
+    replay_authority = load_ws_state_authority(
+        ws_state_json=state_path,
+        captured_at=captured_at,
+        max_staleness_seconds=max_staleness_seconds,
+    )
+    if (
+        str(replay_authority.get("status") or "").strip().lower() in {"ready", "stale"}
+        and int(_parse_int(replay_authority.get("market_count")) or 0) > 0
+        and int(_parse_int(replay_authority.get("desynced_market_count")) or 0) <= 0
+        and last_known_good_path != state_path
+    ):
+        _write_json_atomic(last_known_good_path, state_payload)
 
     stamp = captured_at.astimezone().strftime("%Y%m%d_%H%M%S_%f")[:-3]
     summary_path = out_dir / f"kalshi_ws_state_summary_{stamp}.json"
@@ -1041,22 +1172,43 @@ def run_kalshi_ws_state_collect(
     events_path = Path(ws_events_ndjson) if ws_events_ndjson else out_dir / f"kalshi_ws_events_{stamp}.ndjson"
     events_path.parent.mkdir(parents=True, exist_ok=True)
     state_path = Path(ws_state_json) if ws_state_json else default_ws_state_path(output_dir)
-    prior_ready_state_payload: dict[str, Any] | None = None
-    prior_ready_state_authority: dict[str, Any] | None = None
-    if state_path.exists():
-        try:
-            prior_payload_candidate = json.loads(state_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            prior_payload_candidate = None
-        if isinstance(prior_payload_candidate, dict):
-            prior_authority_candidate = load_ws_state_authority(
-                ws_state_json=state_path,
-                captured_at=started_at,
-                max_staleness_seconds=max_staleness_seconds,
-            )
-            if bool(prior_authority_candidate.get("gate_pass")):
-                prior_ready_state_payload = prior_payload_candidate
-                prior_ready_state_authority = prior_authority_candidate
+    last_known_good_path = default_ws_state_last_known_good_path(output_dir)
+    prior_reusable_state_payload: dict[str, Any] | None = None
+    prior_reusable_state_authority: dict[str, Any] | None = None
+    archived_recovery_used = False
+    archived_recovery_summary_file = ""
+    archived_recovery_events_ndjson = ""
+    prior_reusable_state_payload, prior_reusable_state_authority = _load_reusable_ws_state(
+        state_path=state_path,
+        captured_at=started_at,
+        max_staleness_seconds=max_staleness_seconds,
+    )
+    backup_state_used = False
+    if prior_reusable_state_payload is None and last_known_good_path != state_path:
+        (
+            prior_reusable_state_payload,
+            prior_reusable_state_authority,
+        ) = _load_reusable_ws_state(
+            state_path=last_known_good_path,
+            captured_at=started_at,
+            max_staleness_seconds=max_staleness_seconds,
+        )
+        backup_state_used = prior_reusable_state_payload is not None
+    if prior_reusable_state_payload is None:
+        (
+            prior_reusable_state_payload,
+            prior_reusable_state_authority,
+            archived_recovery_summary_file,
+            archived_recovery_events_ndjson,
+        ) = _load_reusable_ws_state_from_archives(
+            output_dir=out_dir,
+            captured_at=started_at,
+            max_staleness_seconds=max_staleness_seconds,
+            state_path=state_path,
+        )
+        archived_recovery_used = prior_reusable_state_payload is not None
+        if archived_recovery_used and last_known_good_path != state_path:
+            _write_json_atomic(last_known_good_path, prior_reusable_state_payload)
 
     engine = KalshiWsStateEngine(max_staleness_seconds=max_staleness_seconds)
     capture_started = time.monotonic()
@@ -1229,13 +1381,45 @@ def run_kalshi_ws_state_collect(
     fallback_state_reason = ""
     fallback_state_last_event_age_seconds: float | str = ""
     collection_failed = collection_status == "upstream_error" or (collection_status == "empty" and bool(last_error))
-    if collection_failed and prior_ready_state_payload is not None and prior_ready_state_authority is not None:
-        state_payload = prior_ready_state_payload
+    if collection_failed and prior_reusable_state_payload is not None and prior_reusable_state_authority is not None:
+        state_payload = prior_reusable_state_payload
         fallback_state_used = True
-        fallback_state_reason = "preserved_previous_ready_state"
-        fallback_state_last_event_age_seconds = prior_ready_state_authority.get("last_event_age_seconds") or ""
+        if backup_state_used:
+            prior_status = str(prior_reusable_state_authority.get("status") or "").strip().lower()
+            if prior_status == "ready":
+                fallback_state_reason = "preserved_last_known_good_ready_state"
+            else:
+                fallback_state_reason = "preserved_last_known_good_stale_state"
+        elif archived_recovery_used:
+            prior_status = str(prior_reusable_state_authority.get("status") or "").strip().lower()
+            if prior_status == "ready":
+                fallback_state_reason = "replayed_archived_ready_state"
+            else:
+                fallback_state_reason = "replayed_archived_stale_state"
+        elif str(prior_reusable_state_authority.get("status") or "").strip().lower() == "ready":
+            fallback_state_reason = "preserved_previous_ready_state"
+        else:
+            fallback_state_reason = "preserved_previous_stale_state"
+        fallback_state_last_event_age_seconds = prior_reusable_state_authority.get("last_event_age_seconds") or ""
 
     _write_json_atomic(state_path, state_payload)
+    current_state_authority = load_ws_state_authority(
+        ws_state_json=state_path,
+        captured_at=finished_at,
+        max_staleness_seconds=max_staleness_seconds,
+    )
+    if (
+        str(current_state_authority.get("status") or "").strip().lower() in {"ready", "stale"}
+        and int(_parse_int(current_state_authority.get("market_count")) or 0) > 0
+        and int(_parse_int(current_state_authority.get("desynced_market_count")) or 0) <= 0
+        and last_known_good_path != state_path
+    ):
+        _write_json_atomic(last_known_good_path, state_payload)
+    effective_authority = load_ws_state_authority(
+        ws_state_json=state_path,
+        captured_at=finished_at,
+        max_staleness_seconds=max_staleness_seconds,
+    )
     summary = {
         "captured_at": finished_at.isoformat(),
         "started_at": started_at.isoformat(),
@@ -1267,8 +1451,21 @@ def run_kalshi_ws_state_collect(
         "fallback_state_used": fallback_state_used,
         "fallback_state_reason": fallback_state_reason,
         "fallback_state_last_event_age_seconds": fallback_state_last_event_age_seconds,
+        "last_known_good_ws_state_json": str(last_known_good_path),
+        "last_known_good_state_used": backup_state_used,
+        "archived_state_recovery_used": archived_recovery_used,
+        "archived_state_recovery_summary_file": archived_recovery_summary_file,
+        "archived_state_recovery_events_ndjson": archived_recovery_events_ndjson,
         **state_payload.get("summary", {}),
     }
+    summary["status"] = effective_authority.get("status")
+    summary["gate_pass"] = effective_authority.get("gate_pass")
+    summary["market_count"] = effective_authority.get("market_count")
+    summary["desynced_market_count"] = effective_authority.get("desynced_market_count")
+    summary["last_event_at"] = effective_authority.get("last_event_at")
+    summary["last_event_age_seconds"] = effective_authority.get("last_event_age_seconds")
+    summary["websocket_lag_ms"] = effective_authority.get("websocket_lag_ms")
+    summary["max_staleness_seconds"] = effective_authority.get("max_staleness_seconds")
     if ws_url_failover_errors:
         summary["ws_url_failover_errors"] = ws_url_failover_errors
     if ws_url_failover_error_kind_counts:

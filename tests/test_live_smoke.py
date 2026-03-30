@@ -1,10 +1,14 @@
 import tempfile
+import sys
 from pathlib import Path
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 from unittest.mock import patch
 from urllib.error import URLError
 from urllib.parse import parse_qs, urlparse
 
+from betbot.cli import main as cli_main
 from betbot.live_smoke import _http_get_json, kalshi_api_root_candidates, run_live_smoke
 
 
@@ -359,6 +363,37 @@ class LiveSmokeTests(unittest.TestCase):
             self.assertEqual(mock_sleep.call_count, 4)
             messages = [item["message"] for item in summary["failed"]]
             self.assertTrue(all("Network error:" in message for message in messages))
+
+    def test_live_smoke_cli_exits_nonzero_when_summary_failed(self) -> None:
+        with patch(
+            "betbot.cli.run_live_smoke",
+            return_value={"status": "failed", "checks_failed": 1, "output_file": "outputs/live_smoke.json"},
+        ), patch.object(
+            sys,
+            "argv",
+            ["betbot", "live-smoke", "--env-file", "dummy.env"],
+        ):
+            stdout = StringIO()
+            with self.assertRaises(SystemExit) as exc, redirect_stdout(stdout):
+                cli_main()
+
+        self.assertEqual(exc.exception.code, 1)
+        self.assertIn('"status": "failed"', stdout.getvalue())
+
+    def test_live_smoke_cli_keeps_zero_exit_when_summary_passed(self) -> None:
+        with patch(
+            "betbot.cli.run_live_smoke",
+            return_value={"status": "passed", "checks_failed": 0, "output_file": "outputs/live_smoke.json"},
+        ), patch.object(
+            sys,
+            "argv",
+            ["betbot", "live-smoke", "--env-file", "dummy.env"],
+        ):
+            stdout = StringIO()
+            with redirect_stdout(stdout):
+                cli_main()
+
+        self.assertIn('"status": "passed"', stdout.getvalue())
 
 
 if __name__ == "__main__":

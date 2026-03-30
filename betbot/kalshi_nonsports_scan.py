@@ -144,9 +144,14 @@ def _load_open_events_with_diagnostics(
                         timeout_seconds,
                     )
                 except URLError as exc:
-                    if _is_dns_resolution_error(exc) and api_root_index < len(effective_api_roots) - 1:
+                    if _is_dns_resolution_error(exc):
                         diagnostics["network_retries_used"] += 1
-                        break
+                        if api_root_index < len(effective_api_roots) - 1:
+                            break
+                        raise KalshiEventsFetchError(
+                            f"Kalshi events request network_error: {exc.reason}",
+                            diagnostics,
+                        ) from exc
                     if network_retries >= KALSHI_NETWORK_MAX_RETRIES:
                         if api_root_index < len(effective_api_roots) - 1:
                             break

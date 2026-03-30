@@ -1161,7 +1161,7 @@ def build_parser() -> argparse.ArgumentParser:
     kalshi_nonsports_auto_priors.add_argument(
         "--allowed-canonical-niches",
         default="",
-        help="Optional comma-separated canonical niches (for example: macro_release,weather_energy_transmission)",
+        help="Optional comma-separated canonical niches (for example: macro_release,weather_energy_transmission,weather_climate)",
     )
     kalshi_nonsports_auto_priors.add_argument(
         "--allowed-categories",
@@ -1234,6 +1234,18 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=12.0,
         help="HTTP timeout per weather data request",
+    )
+    kalshi_weather_priors.add_argument(
+        "--historical-lookback-years",
+        type=int,
+        default=15,
+        help="Years of station-level historical day-of-year samples to use when NOAA CDO token is available",
+    )
+    kalshi_weather_priors.add_argument(
+        "--station-history-cache-max-age-hours",
+        type=float,
+        default=24.0,
+        help="Max age for cached station-history snapshots before forcing a fresh CDO pull",
     )
     kalshi_weather_priors.add_argument(
         "--disable-protect-manual",
@@ -1461,6 +1473,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Disable canonical mapping requirement in dry-run reports only; live execution still requires canonical mapping",
     )
     kalshi_micro_prior_execute.add_argument(
+        "--disable-daily-weather-live-only",
+        action="store_true",
+        help="Allow non-daily-weather contracts to pass live gating (default enforces daily weather only)",
+    )
+    kalshi_micro_prior_execute.add_argument(
+        "--disable-daily-weather-board-coverage",
+        action="store_true",
+        help="Allow live mode even when captured history is missing daily weather board coverage",
+    )
+    kalshi_micro_prior_execute.add_argument(
         "--allow-live-orders",
         action="store_true",
         help="Actually submit orders if all other live safety checks pass",
@@ -1635,6 +1657,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--disable-require-canonical-for-live",
         action="store_true",
         help="Disable canonical mapping requirement in dry-run reports only; live execution still requires canonical mapping",
+    )
+    kalshi_micro_prior_trader.add_argument(
+        "--disable-daily-weather-live-only",
+        action="store_true",
+        help="Allow non-daily-weather contracts to pass live gating (default enforces daily weather only)",
+    )
+    kalshi_micro_prior_trader.add_argument(
+        "--disable-daily-weather-board-coverage",
+        action="store_true",
+        help="Allow live mode even when captured history is missing daily weather board coverage",
     )
     kalshi_micro_prior_trader.add_argument(
         "--allow-live-orders",
@@ -3739,6 +3771,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
+    exit_code = 0
 
     if args.command == "backtest":
         cfg = load_config(args.config)
@@ -3908,6 +3941,8 @@ def main() -> None:
             timeout_seconds=args.timeout_seconds,
             include_odds_provider_check=not args.skip_odds_provider_check,
         )
+        if summary.get("status") == "failed":
+            exit_code = 1
     elif args.command == "dns-doctor":
         summary = run_dns_doctor(
             env_file=args.env_file,
@@ -4154,6 +4189,8 @@ def main() -> None:
             allowed_contract_families=allowed_contract_families,
             max_markets=args.max_markets,
             timeout_seconds=args.timeout_seconds,
+            historical_lookback_years=args.historical_lookback_years,
+            station_history_cache_max_age_hours=args.station_history_cache_max_age_hours,
             protect_manual=not args.disable_protect_manual,
             write_back_to_priors=not args.dry_run,
             top_n=args.top_n,
@@ -4220,6 +4257,8 @@ def main() -> None:
             enforce_ws_state_authority=args.enforce_ws_state_authority,
             ws_state_json=args.ws_state_json,
             ws_state_max_age_seconds=args.ws_state_max_age_seconds,
+            enforce_daily_weather_live_only=not args.disable_daily_weather_live_only,
+            require_daily_weather_board_coverage_for_live=not args.disable_daily_weather_board_coverage,
             include_incentives=args.include_incentives,
         )
     elif args.command == "kalshi-micro-prior-trader":
@@ -4268,6 +4307,8 @@ def main() -> None:
             enforce_ws_state_authority=args.enforce_ws_state_authority,
             ws_state_json=args.ws_state_json,
             ws_state_max_age_seconds=args.ws_state_max_age_seconds,
+            enforce_daily_weather_live_only=not args.disable_daily_weather_live_only,
+            require_daily_weather_board_coverage_for_live=not args.disable_daily_weather_board_coverage,
             capture_before_execute=not args.skip_capture,
             capture_max_hours_to_close=args.max_hours_to_close,
             capture_page_limit=args.page_limit,
@@ -4690,6 +4731,8 @@ def main() -> None:
         raise ValueError(f"Unsupported command: {args.command}")
 
     print(json.dumps(summary, indent=2))
+    if exit_code:
+        raise SystemExit(exit_code)
 
 
 if __name__ == "__main__":

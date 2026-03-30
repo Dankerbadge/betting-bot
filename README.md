@@ -778,6 +778,8 @@ Output:
 
 Use `kalshi-micro-plan` to prepare a read-only, tiny-bankroll Kalshi workflow before going live. It builds `1`-contract, `post_only`, `good_till_canceled` order previews from the current non-sports board and enforces a small daily cash-risk cap.
 
+Kalshi’s March 2026 API migration introduced fixed-point dollar pricing across the API, per-market subpenny price ladders, and fractional trading on some markets. The micro workflow intentionally remains conservative: it still plans whole-contract orders, uses fixed-point dollar fields, and assumes no fractional sizing unless the planner/executor are upgraded explicitly for that market class.
+
 Example:
 
 ```bash

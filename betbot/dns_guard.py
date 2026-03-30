@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 import ipaddress
 import json
 import os
@@ -40,6 +40,9 @@ DOH_ENDPOINTS = (
     "https://cloudflare-dns.com/dns-query",
     "https://dns.google/resolve",
 )
+DEFAULT_DNS_RECOVERY_CACHE_PATH = Path("outputs/dns_recovery_cache.json")
+DEFAULT_DNS_RECOVERY_CACHE_MAX_AGE_SECONDS = 12 * 60 * 60
+DEFAULT_DNS_RECOVERY_CACHE_MAX_HOSTS = 128
 
 
 def _exc_text(exc: BaseException) -> str:
@@ -95,6 +98,135 @@ def _unique_ip_values(values: list[str]) -> tuple[str, ...]:
         if candidate not in unique:
             unique.append(candidate)
     return tuple(unique)
+
+
+def _dns_recovery_cache_enabled() -> bool:
+    return os.getenv("BETBOT_DISABLE_DNS_RECOVERY_CACHE", "").strip() not in {"1", "true", "TRUE"}
+
+
+def _dns_recovery_cache_path() -> Path:
+    raw = str(os.getenv("BETBOT_DNS_RECOVERY_CACHE_FILE") or "").strip()
+    if raw:
+        return Path(raw).expanduser()
+    return DEFAULT_DNS_RECOVERY_CACHE_PATH
+
+
+def _dns_recovery_cache_max_age_seconds() -> float:
+    raw = str(os.getenv("BETBOT_DNS_RECOVERY_CACHE_MAX_AGE_SECONDS") or "").strip()
+    if not raw:
+        return float(DEFAULT_DNS_RECOVERY_CACHE_MAX_AGE_SECONDS)
+    try:
+        parsed = float(raw)
+    except ValueError:
+        return float(DEFAULT_DNS_RECOVERY_CACHE_MAX_AGE_SECONDS)
+    return max(0.0, parsed)
+
+
+def _load_dns_recovery_cache(path: Path) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"entries": {}}
+    if not isinstance(payload, dict):
+        return {"entries": {}}
+    entries = payload.get("entries")
+    if not isinstance(entries, dict):
+        payload["entries"] = {}
+    return payload
+
+
+def _store_dns_recovery_ips(
+    host: str,
+    addresses: tuple[str, ...],
+    *,
+    source: str,
+) -> None:
+    if not _dns_recovery_cache_enabled():
+        return
+    normalized = _normalize_host(host)
+    if not normalized:
+        return
+    unique_addresses = _unique_ip_values(list(addresses))
+    if not unique_addresses:
+        return
+
+    cache_path = _dns_recovery_cache_path()
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = _load_dns_recovery_cache(cache_path)
+    entries = payload.get("entries")
+    if not isinstance(entries, dict):
+        entries = {}
+        payload["entries"] = entries
+
+    now_utc = datetime.now(timezone.utc)
+    now_epoch = now_utc.timestamp()
+    existing_payload = entries.get(normalized)
+    existing_ips: tuple[str, ...] = ()
+    if isinstance(existing_payload, dict):
+        existing_ips = _unique_ip_values([str(item) for item in existing_payload.get("ips") or []])
+    merged_ips = _unique_ip_values(list(existing_ips) + list(unique_addresses))
+    entries[normalized] = {
+        "ips": list(merged_ips),
+        "updated_at_epoch": now_epoch,
+        "updated_at": now_utc.isoformat(),
+        "last_source": str(source or ""),
+    }
+
+    if len(entries) > DEFAULT_DNS_RECOVERY_CACHE_MAX_HOSTS:
+        sortable_entries: list[tuple[str, float]] = []
+        for key, value in entries.items():
+            if not isinstance(value, dict):
+                sortable_entries.append((key, 0.0))
+                continue
+            timestamp = value.get("updated_at_epoch")
+            try:
+                sortable_entries.append((key, float(timestamp)))
+            except (TypeError, ValueError):
+                sortable_entries.append((key, 0.0))
+        sortable_entries.sort(key=lambda item: item[1], reverse=True)
+        keep_hosts = {item[0] for item in sortable_entries[:DEFAULT_DNS_RECOVERY_CACHE_MAX_HOSTS]}
+        entries = {key: value for key, value in entries.items() if key in keep_hosts}
+        payload["entries"] = entries
+
+    temp_path = cache_path.with_suffix(cache_path.suffix + ".tmp")
+    temp_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    os.replace(temp_path, cache_path)
+
+
+def _load_cached_dns_recovery_ips(
+    host: str,
+    *,
+    max_age_seconds: float | None = None,
+) -> tuple[str, ...]:
+    if not _dns_recovery_cache_enabled():
+        return ()
+    normalized = _normalize_host(host)
+    if not normalized:
+        return ()
+
+    cache_path = _dns_recovery_cache_path()
+    payload = _load_dns_recovery_cache(cache_path)
+    entries = payload.get("entries")
+    if not isinstance(entries, dict):
+        return ()
+    row = entries.get(normalized)
+    if not isinstance(row, dict):
+        return ()
+
+    timestamp_raw = row.get("updated_at_epoch")
+    try:
+        timestamp = float(timestamp_raw)
+    except (TypeError, ValueError):
+        timestamp = 0.0
+
+    effective_max_age = _dns_recovery_cache_max_age_seconds() if max_age_seconds is None else max(0.0, float(max_age_seconds))
+    if effective_max_age > 0 and timestamp > 0:
+        age_seconds = max(0.0, datetime.now(timezone.utc).timestamp() - timestamp)
+        if age_seconds > effective_max_age:
+            return ()
+
+    cached_ips = _unique_ip_values([str(item) for item in row.get("ips") or []])
+    return cached_ips
 
 
 def _skip_dns_name(payload: bytes, offset: int) -> int:
@@ -246,7 +378,9 @@ def resolve_host_with_public_dns(
                 if answer not in resolved:
                     resolved.append(answer)
         if resolved:
-            return tuple(resolved)
+            resolved_tuple = tuple(resolved)
+            _store_dns_recovery_ips(normalized, resolved_tuple, source="public_dns_udp")
+            return resolved_tuple
 
     doh_answers = _resolve_host_via_doh(
         host=normalized,
@@ -256,7 +390,10 @@ def resolve_host_with_public_dns(
     for answer in doh_answers:
         if answer not in resolved:
             resolved.append(answer)
-    return tuple(resolved)
+    resolved_tuple = tuple(resolved)
+    if resolved_tuple:
+        _store_dns_recovery_ips(normalized, resolved_tuple, source="public_dns_doh")
+    return resolved_tuple
 
 
 @contextmanager
@@ -315,14 +452,25 @@ def urlopen_with_dns_recovery(
         host = _normalize_host(urlparse(str(request.full_url)).hostname or "")
         if not host or not should_attempt_dns_recovery(host) or not is_dns_resolution_error(exc):
             raise
+        cached_addresses = _load_cached_dns_recovery_ips(host)
+        if cached_addresses:
+            try:
+                with _patched_getaddrinfo(host, cached_addresses):
+                    return urlopen_fn(request, timeout=timeout_seconds)
+            except URLError as cached_exc:
+                if not is_dns_resolution_error(cached_exc):
+                    raise
         recovered = resolve_host_with_public_dns(
             host,
             timeout_seconds=min(2.0, max(0.25, float(timeout_seconds) / 2.0)),
         )
         if not recovered:
             raise
+        recovery_addresses = tuple(address for address in recovered if address not in cached_addresses) or recovered
         with _patched_getaddrinfo(host, recovered):
-            return urlopen_fn(request, timeout=timeout_seconds)
+            response = urlopen_fn(request, timeout=timeout_seconds)
+        _store_dns_recovery_ips(host, recovery_addresses, source="dns_recovery_urlopen")
+        return response
 
 
 def create_connection_with_dns_recovery(
@@ -336,6 +484,14 @@ def create_connection_with_dns_recovery(
     except OSError as exc:
         if not should_attempt_dns_recovery(host) or not is_dns_resolution_error(exc):
             raise
+        cached_addresses = _load_cached_dns_recovery_ips(host)
+        for address in cached_addresses:
+            try:
+                connected = socket.create_connection((address, port), timeout_seconds)
+            except OSError:
+                continue
+            _store_dns_recovery_ips(host, (address,), source="dns_recovery_socket_cache")
+            return connected
         recovered = resolve_host_with_public_dns(
             host,
             timeout_seconds=min(2.0, max(0.25, float(timeout_seconds) / 2.0)),
@@ -343,9 +499,12 @@ def create_connection_with_dns_recovery(
         if not recovered:
             raise
         last_error: OSError | None = None
-        for address in recovered:
+        recovery_addresses = tuple(address for address in recovered if address not in cached_addresses) or recovered
+        for address in recovery_addresses:
             try:
-                return socket.create_connection((address, port), timeout_seconds)
+                connected = socket.create_connection((address, port), timeout_seconds)
+                _store_dns_recovery_ips(host, (address,), source="dns_recovery_socket_public")
+                return connected
             except OSError as candidate_exc:
                 last_error = candidate_exc
                 continue
@@ -369,7 +528,10 @@ def _system_resolve(host: str) -> tuple[tuple[str, ...], str]:
         candidate = str(sockaddr[0] or "").strip()
         if candidate and candidate not in addresses:
             addresses.append(candidate)
-    return tuple(addresses), ""
+    resolved = tuple(addresses)
+    if resolved:
+        _store_dns_recovery_ips(host, resolved, source="system_resolver")
+    return resolved, ""
 
 
 def run_dns_doctor(
@@ -401,29 +563,42 @@ def run_dns_doctor(
 
     checks: list[dict[str, Any]] = []
     healthy_count = 0
+    fresh_resolution_count = 0
     for host in unique_hosts:
         system_ips, system_error = _system_resolve(host)
+        cached_ips = _load_cached_dns_recovery_ips(host)
         recovered_ips = resolve_host_with_public_dns(host, timeout_seconds=timeout_seconds)
-        healthy = bool(system_ips or recovered_ips)
+        has_fresh_resolution = bool(system_ips or recovered_ips)
+        healthy = bool(has_fresh_resolution or cached_ips)
         if healthy:
             healthy_count += 1
+        if has_fresh_resolution:
+            fresh_resolution_count += 1
         checks.append(
             {
                 "host": host,
                 "healthy": healthy,
+                "fresh_resolution": has_fresh_resolution,
                 "system_ips": list(system_ips),
+                "cached_ips": list(cached_ips),
                 "public_dns_ips": list(recovered_ips),
                 "system_error": system_error,
             }
         )
 
-    status = "healthy" if healthy_count == len(unique_hosts) else ("degraded" if healthy_count > 0 else "failed")
+    if healthy_count == len(unique_hosts) and fresh_resolution_count == len(unique_hosts):
+        status = "healthy"
+    elif healthy_count > 0:
+        status = "degraded"
+    else:
+        status = "failed"
     summary: dict[str, Any] = {
         "captured_at": datetime.now().isoformat(),
         "env_file": env_file,
         "status": status,
         "hosts_checked": len(unique_hosts),
         "hosts_healthy": healthy_count,
+        "hosts_with_fresh_resolution": fresh_resolution_count,
         "checks": checks,
     }
     if status != "healthy":

@@ -34,6 +34,12 @@ class KalshiWeatherSettlementTests(unittest.TestCase):
         )
         self.assertEqual(threshold, "between:1.17:1.23")
 
+    def test_extract_threshold_expression_parses_at_most(self) -> None:
+        threshold = extract_threshold_expression(
+            "If the daily high is at most 72 then the market resolves to Yes."
+        )
+        self.assertEqual(threshold, "at_most:72")
+
     def test_rule_hash_is_stable(self) -> None:
         text_a = "If value is above 1.30 then resolve Yes."
         text_b = "If   value is above 1.30 then resolve Yes."

@@ -317,6 +317,7 @@ def _ready_for_auto_live_order(
     niche_windows = {
         "macro_release": 168.0,
         "weather_energy_transmission": 72.0,
+        "weather_climate": 36.0,
     }
     if isinstance(max_hours_to_close_by_canonical_niche, dict):
         for key, value in max_hours_to_close_by_canonical_niche.items():
@@ -410,6 +411,8 @@ def run_kalshi_micro_prior_trader(
     enforce_ws_state_authority: bool = False,
     ws_state_json: str | None = None,
     ws_state_max_age_seconds: float = 30.0,
+    enforce_daily_weather_live_only: bool = True,
+    require_daily_weather_board_coverage_for_live: bool = True,
     auto_refresh_weather_priors: bool = True,
     auto_weather_prior_max_markets: int = 30,
     auto_weather_allowed_contract_families: tuple[str, ...] = (
@@ -627,6 +630,8 @@ def run_kalshi_micro_prior_trader(
         "capture_max_hours_to_close": capture_max_hours_to_close,
         "capture_page_limit": max(1, capture_page_limit),
         "capture_max_pages": max(1, capture_max_pages),
+        "enforce_daily_weather_live_only": bool(enforce_daily_weather_live_only),
+        "require_daily_weather_board_coverage_for_live": bool(require_daily_weather_board_coverage_for_live),
         "live_env_mode": "temporary_copy" if allow_live_orders and use_temporary_live_env else "source_env",
         "auto_cancel_duplicate_open_orders": auto_cancel_duplicate_open_orders,
         "capture_status": capture_summary.get("status") if isinstance(capture_summary, dict) else None,
@@ -744,6 +749,8 @@ def run_kalshi_micro_prior_trader(
                 enforce_ws_state_authority=enforce_ws_state_authority,
                 ws_state_json=ws_state_json,
                 ws_state_max_age_seconds=ws_state_max_age_seconds,
+                enforce_daily_weather_live_only=enforce_daily_weather_live_only,
+                require_daily_weather_board_coverage_for_live=require_daily_weather_board_coverage_for_live,
                 http_request_json=http_request_json,
                 http_get_json=http_get_json,
                 sign_request=sign_request,

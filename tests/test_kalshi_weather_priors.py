@@ -116,11 +116,31 @@ class KalshiWeatherPriorsTests(unittest.TestCase):
                     "values": values,
                 }
 
+            def fake_station_history_fetcher(
+                *,
+                station_id: str,
+                month: int,
+                day: int,
+                lookback_years: int,
+                timeout_seconds: float,
+                now: datetime,
+            ):
+                self.assertEqual(station_id, "KJFK")
+                return {
+                    "status": "ready",
+                    "sample_years": 8,
+                    "rain_day_frequency": 0.41,
+                    "tmax_values_f": [55.0, 58.0, 60.0, 63.0, 61.0, 59.0, 57.0, 62.0],
+                    "tmin_values_f": [43.0, 45.0, 47.0, 49.0, 46.0, 44.0, 42.0, 48.0],
+                    "daily_mean_values_f": [49.0, 51.0, 53.5, 56.0, 53.5, 51.5, 49.5, 55.0],
+                }
+
             summary = run_kalshi_weather_priors(
                 priors_csv=str(priors_csv),
                 history_csv=str(history_csv),
                 output_dir=str(base),
                 station_forecast_fetcher=fake_station_forecast_fetcher,
+                station_history_fetcher=fake_station_history_fetcher,
                 anomaly_series_fetcher=fake_noaa_series_fetcher,
                 now=datetime(2026, 3, 29, 12, 5, tzinfo=timezone.utc),
             )
@@ -207,6 +227,7 @@ class KalshiWeatherPriorsTests(unittest.TestCase):
                 history_csv=str(history_csv),
                 output_dir=str(base),
                 station_forecast_fetcher=fake_station_forecast_fetcher,
+                station_history_fetcher=lambda **kwargs: {"status": "disabled_missing_token"},
                 anomaly_series_fetcher=lambda **kwargs: {"status": "ready", "values": [0.0] * 24},
                 now=datetime(2026, 3, 29, 12, 5, tzinfo=timezone.utc),
             )
@@ -256,6 +277,7 @@ class KalshiWeatherPriorsTests(unittest.TestCase):
                 history_csv=str(history_csv),
                 output_dir=str(base),
                 station_forecast_fetcher=failing_station_forecast_fetcher,
+                station_history_fetcher=lambda **kwargs: {"status": "disabled_missing_token"},
                 anomaly_series_fetcher=lambda **kwargs: {"status": "ready", "values": [0.0] * 24},
                 now=datetime(2026, 3, 29, 12, 5, tzinfo=timezone.utc),
             )
@@ -268,6 +290,88 @@ class KalshiWeatherPriorsTests(unittest.TestCase):
             self.assertIn("nodename nor servname", summary["error"])
             self.assertTrue(Path(summary["output_file"]).exists())
             self.assertTrue(Path(summary["skipped_output_csv"]).exists())
+
+    def test_run_kalshi_weather_priors_passes_station_history_cache_settings_when_supported(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            history_csv = base / "history.csv"
+            priors_csv = base / "priors.csv"
+            _write_csv(
+                history_csv,
+                HISTORY_FIELDNAMES,
+                [
+                    {
+                        "captured_at": "2026-03-29T12:00:00+00:00",
+                        "category": "Climate and Weather",
+                        "series_ticker": "KXRAINNYC",
+                        "event_ticker": "KXRAINNYC-26MAR29",
+                        "market_ticker": "KXRAINNYC-26MAR29",
+                        "event_title": "Will it rain in NYC today?",
+                        "market_title": "Will it rain in NYC today?",
+                        "rules_primary": "If measurable rain is recorded at station KJFK, this market resolves to Yes.",
+                        "close_time": "2026-03-30T03:59:00+00:00",
+                        "hours_to_close": "10",
+                        "yes_bid_dollars": "0.30",
+                        "yes_ask_dollars": "0.40",
+                        "spread_dollars": "0.10",
+                    },
+                ],
+            )
+            _write_csv(priors_csv, PRIOR_FIELDNAMES, [])
+
+            seen_cache_dir: list[str] = []
+            seen_cache_age_hours: list[float] = []
+
+            def fake_station_history_fetcher(
+                *,
+                station_id: str,
+                month: int,
+                day: int,
+                lookback_years: int,
+                timeout_seconds: float,
+                now: datetime,
+                cache_dir: str,
+                cache_max_age_hours: float,
+            ):
+                seen_cache_dir.append(cache_dir)
+                seen_cache_age_hours.append(float(cache_max_age_hours))
+                return {
+                    "status": "ready",
+                    "sample_years": 4,
+                    "rain_day_frequency": 0.35,
+                    "tmax_values_f": [55.0, 58.0, 60.0, 63.0],
+                    "tmin_values_f": [43.0, 45.0, 47.0, 49.0],
+                    "daily_mean_values_f": [49.0, 51.5, 53.5, 56.0],
+                }
+
+            summary = run_kalshi_weather_priors(
+                priors_csv=str(priors_csv),
+                history_csv=str(history_csv),
+                output_dir=str(base),
+                station_forecast_fetcher=lambda **kwargs: {
+                    "status": "ready",
+                    "station_id": "KJFK",
+                    "forecast_updated_at": "2026-03-29T12:00:00+00:00",
+                    "periods": [
+                        {
+                            "startTime": "2026-03-29T13:00:00+00:00",
+                            "temperature": 53,
+                            "probabilityOfPrecipitation": {"value": 35},
+                        }
+                    ],
+                },
+                station_history_fetcher=fake_station_history_fetcher,
+                anomaly_series_fetcher=lambda **kwargs: {"status": "ready", "values": [0.0] * 24},
+                station_history_cache_max_age_hours=18.0,
+                now=datetime(2026, 3, 29, 12, 5, tzinfo=timezone.utc),
+            )
+
+            self.assertEqual(summary["status"], "ready")
+            self.assertTrue(seen_cache_dir)
+            self.assertEqual(str(Path(seen_cache_dir[0]).name), "weather_station_history_cache")
+            self.assertEqual(seen_cache_age_hours, [18.0])
+            self.assertEqual(summary["station_history_cache_max_age_hours"], 18.0)
+            self.assertTrue(str(summary["station_history_cache_dir"]).endswith("weather_station_history_cache"))
 
 
 if __name__ == "__main__":

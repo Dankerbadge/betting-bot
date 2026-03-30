@@ -2,15 +2,19 @@ from __future__ import annotations
 
 import csv
 from datetime import datetime, timedelta, timezone
+import inspect
 import json
 import math
 from pathlib import Path
+import re
 from statistics import mean, pstdev
 from typing import Any, Callable
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from betbot.kalshi_nonsports_priors import PRIOR_FIELDNAMES, load_prior_rows
 from betbot.kalshi_nonsports_quality import _parse_timestamp, load_history_rows
 from betbot.kalshi_weather_ingest import (
+    fetch_ncei_cdo_station_daily_history,
     fetch_noaa_global_land_ocean_anomaly_series,
     fetch_nws_station_hourly_forecast,
 )
@@ -19,6 +23,7 @@ from betbot.kalshi_weather_settlement import build_weather_settlement_spec
 
 WeatherStationForecastFetcher = Callable[..., dict[str, Any]]
 NoaaAnomalySeriesFetcher = Callable[..., dict[str, Any]]
+StationHistoryFetcher = Callable[..., dict[str, Any]]
 
 
 _DEFAULT_ALLOWED_FAMILIES = (
@@ -26,6 +31,8 @@ _DEFAULT_ALLOWED_FAMILIES = (
     "daily_temperature",
     "monthly_climate_anomaly",
 )
+_DEFAULT_HISTORICAL_LOOKBACK_YEARS = 15
+_DEFAULT_STATION_HISTORY_CACHE_MAX_AGE_HOURS = 24.0
 
 _CITY_STATION_FALLBACKS = {
     "new york": "KJFK",
@@ -42,12 +49,26 @@ _CITY_STATION_FALLBACKS = {
     "san francisco": "KSFO",
     "sf ": "KSFO",
     "seattle": "KSEA",
+    "miami": "KMIA",
+    "philadelphia": "KPHL",
+    "philly": "KPHL",
+    "atlanta": "KATL",
+    "houston": "KIAH",
+    "minneapolis": "KMSP",
+    "detroit": "KDTW",
+    "baltimore": "KBWI",
+    "las vegas": "KLAS",
+    "salt lake city": "KSLC",
+    "portland": "KPDX",
 }
 
 WEATHER_PRIOR_EXTRA_FIELDS = [
     "contract_family",
     "resolution_source_type",
     "model_name",
+    "model_probability_raw",
+    "execution_probability_guarded",
+    "market_midpoint_probability",
     "settlement_source_primary",
     "settlement_source_fallback",
     "settlement_station",
@@ -77,6 +98,9 @@ WEATHER_PRIOR_OUTPUT_FIELDNAMES = [
     "contract_family",
     "resolution_source_type",
     "model_name",
+    "model_probability_raw",
+    "execution_probability_guarded",
+    "market_midpoint_probability",
     "settlement_source_primary",
     "settlement_source_fallback",
     "settlement_station",
@@ -173,14 +197,22 @@ def _midpoint_probability_from_market(row: dict[str, Any]) -> float | None:
     return _clamp_probability((yes_bid + yes_ask) / 2.0)
 
 
-def _anchor_to_market_midpoint(probability: float, row: dict[str, Any], max_deviation: float) -> float:
+def _execution_guard_probability(
+    probability: float,
+    row: dict[str, Any],
+    *,
+    max_deviation: float,
+    midpoint_blend_weight: float = 0.06,
+) -> float:
     midpoint = _midpoint_probability_from_market(row)
     if midpoint is None:
         return _clamp_probability(probability)
     low = midpoint - max_deviation
     high = midpoint + max_deviation
-    anchored = min(max(probability, low), high)
-    return _clamp_probability(anchored)
+    bounded = min(max(probability, low), high)
+    blend_weight = max(0.0, min(0.30, float(midpoint_blend_weight)))
+    blended = (1.0 - blend_weight) * bounded + blend_weight * midpoint
+    return _clamp_probability(blended)
 
 
 def _normal_cdf(value: float, mean_value: float, sigma: float) -> float:
@@ -193,19 +225,37 @@ def _parse_threshold_expression(expression: str) -> tuple[str, float | None, flo
     text = str(expression or "").strip().lower()
     if not text:
         return ("", None, None)
-    if text.startswith("between:"):
-        parts = text.split(":")
-        if len(parts) == 3:
-            low = _parse_float(parts[1])
-            high = _parse_float(parts[2])
-            if low is not None and high is not None:
-                return ("between", min(low, high), max(low, high))
-    if text.startswith("above:"):
-        return ("above", _parse_float(text.split(":", 1)[1]), None)
-    if text.startswith("below:"):
-        return ("below", _parse_float(text.split(":", 1)[1]), None)
-    if text.startswith("at_least:"):
-        return ("at_least", _parse_float(text.split(":", 1)[1]), None)
+    for prefix in ("between", "above", "below", "at_least", "at_most", "equal"):
+        if text.startswith(f"{prefix}:"):
+            parts = text.split(":")
+            if prefix == "between" and len(parts) == 3:
+                low = _parse_float(parts[1])
+                high = _parse_float(parts[2])
+                if low is not None and high is not None:
+                    return ("between", min(low, high), max(low, high))
+            if prefix in {"above", "below", "at_least", "at_most", "equal"}:
+                return (prefix, _parse_float(text.split(":", 1)[1]), None)
+    between_match = re.search(r"between\s+([-\d.]+)\s*(?:-|to|and)\s*([-\d.]+)", text)
+    if between_match:
+        low = _parse_float(between_match.group(1))
+        high = _parse_float(between_match.group(2))
+        if low is not None and high is not None:
+            return ("between", min(low, high), max(low, high))
+    at_least_match = re.search(r"(?:at least|greater than or equal to|>=)\s*([-\d.]+)", text)
+    if at_least_match:
+        return ("at_least", _parse_float(at_least_match.group(1)), None)
+    at_most_match = re.search(r"(?:at most|less than or equal to|<=|no more than)\s*([-\d.]+)", text)
+    if at_most_match:
+        return ("at_most", _parse_float(at_most_match.group(1)), None)
+    above_match = re.search(r"(?:above|greater than|over)\s+([-\d.]+)", text)
+    if above_match:
+        return ("above", _parse_float(above_match.group(1)), None)
+    below_match = re.search(r"(?:below|less than|under)\s+([-\d.]+)", text)
+    if below_match:
+        return ("below", _parse_float(below_match.group(1)), None)
+    equal_match = re.search(r"(?:equal to|equals|exactly)\s+([-\d.]+)", text)
+    if equal_match:
+        return ("equal", _parse_float(equal_match.group(1)), None)
     return ("", None, None)
 
 
@@ -214,8 +264,11 @@ def _threshold_probability(kind: str, first: float | None, second: float | None,
         return _normal_cdf(second, mean_value, sigma) - _normal_cdf(first, mean_value, sigma)
     if kind in {"above", "at_least"} and first is not None:
         return 1.0 - _normal_cdf(first, mean_value, sigma)
-    if kind == "below" and first is not None:
+    if kind in {"below", "at_most"} and first is not None:
         return _normal_cdf(first, mean_value, sigma)
+    if kind == "equal" and first is not None:
+        half_width = 0.5
+        return _normal_cdf(first + half_width, mean_value, sigma) - _normal_cdf(first - half_width, mean_value, sigma)
     return None
 
 
@@ -336,10 +389,99 @@ def _period_window(periods: list[dict[str, Any]], *, now: datetime, hours_to_clo
     return periods[:24]
 
 
+def _settlement_timezone_name(settlement: dict[str, Any], row: dict[str, Any]) -> str:
+    timezone_name = str(settlement.get("settlement_timezone") or "").strip()
+    if timezone_name:
+        return timezone_name
+    merged = " ".join(
+        (
+            str(row.get("event_title") or ""),
+            str(row.get("market_title") or ""),
+            str(row.get("market_ticker") or ""),
+        )
+    ).lower()
+    if any(token in merged for token in ("new york", "nyc", "boston", "washington", "dc", "miami", "atlanta", "philly", "philadelphia")):
+        return "America/New_York"
+    if any(token in merged for token in ("chicago", "dallas", "houston", "minneapolis")):
+        return "America/Chicago"
+    if any(token in merged for token in ("denver", "salt lake city")):
+        return "America/Denver"
+    if any(token in merged for token in ("los angeles", "la ", "san francisco", "sf ", "seattle", "portland", "las vegas")):
+        return "America/Los_Angeles"
+    return "America/New_York"
+
+
+def _target_month_day(
+    *,
+    row: dict[str, Any],
+    settlement: dict[str, Any],
+    now: datetime,
+) -> tuple[int, int]:
+    timezone_name = _settlement_timezone_name(settlement, row)
+    close_dt = _parse_datetime(str(row.get("close_time") or ""))
+    if close_dt is None:
+        local_dt = now
+    else:
+        local_dt = close_dt
+    try:
+        zone = ZoneInfo(timezone_name)
+        local_dt = local_dt.astimezone(zone)
+    except ZoneInfoNotFoundError:
+        local_dt = local_dt.astimezone(timezone.utc)
+
+    if str(settlement.get("local_day_boundary") or "").strip().lower() == "local_day":
+        if local_dt.hour <= 6:
+            local_dt = local_dt - timedelta(days=1)
+    return (local_dt.month, local_dt.day)
+
+
+def _climatology_temperature_series(
+    history_payload: dict[str, Any],
+    *,
+    expected_label: str,
+) -> list[float]:
+    if expected_label == "daily low":
+        raw = history_payload.get("tmin_values_f")
+    elif expected_label == "daily high":
+        raw = history_payload.get("tmax_values_f")
+    else:
+        raw = history_payload.get("daily_mean_values_f")
+    if not isinstance(raw, list):
+        return []
+    return [float(value) for value in raw if isinstance(value, (int, float))]
+
+
+def _blend_temperature_model(
+    *,
+    forecast_expected_temperature: float,
+    forecast_sigma: float,
+    climatology_values: list[float],
+) -> tuple[float, float]:
+    if len(climatology_values) < 5:
+        return (forecast_expected_temperature, forecast_sigma)
+    climatology_mean = mean(climatology_values)
+    climatology_sigma = max(2.0, pstdev(climatology_values) if len(climatology_values) > 1 else 3.5)
+    forecast_weight = 0.76
+    climatology_weight = 1.0 - forecast_weight
+    blended_expected = (
+        forecast_weight * float(forecast_expected_temperature)
+        + climatology_weight * float(climatology_mean)
+    )
+    blended_sigma = max(
+        1.5,
+        math.sqrt(
+            (forecast_weight * float(forecast_sigma)) ** 2
+            + (climatology_weight * float(climatology_sigma)) ** 2
+        ),
+    )
+    return (blended_expected, blended_sigma)
+
+
 def _build_daily_rain_prior(
     *,
     row: dict[str, str],
     settlement: dict[str, Any],
+    history_payload: dict[str, Any] | None,
     now: datetime,
     timeout_seconds: float,
     station_forecast_fetcher: WeatherStationForecastFetcher,
@@ -372,7 +514,22 @@ def _build_daily_rain_prior(
     no_rain_probability = 1.0
     for value in pop_values:
         no_rain_probability *= (1.0 - value)
-    probability = _anchor_to_market_midpoint(1.0 - no_rain_probability, row, max_deviation=0.35)
+    model_probability_raw = 1.0 - no_rain_probability
+    climatology_frequency = None
+    if isinstance(history_payload, dict):
+        rain_frequency = history_payload.get("rain_day_frequency")
+        if isinstance(rain_frequency, (int, float)):
+            climatology_frequency = max(0.0, min(1.0, float(rain_frequency)))
+    if climatology_frequency is not None:
+        model_probability_raw = 0.78 * model_probability_raw + 0.22 * climatology_frequency
+    model_probability = _clamp_probability(model_probability_raw)
+    execution_probability = _execution_guard_probability(
+        model_probability_raw,
+        row,
+        max_deviation=0.50,
+        midpoint_blend_weight=0.06,
+    )
+    market_midpoint = _midpoint_probability_from_market(row)
 
     updated_at = str(forecast.get("forecast_updated_at") or "").strip()
     age_penalty = 0.0
@@ -380,10 +537,39 @@ def _build_daily_rain_prior(
     if isinstance(updated_dt, datetime):
         age_hours = max(0.0, (now - updated_dt).total_seconds() / 3600.0)
         age_penalty = min(0.2, age_hours / 48.0)
-    confidence = round(min(0.92, max(0.25, 0.40 + min(0.40, len(pop_values) * 0.02) - age_penalty)), 6)
+    climatology_count = 0
+    if isinstance(history_payload, dict):
+        climatology_count = int(history_payload.get("sample_years") or 0)
+    confidence = round(
+        min(
+            0.92,
+            max(
+                0.25,
+                0.40
+                + min(0.40, len(pop_values) * 0.02)
+                + min(0.12, climatology_count * 0.006)
+                - age_penalty,
+            ),
+        ),
+        6,
+    )
     interval_half_width = max(0.04, min(0.30, 0.28 - 0.22 * confidence))
-    low = _clamp_probability(probability - interval_half_width)
-    high = _clamp_probability(probability + interval_half_width)
+    low = _clamp_probability(model_probability - interval_half_width)
+    high = _clamp_probability(model_probability + interval_half_width)
+    thesis_suffix = ""
+    if climatology_frequency is not None:
+        thesis_suffix = f" Blended with {climatology_count}y station climatology rain frequency {climatology_frequency:.1%}."
+    source_parts = [
+        f"nws_station_hourly_forecast:{station_id}",
+        f"periods_used={len(pop_values)}",
+        f"forecast_updated_at={updated_at or 'unknown'}",
+    ]
+    if isinstance(history_payload, dict):
+        source_parts.append(f"ncei_cdo_status={history_payload.get('status')}")
+        source_parts.append(f"historical_years={climatology_count}")
+        if climatology_frequency is not None:
+            source_parts.append(f"historical_rain_freq={climatology_frequency:.4f}")
+    source_parts.append(f"execution_guarded_probability={execution_probability:.4f}")
 
     return (
         {
@@ -392,26 +578,30 @@ def _build_daily_rain_prior(
             "market_title": str(row.get("market_title") or "").strip(),
             "close_time": str(row.get("close_time") or "").strip(),
             "hours_to_close": str(row.get("hours_to_close") or "").strip(),
-            "fair_yes_probability": probability,
-            "fair_yes_probability_low": min(low, probability),
-            "fair_yes_probability_high": max(high, probability),
+            "fair_yes_probability": model_probability,
+            "fair_yes_probability_low": min(low, model_probability),
+            "fair_yes_probability_high": max(high, model_probability),
             "confidence": confidence,
             "thesis": (
                 f"NWS hourly precipitation probabilities for station {station_id} imply a "
-                f"{probability:.1%} chance of measurable rain before market close."
+                f"{model_probability:.1%} chance of measurable rain before market close."
+                f"{thesis_suffix}"
             ),
-            "source_note": (
-                f"nws_station_hourly_forecast:{station_id}; periods_used={len(pop_values)}; "
-                f"forecast_updated_at={updated_at or 'unknown'}"
-            ),
+            "source_note": "; ".join(source_parts),
             "updated_at": now.isoformat(),
-            "evidence_count": len(pop_values),
-            "evidence_quality": round(min(1.0, 0.55 + min(0.35, len(pop_values) * 0.01)), 6),
+            "evidence_count": len(pop_values) + climatology_count,
+            "evidence_quality": round(
+                min(1.0, 0.55 + min(0.25, len(pop_values) * 0.01) + min(0.20, climatology_count * 0.008)),
+                6,
+            ),
             "source_type": "auto_weather",
             "last_evidence_at": updated_at,
             "contract_family": "daily_rain",
             "resolution_source_type": "weather_forecast",
-            "model_name": "weather_rain_pop_v1",
+            "model_name": "weather_rain_pop_historical_v2",
+            "model_probability_raw": model_probability,
+            "execution_probability_guarded": execution_probability,
+            "market_midpoint_probability": market_midpoint if market_midpoint is not None else "",
         },
         None,
     )
@@ -421,6 +611,7 @@ def _build_daily_temperature_prior(
     *,
     row: dict[str, str],
     settlement: dict[str, Any],
+    history_payload: dict[str, Any] | None,
     now: datetime,
     timeout_seconds: float,
     station_forecast_fetcher: WeatherStationForecastFetcher,
@@ -468,17 +659,59 @@ def _build_daily_temperature_prior(
         expected_temperature = mean(temperatures)
         expected_label = "hourly mean"
 
-    sigma = max(2.0, pstdev(temperatures) if len(temperatures) > 1 else 3.5)
+    sigma_forecast = max(2.0, pstdev(temperatures) if len(temperatures) > 1 else 3.5)
+    climatology_values = (
+        _climatology_temperature_series(history_payload, expected_label=expected_label)
+        if isinstance(history_payload, dict)
+        else []
+    )
+    expected_temperature, sigma = _blend_temperature_model(
+        forecast_expected_temperature=expected_temperature,
+        forecast_sigma=sigma_forecast,
+        climatology_values=climatology_values,
+    )
     probability_raw = _threshold_probability(threshold_kind, threshold_a, threshold_b, expected_temperature, sigma)
     if probability_raw is None:
         return None, "unsupported_threshold_expression"
-    probability = _anchor_to_market_midpoint(probability_raw, row, max_deviation=0.35)
+    model_probability = _clamp_probability(probability_raw)
+    execution_probability = _execution_guard_probability(
+        probability_raw,
+        row,
+        max_deviation=0.50,
+        midpoint_blend_weight=0.06,
+    )
+    market_midpoint = _midpoint_probability_from_market(row)
 
-    confidence = round(min(0.9, max(0.25, 0.36 + min(0.42, len(temperatures) * 0.02))), 6)
+    climatology_count = len(climatology_values)
+    confidence = round(
+        min(
+            0.9,
+            max(
+                0.25,
+                0.36 + min(0.30, len(temperatures) * 0.02) + min(0.18, climatology_count * 0.007),
+            ),
+        ),
+        6,
+    )
     interval_half_width = max(0.05, min(0.32, 0.30 - 0.21 * confidence))
-    low = _clamp_probability(probability - interval_half_width)
-    high = _clamp_probability(probability + interval_half_width)
+    low = _clamp_probability(model_probability - interval_half_width)
+    high = _clamp_probability(model_probability + interval_half_width)
     updated_at = str(forecast.get("forecast_updated_at") or "").strip()
+    thesis_suffix = ""
+    if climatology_count:
+        thesis_suffix = (
+            f" Blended with {climatology_count} historical same-day station realizations "
+            f"for bias-resistant pricing."
+        )
+    source_parts = [
+        f"nws_station_hourly_forecast:{station_id}",
+        f"temp_points={len(temperatures)}",
+        f"forecast_updated_at={updated_at or 'unknown'}",
+    ]
+    if isinstance(history_payload, dict):
+        source_parts.append(f"ncei_cdo_status={history_payload.get('status')}")
+        source_parts.append(f"historical_samples={climatology_count}")
+    source_parts.append(f"execution_guarded_probability={execution_probability:.4f}")
 
     return (
         {
@@ -487,26 +720,30 @@ def _build_daily_temperature_prior(
             "market_title": str(row.get("market_title") or "").strip(),
             "close_time": str(row.get("close_time") or "").strip(),
             "hours_to_close": str(row.get("hours_to_close") or "").strip(),
-            "fair_yes_probability": probability,
-            "fair_yes_probability_low": min(low, probability),
-            "fair_yes_probability_high": max(high, probability),
+            "fair_yes_probability": model_probability,
+            "fair_yes_probability_low": min(low, model_probability),
+            "fair_yes_probability_high": max(high, model_probability),
             "confidence": confidence,
             "thesis": (
-                f"NWS hourly temperatures at {station_id} imply about {probability:.1%} for the "
+                f"NWS hourly temperatures at {station_id} imply about {model_probability:.1%} for the "
                 f"contract threshold ({threshold_expression}) using expected {expected_label} {expected_temperature:.1f}F."
+                f"{thesis_suffix}"
             ),
-            "source_note": (
-                f"nws_station_hourly_forecast:{station_id}; temp_points={len(temperatures)}; "
-                f"forecast_updated_at={updated_at or 'unknown'}"
-            ),
+            "source_note": "; ".join(source_parts),
             "updated_at": now.isoformat(),
-            "evidence_count": len(temperatures),
-            "evidence_quality": round(min(1.0, 0.58 + min(0.30, len(temperatures) * 0.008)), 6),
+            "evidence_count": len(temperatures) + climatology_count,
+            "evidence_quality": round(
+                min(1.0, 0.58 + min(0.22, len(temperatures) * 0.008) + min(0.20, climatology_count * 0.007)),
+                6,
+            ),
             "source_type": "auto_weather",
             "last_evidence_at": updated_at,
             "contract_family": "daily_temperature",
             "resolution_source_type": "weather_forecast",
-            "model_name": "weather_temperature_threshold_v1",
+            "model_name": "weather_temperature_threshold_historical_v2",
+            "model_probability_raw": model_probability,
+            "execution_probability_guarded": execution_probability,
+            "market_midpoint_probability": market_midpoint if market_midpoint is not None else "",
         },
         None,
     )
@@ -545,12 +782,19 @@ def _build_monthly_anomaly_prior(
     probability_raw = _threshold_probability(threshold_kind, threshold_a, threshold_b, projected, sigma)
     if probability_raw is None:
         return None, "unsupported_threshold_expression"
-    probability = _anchor_to_market_midpoint(probability_raw, row, max_deviation=0.40)
+    model_probability = _clamp_probability(probability_raw)
+    execution_probability = _execution_guard_probability(
+        probability_raw,
+        row,
+        max_deviation=0.50,
+        midpoint_blend_weight=0.08,
+    )
+    market_midpoint = _midpoint_probability_from_market(row)
 
     confidence = round(min(0.9, max(0.3, 0.43 + min(0.25, len(recent_window) / 400.0))), 6)
     interval_half_width = max(0.06, min(0.34, 0.31 - 0.20 * confidence))
-    low = _clamp_probability(probability - interval_half_width)
-    high = _clamp_probability(probability + interval_half_width)
+    low = _clamp_probability(model_probability - interval_half_width)
+    high = _clamp_probability(model_probability + interval_half_width)
 
     end_year = noaa_series_payload.get("end_year")
     end_month = noaa_series_payload.get("end_month")
@@ -565,17 +809,18 @@ def _build_monthly_anomaly_prior(
             "market_title": str(row.get("market_title") or "").strip(),
             "close_time": str(row.get("close_time") or "").strip(),
             "hours_to_close": str(row.get("hours_to_close") or "").strip(),
-            "fair_yes_probability": probability,
-            "fair_yes_probability_low": min(low, probability),
-            "fair_yes_probability_high": max(high, probability),
+            "fair_yes_probability": model_probability,
+            "fair_yes_probability_low": min(low, model_probability),
+            "fair_yes_probability_high": max(high, model_probability),
             "confidence": confidence,
             "thesis": (
                 "NOAA global land-ocean anomaly trend and variance imply "
-                f"{probability:.1%} for threshold ({threshold_expression})."
+                f"{model_probability:.1%} for threshold ({threshold_expression})."
             ),
             "source_note": (
                 f"noaa_global_land_ocean_anomaly_series:{noaa_series_payload.get('series_url', '')}; "
-                f"series_end={end_year}-{end_month}; projected={projected:.3f}; sigma={sigma:.3f}"
+                f"series_end={end_year}-{end_month}; projected={projected:.3f}; sigma={sigma:.3f}; "
+                f"execution_guarded_probability={execution_probability:.4f}"
             ),
             "updated_at": now.isoformat(),
             "evidence_count": len(recent_window),
@@ -584,7 +829,10 @@ def _build_monthly_anomaly_prior(
             "last_evidence_at": end_stamp,
             "contract_family": "monthly_climate_anomaly",
             "resolution_source_type": "climate_archive",
-            "model_name": "weather_monthly_anomaly_threshold_v1",
+            "model_name": "weather_monthly_anomaly_threshold_v2",
+            "model_probability_raw": model_probability,
+            "execution_probability_guarded": execution_probability,
+            "market_midpoint_probability": market_midpoint if market_midpoint is not None else "",
         },
         None,
     )
@@ -602,7 +850,10 @@ def run_kalshi_weather_priors(
     protect_manual: bool = True,
     write_back_to_priors: bool = True,
     station_forecast_fetcher: WeatherStationForecastFetcher = fetch_nws_station_hourly_forecast,
+    station_history_fetcher: StationHistoryFetcher = fetch_ncei_cdo_station_daily_history,
     anomaly_series_fetcher: NoaaAnomalySeriesFetcher = fetch_noaa_global_land_ocean_anomaly_series,
+    historical_lookback_years: int = _DEFAULT_HISTORICAL_LOOKBACK_YEARS,
+    station_history_cache_max_age_hours: float = _DEFAULT_STATION_HISTORY_CACHE_MAX_AGE_HOURS,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     captured_at = now or datetime.now(timezone.utc)
@@ -663,16 +914,67 @@ def run_kalshi_weather_priors(
     skipped_rows: list[dict[str, Any]] = []
     family_generated_counts: dict[str, int] = {}
     family_skipped_counts: dict[str, int] = {}
+    history_fetch_status_counts: dict[str, int] = {}
+    station_history_cache: dict[tuple[str, int, int], dict[str, Any]] = {}
+    station_history_cache_dir = str(Path(output_dir) / "weather_station_history_cache")
+    station_history_fetcher_signature = inspect.signature(station_history_fetcher)
+    supports_history_cache_dir = "cache_dir" in station_history_fetcher_signature.parameters
+    supports_history_cache_age = "cache_max_age_hours" in station_history_fetcher_signature.parameters
 
     for row, settlement in candidate_rows:
         family = str(settlement.get("contract_family") or "").strip().lower()
         generated: dict[str, Any] | None = None
         skip_reason: str | None = None
+        history_payload: dict[str, Any] | None = None
+        if family in {"daily_rain", "daily_temperature"}:
+            station_id = _infer_station_id(row, str(settlement.get("settlement_station") or ""))
+            month_value, day_value = _target_month_day(row=row, settlement=settlement, now=captured_at)
+            cache_key = (station_id, month_value, day_value)
+            if station_id and cache_key not in station_history_cache:
+                try:
+                    history_fetch_kwargs: dict[str, Any] = {
+                        "station_id": station_id,
+                        "month": month_value,
+                        "day": day_value,
+                        "lookback_years": historical_lookback_years,
+                        "timeout_seconds": timeout_seconds,
+                        "now": captured_at,
+                    }
+                    if supports_history_cache_dir:
+                        history_fetch_kwargs["cache_dir"] = station_history_cache_dir
+                    if supports_history_cache_age:
+                        history_fetch_kwargs["cache_max_age_hours"] = max(
+                            0.0,
+                            float(station_history_cache_max_age_hours),
+                        )
+                    station_history_cache[cache_key] = station_history_fetcher(**history_fetch_kwargs)
+                except Exception as exc:
+                    error_text = str(exc)
+                    error_kind = _classify_fetch_error(exc)
+                    fetch_errors.append(
+                        {
+                            "source": "station_history",
+                            "market_ticker": str(row.get("market_ticker") or "").strip(),
+                            "error": error_text,
+                            "error_kind": error_kind,
+                        }
+                    )
+                    fetch_error_kind_counts[error_kind] = fetch_error_kind_counts.get(error_kind, 0) + 1
+                    station_history_cache[cache_key] = {
+                        "status": "upstream_error",
+                        "error": error_text,
+                        "error_kind": error_kind,
+                    }
+            if station_id:
+                history_payload = station_history_cache.get(cache_key)
+                history_status = str((history_payload or {}).get("status") or "").strip().lower() or "unknown"
+                history_fetch_status_counts[history_status] = history_fetch_status_counts.get(history_status, 0) + 1
         if family == "daily_rain":
             try:
                 generated, skip_reason = _build_daily_rain_prior(
                     row=row,
                     settlement=settlement,
+                    history_payload=history_payload,
                     now=captured_at,
                     timeout_seconds=timeout_seconds,
                     station_forecast_fetcher=station_forecast_fetcher,
@@ -695,6 +997,7 @@ def run_kalshi_weather_priors(
                 generated, skip_reason = _build_daily_temperature_prior(
                     row=row,
                     settlement=settlement,
+                    history_payload=history_payload,
                     now=captured_at,
                     timeout_seconds=timeout_seconds,
                     station_forecast_fetcher=station_forecast_fetcher,
@@ -787,6 +1090,11 @@ def run_kalshi_weather_priors(
         "write_back_to_priors": write_back_to_priors,
         "protect_manual": protect_manual,
         "allowed_contract_families": sorted(allowed_family_set) if allowed_family_set else list(_DEFAULT_ALLOWED_FAMILIES),
+        "historical_lookback_years": int(historical_lookback_years),
+        "station_history_cache_dir": station_history_cache_dir if supports_history_cache_dir else None,
+        "station_history_cache_max_age_hours": (
+            max(0.0, float(station_history_cache_max_age_hours)) if supports_history_cache_age else None
+        ),
         "candidate_markets": len(candidate_rows),
         "generated_priors": len(generated_rows),
         "skipped_markets": len(skipped_rows),
@@ -796,6 +1104,8 @@ def run_kalshi_weather_priors(
         "prior_rows_total_after_upsert": upsert_summary.get("rows_total", len(prior_rows)),
         "contract_family_generated_counts": family_generated_counts,
         "contract_family_skipped_counts": family_skipped_counts,
+        "station_history_cache_entries": len(station_history_cache),
+        "station_history_status_counts": history_fetch_status_counts,
         "top_market_ticker": generated_rows[0]["market_ticker"] if generated_rows else None,
         "top_market_confidence": generated_rows[0]["confidence"] if generated_rows else None,
         "top_markets": generated_rows[: max(1, int(top_n))],
