@@ -2214,6 +2214,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Base exponential backoff for remediation retries",
     )
     kalshi_supervisor.add_argument(
+        "--failure-remediation-timeout-multiplier",
+        type=float,
+        default=1.5,
+        help="Multiplier applied to timeout on each supervisor remediation retry",
+    )
+    kalshi_supervisor.add_argument(
+        "--failure-remediation-timeout-cap-seconds",
+        type=float,
+        default=45.0,
+        help="Maximum timeout used by supervisor remediation retries",
+    )
+    kalshi_supervisor.add_argument(
         "--disable-arb-scan",
         action="store_true",
         help="Disable partition-arb scanning in each cycle",
@@ -2391,6 +2403,18 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=3.0,
         help="Maximum estimated notional cost submitted live per trading day",
+    )
+    kalshi_autopilot.add_argument(
+        "--failure-remediation-timeout-multiplier",
+        type=float,
+        default=1.5,
+        help="Multiplier applied to timeout on each supervisor remediation retry",
+    )
+    kalshi_autopilot.add_argument(
+        "--failure-remediation-timeout-cap-seconds",
+        type=float,
+        default=45.0,
+        help="Maximum timeout used by supervisor remediation retries",
     )
     kalshi_autopilot.add_argument(
         "--disable-preflight-dns-doctor",
@@ -2634,6 +2658,18 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=3.0,
         help="Maximum estimated notional cost submitted live per trading day",
+    )
+    kalshi_watchdog.add_argument(
+        "--failure-remediation-timeout-multiplier",
+        type=float,
+        default=1.5,
+        help="Multiplier applied to timeout on each supervisor remediation retry",
+    )
+    kalshi_watchdog.add_argument(
+        "--failure-remediation-timeout-cap-seconds",
+        type=float,
+        default=45.0,
+        help="Maximum timeout used by supervisor remediation retries",
     )
     kalshi_watchdog.add_argument(
         "--disable-preflight-dns-doctor",
@@ -4305,6 +4341,8 @@ def main() -> None:
             failure_remediation_enabled=not args.disable_failure_remediation,
             failure_remediation_max_retries=args.failure_remediation_max_retries,
             failure_remediation_backoff_seconds=args.failure_remediation_backoff_seconds,
+            failure_remediation_timeout_multiplier=args.failure_remediation_timeout_multiplier,
+            failure_remediation_timeout_cap_seconds=args.failure_remediation_timeout_cap_seconds,
             exchange_status_self_heal_attempts=args.exchange_status_self_heal_attempts,
             exchange_status_self_heal_pause_seconds=args.exchange_status_self_heal_pause_seconds,
             exchange_status_run_dns_doctor=not args.disable_exchange_status_dns_remediation,
@@ -4342,6 +4380,8 @@ def main() -> None:
             max_entry_price_dollars=args.max_entry_price,
             max_live_submissions_per_day=args.max_live_submissions_per_day,
             max_live_cost_per_day_dollars=args.max_live_cost_per_day,
+            failure_remediation_timeout_multiplier=args.failure_remediation_timeout_multiplier,
+            failure_remediation_timeout_cap_seconds=args.failure_remediation_timeout_cap_seconds,
             preflight_run_dns_doctor=not args.disable_preflight_dns_doctor,
             preflight_run_live_smoke=not args.disable_preflight_live_smoke,
             preflight_run_ws_state_collect=not args.disable_preflight_ws_state_collect,
@@ -4390,6 +4430,8 @@ def main() -> None:
             max_entry_price_dollars=args.max_entry_price,
             max_live_submissions_per_day=args.max_live_submissions_per_day,
             max_live_cost_per_day_dollars=args.max_live_cost_per_day,
+            failure_remediation_timeout_multiplier=args.failure_remediation_timeout_multiplier,
+            failure_remediation_timeout_cap_seconds=args.failure_remediation_timeout_cap_seconds,
             preflight_run_dns_doctor=not args.disable_preflight_dns_doctor,
             preflight_run_live_smoke=not args.disable_preflight_live_smoke,
             preflight_run_ws_state_collect=not args.disable_preflight_ws_state_collect,

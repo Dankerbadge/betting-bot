@@ -252,6 +252,8 @@ class KalshiAutopilotTests(unittest.TestCase):
                 env_file=str(env_file),
                 output_dir=str(base),
                 allow_live_orders=True,
+                failure_remediation_timeout_multiplier=2.0,
+                failure_remediation_timeout_cap_seconds=25.0,
                 dns_doctor_runner=lambda **_: {"status": "passed", "output_file": str(base / "dns.json")},
                 live_smoke_runner=lambda **_: {"status": "passed", "output_file": str(base / "smoke.json")},
                 ws_collect_runner=lambda **_: {
@@ -273,6 +275,8 @@ class KalshiAutopilotTests(unittest.TestCase):
             self.assertTrue(supervisor_kwargs["allow_live_orders"])
             self.assertTrue(supervisor_kwargs["enforce_ws_state_authority"])
             self.assertEqual(supervisor_kwargs["ws_state_json"], str(ws_state_path))
+            self.assertEqual(supervisor_kwargs["failure_remediation_timeout_multiplier"], 2.0)
+            self.assertEqual(supervisor_kwargs["failure_remediation_timeout_cap_seconds"], 25.0)
 
     def test_run_kalshi_autopilot_applies_progressive_scaling(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

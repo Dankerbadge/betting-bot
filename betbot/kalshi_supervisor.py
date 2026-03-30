@@ -297,6 +297,8 @@ def run_kalshi_supervisor(
     failure_remediation_enabled: bool = True,
     failure_remediation_max_retries: int = 2,
     failure_remediation_backoff_seconds: float = 5.0,
+    failure_remediation_timeout_multiplier: float = 1.5,
+    failure_remediation_timeout_cap_seconds: float = 45.0,
     exchange_status_self_heal_attempts: int = 2,
     exchange_status_self_heal_pause_seconds: float = 10.0,
     exchange_status_run_dns_doctor: bool = True,
@@ -324,6 +326,11 @@ def run_kalshi_supervisor(
 
     max_retries = max(0, failure_remediation_max_retries)
     base_backoff_seconds = max(0.0, failure_remediation_backoff_seconds)
+    failure_remediation_timeout_multiplier_safe = max(1.0, float(failure_remediation_timeout_multiplier))
+    failure_remediation_timeout_cap_seconds_safe = max(
+        max(0.25, float(timeout_seconds)),
+        float(failure_remediation_timeout_cap_seconds),
+    )
     exchange_status_heal_attempts = max(0, int(exchange_status_self_heal_attempts))
     exchange_status_heal_pause_seconds = max(0.0, float(exchange_status_self_heal_pause_seconds))
     exchange_status_heal_timeout_multiplier = max(1.0, float(exchange_status_self_heal_timeout_multiplier))
@@ -409,6 +416,11 @@ def run_kalshi_supervisor(
         for attempt_index in range(max_retries + 1):
             attempt_now = cycle_started_at + timedelta(milliseconds=attempt_index)
             live_enabled_for_attempt = cycle_live_enabled and not force_dry_run
+            attempt_timeout_seconds = min(
+                max(0.25, float(timeout_seconds))
+                * (failure_remediation_timeout_multiplier_safe**attempt_index),
+                failure_remediation_timeout_cap_seconds_safe,
+            )
             try:
                 trader_summary = run_kalshi_micro_prior_trader(
                     env_file=env_file,
@@ -422,7 +434,7 @@ def run_kalshi_supervisor(
                     min_maker_edge=min_maker_edge,
                     min_maker_edge_net_fees=min_maker_edge_net_fees,
                     max_entry_price_dollars=max_entry_price_dollars,
-                    timeout_seconds=timeout_seconds,
+                    timeout_seconds=attempt_timeout_seconds,
                     allow_live_orders=live_enabled_for_attempt,
                     max_live_submissions_per_day=max_live_submissions_per_day,
                     max_live_cost_per_day_dollars=max_live_cost_per_day_dollars,
@@ -462,6 +474,7 @@ def run_kalshi_supervisor(
                     "attempt": attempt_index + 1,
                     "capture_before_execute": capture_before_execute,
                     "allow_live_orders": live_enabled_for_attempt,
+                    "timeout_seconds": attempt_timeout_seconds,
                     "status": trader_summary.get("status"),
                     "capture_status": trader_summary.get("capture_status"),
                     "blocked_submission_budget_attempts": trader_summary.get("blocked_submission_budget_attempts"),
@@ -529,7 +542,7 @@ def run_kalshi_supervisor(
 
             exchange_status = _read_exchange_status(
                 env_file=env_file,
-                timeout_seconds=timeout_seconds,
+                timeout_seconds=attempt_timeout_seconds,
                 http_get_json=throttled_get,
             )
             exchange_status_history.append(exchange_status)
@@ -539,6 +552,7 @@ def run_kalshi_supervisor(
                     "attempt": attempt_index + 1,
                     "actions": action_flags,
                     "wait_seconds": wait_seconds,
+                    "retry_timeout_seconds": attempt_timeout_seconds,
                     "exchange_status_http": exchange_status.get("http_status"),
                     "exchange_dns_error": exchange_status.get("dns_error"),
                     "exchange_network_error": exchange_status.get("network_error"),
@@ -552,11 +566,16 @@ def run_kalshi_supervisor(
         if run_arb_scan_each_cycle:
             for attempt_index in range(max_retries + 1):
                 arb_attempt_now = cycle_started_at + timedelta(milliseconds=100 + attempt_index)
+                arb_attempt_timeout_seconds = min(
+                    max(0.25, float(timeout_seconds))
+                    * (failure_remediation_timeout_multiplier_safe**attempt_index),
+                    failure_remediation_timeout_cap_seconds_safe,
+                )
                 try:
                     arb_summary = run_kalshi_arb_scan(
                         env_file=env_file,
                         output_dir=effective_output_dir,
-                        timeout_seconds=timeout_seconds,
+                        timeout_seconds=arb_attempt_timeout_seconds,
                         http_get_json=throttled_get,
                         now=arb_attempt_now,
                     )
@@ -571,6 +590,7 @@ def run_kalshi_supervisor(
                 arb_attempts.append(
                     {
                         "attempt": attempt_index + 1,
+                        "timeout_seconds": arb_attempt_timeout_seconds,
                         "status": arb_summary.get("status"),
                         "arb_scan_summary_file": arb_summary.get("output_file") if isinstance(arb_summary, dict) else None,
                         "failure_reasons": arb_failure_reasons,
@@ -673,6 +693,8 @@ def run_kalshi_supervisor(
         "failure_remediation_enabled": failure_remediation_enabled,
         "failure_remediation_max_retries": max_retries,
         "failure_remediation_backoff_seconds": base_backoff_seconds,
+        "failure_remediation_timeout_multiplier": failure_remediation_timeout_multiplier_safe,
+        "failure_remediation_timeout_cap_seconds": failure_remediation_timeout_cap_seconds_safe,
         "exchange_status_self_heal_attempts": exchange_status_heal_attempts,
         "exchange_status_self_heal_pause_seconds": exchange_status_heal_pause_seconds,
         "exchange_status_run_dns_doctor": exchange_status_run_dns_doctor,

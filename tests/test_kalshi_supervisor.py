@@ -334,17 +334,26 @@ class KalshiSupervisorTests(unittest.TestCase):
                     output_dir=str(base),
                     cycles=1,
                     allow_live_orders=False,
+                    timeout_seconds=10.0,
                     failure_remediation_max_retries=2,
                     failure_remediation_backoff_seconds=0.0,
+                    failure_remediation_timeout_multiplier=2.0,
+                    failure_remediation_timeout_cap_seconds=25.0,
                     run_arb_scan_each_cycle=False,
                     http_get_json=lambda *_: (200, {"trading_active": False}),
                     now=datetime(2026, 3, 29, 2, 0, tzinfo=timezone.utc),
                 )
 
             self.assertEqual(mock_trader.call_count, 2)
+            first_call = mock_trader.call_args_list[0].kwargs
+            second_call = mock_trader.call_args_list[1].kwargs
+            self.assertEqual(first_call["timeout_seconds"], 10.0)
+            self.assertEqual(second_call["timeout_seconds"], 20.0)
             self.assertEqual(summary["status"], "ready")
             self.assertEqual(summary["cycles_with_remediation"], 1)
             self.assertEqual(summary["cycles_with_unremediated_failures"], 0)
+            self.assertEqual(summary["failure_remediation_timeout_multiplier"], 2.0)
+            self.assertEqual(summary["failure_remediation_timeout_cap_seconds"], 25.0)
             cycle = summary["cycle_summaries"][0]
             self.assertTrue(cycle["remediation_applied"])
             self.assertTrue(cycle["remediation_recovered"])
@@ -358,6 +367,9 @@ class KalshiSupervisorTests(unittest.TestCase):
             self.assertEqual(cycle["trader_attempts"][1]["prior_trader_summary_file"], str(base / "trader_2.json"))
             self.assertEqual(cycle["trader_attempts"][0]["capture_scan_search_health_status"], "degraded_retrying")
             self.assertEqual(cycle["trader_attempts"][1]["capture_scan_search_health_status"], "ready")
+            self.assertEqual(cycle["trader_attempts"][0]["timeout_seconds"], 10.0)
+            self.assertEqual(cycle["trader_attempts"][1]["timeout_seconds"], 20.0)
+            self.assertEqual(cycle["remediation_actions"][0]["retry_timeout_seconds"], 10.0)
 
     def test_run_kalshi_supervisor_forces_dry_run_after_capture_failure(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -503,14 +515,19 @@ class KalshiSupervisorTests(unittest.TestCase):
                     output_dir=str(base),
                     cycles=1,
                     allow_live_orders=False,
+                    timeout_seconds=10.0,
                     failure_remediation_max_retries=1,
                     failure_remediation_backoff_seconds=0.0,
+                    failure_remediation_timeout_multiplier=2.0,
+                    failure_remediation_timeout_cap_seconds=25.0,
                     run_arb_scan_each_cycle=True,
                     http_get_json=lambda *_: (200, {"trading_active": False}),
                     now=datetime(2026, 3, 29, 5, 0, tzinfo=timezone.utc),
                 )
 
             self.assertEqual(summary["status"], "ready")
+            self.assertEqual(mock_arb_scan.call_args_list[0].kwargs["timeout_seconds"], 10.0)
+            self.assertEqual(mock_arb_scan.call_args_list[1].kwargs["timeout_seconds"], 20.0)
             self.assertEqual(summary["cycles_with_failures"], 1)
             self.assertEqual(summary["cycles_with_remediation"], 1)
             self.assertEqual(summary["cycles_with_unremediated_failures"], 0)
@@ -522,6 +539,8 @@ class KalshiSupervisorTests(unittest.TestCase):
             self.assertTrue(cycle["remediation_applied"])
             self.assertEqual(cycle["arb_attempts"][0]["arb_scan_summary_file"], str(base / "arb_1.json"))
             self.assertEqual(cycle["arb_attempts"][1]["arb_scan_summary_file"], str(base / "arb_2.json"))
+            self.assertEqual(cycle["arb_attempts"][0]["timeout_seconds"], 10.0)
+            self.assertEqual(cycle["arb_attempts"][1]["timeout_seconds"], 20.0)
 
 
 if __name__ == "__main__":

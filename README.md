@@ -356,6 +356,7 @@ python -m betbot.cli kalshi-watchdog \
 ```
 
 `kalshi-supervisor` also self-heals exchange-status DNS/network failures before disabling live mode (`--exchange-status-self-heal-attempts`, `--exchange-status-self-heal-pause-seconds`) with adaptive timeout growth (`--exchange-status-self-heal-timeout-multiplier`).
+Supervisor remediation retries for prior-trader and arb loops now also use adaptive timeout growth (`--failure-remediation-timeout-multiplier`, `--failure-remediation-timeout-cap-seconds`) so retry attempts do not reuse identical timeout budgets.
 `kalshi-ws-state-collect` now preserves a previously ready websocket-state snapshot when a recollection run fails upstream, so transient DNS/WebSocket outages do not overwrite a fresh good state file.
 
 Outputs:

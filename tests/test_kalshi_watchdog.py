@@ -302,12 +302,16 @@ class KalshiWatchdogTests(unittest.TestCase):
             autopilot_calls = 0
             seen_timeouts: list[float] = []
             seen_ws_collect_windows: list[float] = []
+            seen_remediation_timeout_multipliers: list[float] = []
+            seen_remediation_timeout_caps: list[float] = []
 
             def fake_autopilot(**kwargs: Any) -> dict[str, Any]:
                 nonlocal autopilot_calls
                 autopilot_calls += 1
                 seen_timeouts.append(float(kwargs["timeout_seconds"]))
                 seen_ws_collect_windows.append(float(kwargs["ws_collect_run_seconds"]))
+                seen_remediation_timeout_multipliers.append(float(kwargs["failure_remediation_timeout_multiplier"]))
+                seen_remediation_timeout_caps.append(float(kwargs["failure_remediation_timeout_cap_seconds"]))
                 if autopilot_calls == 1:
                     return _upstream_autopilot_summary(base, "first")
                 return _healthy_autopilot_summary(base, "second")
@@ -319,6 +323,8 @@ class KalshiWatchdogTests(unittest.TestCase):
                 loops=1,
                 timeout_seconds=10.0,
                 ws_collect_run_seconds=40.0,
+                failure_remediation_timeout_multiplier=2.25,
+                failure_remediation_timeout_cap_seconds=30.0,
                 self_heal_attempts_per_run=1,
                 self_heal_pause_seconds=0.0,
                 self_heal_retry_timeout_multiplier=2.0,
@@ -333,6 +339,8 @@ class KalshiWatchdogTests(unittest.TestCase):
             self.assertEqual(autopilot_calls, 2)
             self.assertEqual(seen_timeouts, [10.0, 20.0])
             self.assertEqual(seen_ws_collect_windows, [40.0, 65.0])
+            self.assertEqual(seen_remediation_timeout_multipliers, [2.25, 2.25])
+            self.assertEqual(seen_remediation_timeout_caps, [30.0, 30.0])
             run_summary = summary["run_summaries"][0]
             self.assertTrue(run_summary["self_healed"])
             self.assertEqual(run_summary["autopilot_attempts_total"], 2)
