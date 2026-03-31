@@ -439,6 +439,12 @@ def run_kalshi_micro_prior_trader(
     execution_event_log_csv: str | None = None,
     execution_journal_db_path: str | None = None,
     execution_frontier_recent_rows: int = 5000,
+    execution_frontier_report_json: str | None = None,
+    execution_frontier_max_report_age_seconds: float | None = 10800.0,
+    enable_untrusted_bucket_probe_exploration: bool = True,
+    untrusted_bucket_probe_max_orders_per_run: int = 1,
+    untrusted_bucket_probe_required_edge_buffer_dollars: float = 0.01,
+    untrusted_bucket_probe_contracts_cap: int = 1,
     enforce_ws_state_authority: bool = True,
     ws_state_json: str | None = None,
     ws_state_max_age_seconds: float = 30.0,
@@ -850,6 +856,14 @@ def run_kalshi_micro_prior_trader(
         "execution_event_log_csv": execution_event_log_csv,
         "execution_journal_db_path": execution_journal_db_path,
         "execution_frontier_recent_rows": max(1, int(execution_frontier_recent_rows)),
+        "execution_frontier_report_json": execution_frontier_report_json,
+        "execution_frontier_max_report_age_seconds": execution_frontier_max_report_age_seconds,
+        "enable_untrusted_bucket_probe_exploration": bool(enable_untrusted_bucket_probe_exploration),
+        "untrusted_bucket_probe_max_orders_per_run": max(0, int(untrusted_bucket_probe_max_orders_per_run)),
+        "untrusted_bucket_probe_required_edge_buffer_dollars": max(
+            0.0, float(untrusted_bucket_probe_required_edge_buffer_dollars)
+        ),
+        "untrusted_bucket_probe_contracts_cap": max(1, int(untrusted_bucket_probe_contracts_cap)),
         "enforce_ws_state_authority": enforce_ws_state_authority,
         "ws_state_json": ws_state_json,
         "ws_state_max_age_seconds": ws_state_max_age_seconds,
@@ -931,6 +945,12 @@ def run_kalshi_micro_prior_trader(
                 execution_event_log_csv=execution_event_log_csv,
                 execution_journal_db_path=execution_journal_db_path,
                 execution_frontier_recent_rows=max(1, int(execution_frontier_recent_rows)),
+                execution_frontier_report_json=execution_frontier_report_json,
+                execution_frontier_max_report_age_seconds=execution_frontier_max_report_age_seconds,
+                enable_untrusted_bucket_probe_exploration=enable_untrusted_bucket_probe_exploration,
+                untrusted_bucket_probe_max_orders_per_run=untrusted_bucket_probe_max_orders_per_run,
+                untrusted_bucket_probe_required_edge_buffer_dollars=untrusted_bucket_probe_required_edge_buffer_dollars,
+                untrusted_bucket_probe_contracts_cap=untrusted_bucket_probe_contracts_cap,
                 enforce_ws_state_authority=enforce_ws_state_authority,
                 ws_state_json=ws_state_json,
                 ws_state_max_age_seconds=ws_state_max_age_seconds,
@@ -981,7 +1001,34 @@ def run_kalshi_micro_prior_trader(
                     "execution_frontier_status": execute_summary.get("execution_frontier_status"),
                     "execution_frontier_summary_file": execute_summary.get("execution_frontier_summary_file"),
                     "execution_frontier_bucket_csv": execute_summary.get("execution_frontier_bucket_csv"),
+                    "execution_frontier_break_even_reference_file": execute_summary.get(
+                        "execution_frontier_break_even_reference_file"
+                    ),
+                    "execution_frontier_selection_mode": execute_summary.get(
+                        "execution_frontier_selection_mode"
+                    ),
+                    "execution_frontier_report_age_seconds": execute_summary.get(
+                        "execution_frontier_report_age_seconds"
+                    ),
+                    "execution_frontier_report_stale": execute_summary.get(
+                        "execution_frontier_report_stale"
+                    ),
+                    "execution_frontier_report_stale_reason": execute_summary.get(
+                        "execution_frontier_report_stale_reason"
+                    ),
                     "execution_frontier_recommendations": execute_summary.get("execution_frontier_recommendations"),
+                    "untrusted_bucket_probe_exploration_enabled": execute_summary.get(
+                        "untrusted_bucket_probe_exploration_enabled"
+                    ),
+                    "untrusted_bucket_probe_submitted_attempts": execute_summary.get(
+                        "untrusted_bucket_probe_submitted_attempts"
+                    ),
+                    "untrusted_bucket_probe_blocked_attempts": execute_summary.get(
+                        "untrusted_bucket_probe_blocked_attempts"
+                    ),
+                    "untrusted_bucket_probe_reason_counts": execute_summary.get(
+                        "untrusted_bucket_probe_reason_counts"
+                    ),
                     "duplicate_open_order_markets": execute_summary.get("duplicate_open_order_markets"),
                     "prior_execute_summary_file": execute_summary.get("output_file"),
                     "prior_execute_csv": execute_summary.get("execute_output_csv"),

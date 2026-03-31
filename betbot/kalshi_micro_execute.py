@@ -592,31 +592,81 @@ def _execution_frontier_bucket_for_attempt(attempt: dict[str, Any]) -> str:
 
 def _load_latest_break_even_edges_by_bucket(
     output_dir: str,
+    *,
+    execution_frontier_report_json: str | None = None,
+    max_report_age_seconds: float | None = None,
+    as_of: datetime | None = None,
 ) -> tuple[
     dict[str, float],
     str | None,
     dict[str, dict[str, Any]],
     dict[str, dict[str, Any]],
+    dict[str, Any],
 ]:
     out_dir = Path(output_dir)
-    candidates = sorted(
-        out_dir.glob("execution_frontier_report_*.json"),
-        key=lambda path: path.stat().st_mtime,
+    selection_mode = "latest_mtime"
+    max_age_seconds = (
+        None if max_report_age_seconds is None else max(0.0, float(max_report_age_seconds))
     )
-    if not candidates:
-        return {}, None, {}, {}
-    latest_path = candidates[-1]
+    report_meta: dict[str, Any] = {
+        "selection_mode": selection_mode,
+        "max_age_seconds": max_age_seconds,
+        "age_seconds": "",
+        "stale": False,
+        "stale_reason": "",
+    }
+    latest_path: Path | None = None
+    if execution_frontier_report_json:
+        explicit_path = Path(execution_frontier_report_json)
+        selection_mode = "explicit_path"
+        report_meta["selection_mode"] = selection_mode
+        if not explicit_path.exists():
+            report_meta["stale"] = True
+            report_meta["stale_reason"] = "explicit_frontier_report_missing"
+            return {}, str(explicit_path), {}, {}, report_meta
+        latest_path = explicit_path
+    else:
+        candidates = sorted(
+            out_dir.glob("execution_frontier_report_*.json"),
+            key=lambda path: path.stat().st_mtime,
+        )
+        if not candidates:
+            report_meta["stale"] = True
+            report_meta["stale_reason"] = "frontier_report_missing"
+            return {}, None, {}, {}, report_meta
+        latest_path = candidates[-1]
+    assert latest_path is not None
+    as_of_ts = as_of or datetime.now(timezone.utc)
+    try:
+        report_mtime = datetime.fromtimestamp(latest_path.stat().st_mtime, tz=timezone.utc)
+    except OSError:
+        report_mtime = None
+    if isinstance(report_mtime, datetime):
+        report_age_seconds = max(0.0, (as_of_ts - report_mtime).total_seconds())
+        report_meta["age_seconds"] = round(report_age_seconds, 3)
+        if isinstance(max_age_seconds, float) and report_age_seconds > max_age_seconds + 1e-9:
+            report_meta["stale"] = True
+            report_meta["stale_reason"] = (
+                f"frontier_report_stale:{report_age_seconds:.3f}s>{max_age_seconds:.3f}s"
+            )
+            return {}, str(latest_path), {}, {}, report_meta
     try:
         payload = json.loads(latest_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return {}, str(latest_path), {}, {}
+        report_meta["stale"] = True
+        report_meta["stale_reason"] = "frontier_report_unreadable"
+        return {}, str(latest_path), {}, {}, report_meta
     if not isinstance(payload, dict):
-        return {}, str(latest_path), {}, {}
+        report_meta["stale"] = True
+        report_meta["stale_reason"] = "frontier_report_invalid_payload"
+        return {}, str(latest_path), {}, {}, report_meta
     raw = payload.get("trusted_break_even_edge_by_bucket")
     if not isinstance(raw, dict):
         raw = payload.get("break_even_edge_by_bucket")
     if not isinstance(raw, dict):
-        return {}, str(latest_path), {}, {}
+        report_meta["stale"] = True
+        report_meta["stale_reason"] = "frontier_report_missing_break_even_map"
+        return {}, str(latest_path), {}, {}, report_meta
     edges: dict[str, float] = {}
     for bucket, value in raw.items():
         if not isinstance(bucket, str):
@@ -665,7 +715,7 @@ def _load_latest_break_even_edges_by_bucket(
             if trust_info:
                 profile["markout_trusted"] = bool(trust_info.get("trusted"))
             fill_profile_by_bucket[bucket_name] = profile
-    return edges, str(latest_path), bucket_trust_by_bucket, fill_profile_by_bucket
+    return edges, str(latest_path), bucket_trust_by_bucket, fill_profile_by_bucket, report_meta
 
 
 def _signed_kalshi_request(
@@ -1122,6 +1172,8 @@ def run_kalshi_micro_execute(
     execution_event_log_csv: str | None = None,
     execution_journal_db_path: str | None = None,
     execution_frontier_recent_rows: int = 5000,
+    execution_frontier_report_json: str | None = None,
+    execution_frontier_max_report_age_seconds: float | None = 10800.0,
     enable_untrusted_bucket_probe_exploration: bool = True,
     untrusted_bucket_probe_max_orders_per_run: int = 1,
     untrusted_bucket_probe_required_edge_buffer_dollars: float = 0.01,
@@ -1353,9 +1405,16 @@ def run_kalshi_micro_execute(
         execution_frontier_break_even_reference_file,
         execution_frontier_bucket_trust_by_bucket,
         execution_frontier_fill_profile_by_bucket,
+        execution_frontier_report_meta,
     ) = (
-        _load_latest_break_even_edges_by_bucket(output_dir)
+        _load_latest_break_even_edges_by_bucket(
+            output_dir,
+            execution_frontier_report_json=execution_frontier_report_json,
+            max_report_age_seconds=execution_frontier_max_report_age_seconds,
+            as_of=captured_at,
+        )
     )
+    execution_frontier_report_stale = bool(execution_frontier_report_meta.get("stale"))
 
     def _append_journal_event(event_type: str, attempt: dict[str, Any], **extra: Any) -> None:
         side = str(attempt.get("planned_side") or "").strip().lower()
@@ -1675,7 +1734,10 @@ def run_kalshi_micro_execute(
             ):
                 if not execution_frontier_break_even_by_bucket:
                     attempt["execution_policy_decision"] = "skip"
-                    attempt["execution_policy_reason"] = "execution_frontier_insufficient_data"
+                    if execution_frontier_report_stale:
+                        attempt["execution_policy_reason"] = "execution_frontier_report_stale"
+                    else:
+                        attempt["execution_policy_reason"] = "execution_frontier_insufficient_data"
                 elif empirical_break_even is None:
                     probe_allowed, probe_reason = _should_allow_untrusted_bucket_probe(
                         attempt=attempt,
@@ -2176,6 +2238,12 @@ def run_kalshi_micro_execute(
                 "duplicate_open_orders_count": attempt.get("duplicate_open_orders_count"),
             }
         )
+    untrusted_bucket_probe_reason_counts: dict[str, int] = {}
+    for attempt in attempts:
+        reason = str(attempt.get("execution_untrusted_bucket_probe_reason") or "").strip()
+        if not reason:
+            continue
+        untrusted_bucket_probe_reason_counts[reason] = untrusted_bucket_probe_reason_counts.get(reason, 0) + 1
 
     summary = {
         "env_file": str(env_path),
@@ -2258,6 +2326,11 @@ def run_kalshi_micro_execute(
         "execution_frontier_break_even_reference_file": execution_frontier_break_even_reference_file,
         "execution_frontier_break_even_buckets_loaded": len(execution_frontier_break_even_by_bucket),
         "execution_frontier_fill_profiles_loaded": len(execution_frontier_fill_profile_by_bucket),
+        "execution_frontier_selection_mode": execution_frontier_report_meta.get("selection_mode"),
+        "execution_frontier_report_age_seconds": execution_frontier_report_meta.get("age_seconds"),
+        "execution_frontier_report_stale": execution_frontier_report_stale,
+        "execution_frontier_report_stale_reason": execution_frontier_report_meta.get("stale_reason"),
+        "execution_frontier_max_report_age_seconds": execution_frontier_report_meta.get("max_age_seconds"),
         "execution_frontier_recommendations": execution_frontier_summary.get("recommendations"),
         "untrusted_bucket_probe_exploration_enabled": untrusted_bucket_probe_enabled_effective,
         "untrusted_bucket_probe_max_orders_per_run": safe_untrusted_bucket_probe_max_orders_per_run,
@@ -2270,9 +2343,10 @@ def run_kalshi_micro_execute(
         "untrusted_bucket_probe_blocked_attempts": sum(
             1
             for attempt in attempts
-            if str(attempt.get("execution_policy_reason") or "").strip().startswith("insufficient_empirical_markout_samples_bucket")
+            if str(attempt.get("execution_policy_reason") or "").strip() == "insufficient_empirical_markout_samples_bucket"
             and str(attempt.get("execution_untrusted_bucket_probe_reason") or "").strip().startswith("probe_")
         ),
+        "untrusted_bucket_probe_reason_counts": untrusted_bucket_probe_reason_counts,
         "orderbook_outage_short_circuit_triggered": orderbook_outage_short_circuit_triggered,
         "orderbook_outage_short_circuit_trigger_market_ticker": orderbook_outage_short_circuit_trigger_market_ticker,
         "orderbook_outage_short_circuit_skipped_orders": orderbook_outage_short_circuit_skipped_orders,

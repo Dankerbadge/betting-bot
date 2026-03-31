@@ -1,5 +1,6 @@
 import csv
 import json
+import os
 import sqlite3
 import tempfile
 from datetime import datetime, timezone
@@ -11,6 +12,7 @@ from urllib.error import URLError
 from betbot.kalshi_book import ensure_book_schema
 from betbot.kalshi_micro_execute import (
     _http_request_json,
+    _load_latest_break_even_edges_by_bucket,
     _read_exchange_status,
     _should_allow_untrusted_bucket_probe,
     _signed_kalshi_request,
@@ -410,6 +412,177 @@ class KalshiMicroExecuteTests(unittest.TestCase):
             self.assertGreater(float(attempt["execution_fill_probability_model_weight_empirical"]), 0.0)
             self.assertEqual(attempt["execution_empirical_orders_submitted_bucket"], 24)
             self.assertEqual(attempt["execution_empirical_fill_rate_bucket"], 0.84)
+
+    def test_load_latest_break_even_edges_by_bucket_marks_stale_report(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            report_path = base / "execution_frontier_report_20260327_205959_000.json"
+            report_path.write_text(
+                json.dumps(
+                    {
+                        "trusted_break_even_edge_by_bucket": {"aggr_mid|spread_mid|ttc_short": 0.02},
+                        "bucket_markout_trust_by_bucket": {},
+                        "bucket_rows": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            old_ts = datetime(2026, 3, 27, 20, 0, tzinfo=timezone.utc).timestamp()
+            os.utime(report_path, (old_ts, old_ts))
+
+            edges, reference_file, trust_map, fill_profiles, meta = _load_latest_break_even_edges_by_bucket(
+                str(base),
+                max_report_age_seconds=60.0,
+                as_of=datetime(2026, 3, 27, 21, 0, tzinfo=timezone.utc),
+            )
+
+            self.assertEqual(edges, {})
+            self.assertEqual(trust_map, {})
+            self.assertEqual(fill_profiles, {})
+            self.assertEqual(reference_file, str(report_path))
+            self.assertTrue(meta.get("stale"))
+            self.assertTrue(str(meta.get("stale_reason") or "").startswith("frontier_report_stale:"))
+
+    def test_run_kalshi_micro_execute_allows_guarded_untrusted_bucket_probe_submission(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            env_file = base / "env.txt"
+            env_file.write_text(
+                (
+                    "KALSHI_ENV=prod\n"
+                    "BETBOT_JURISDICTION=new_jersey\n"
+                    "BETBOT_ENABLE_LIVE_ORDERS=1\n"
+                    "KALSHI_ACCESS_KEY_ID=key123\n"
+                    "KALSHI_PRIVATE_KEY_PATH=/tmp/key.pem\n"
+                ),
+                encoding="utf-8",
+            )
+            (base / "execution_frontier_report_20260327_205959_000.json").write_text(
+                json.dumps(
+                    {
+                        "trusted_break_even_edge_by_bucket": {
+                            "aggr_passive|spread_mid|ttc_short": 0.02
+                        },
+                        "bucket_markout_trust_by_bucket": {
+                            "aggr_mid|spread_mid|ttc_short": {
+                                "trusted": False,
+                                "reason": "markout_10s_samples_below_min:1<3;markout_60s_samples_below_min:1<3",
+                                "markout_10s_samples": 1,
+                                "markout_60s_samples": 1,
+                                "markout_300s_samples": 1,
+                            }
+                        },
+                        "bucket_rows": [
+                            {
+                                "bucket": "aggr_mid|spread_mid|ttc_short",
+                                "orders_submitted": 9,
+                                "fill_rate": 0.55,
+                                "full_fill_rate": 0.4,
+                                "median_time_to_fill_seconds": 65.0,
+                                "p90_time_to_fill_seconds": 160.0,
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            def fake_http_request_json(
+                url: str,
+                method: str,
+                headers: dict[str, str],
+                body: object | None,
+                timeout_seconds: float,
+            ) -> tuple[int, object]:
+                _ = headers
+                _ = body
+                _ = timeout_seconds
+                if method == "GET" and url.endswith("/exchange/status"):
+                    return 200, {"trading_active": True, "exchange_active": True}
+                if method == "GET" and url.endswith("/orderbook?depth=1"):
+                    return 200, {
+                        "orderbook_fp": {
+                            "yes_dollars": [["0.4200", "120.00"]],
+                            "no_dollars": [["0.5600", "120.00"]],
+                        }
+                    }
+                if method == "POST" and url.endswith("/portfolio/orders"):
+                    return 201, {"order": {"order_id": "order-probe", "status": "executed"}}
+                return 404, {"error": "not found"}
+
+            summary = run_kalshi_micro_execute(
+                env_file=str(env_file),
+                output_dir=str(base),
+                allow_live_orders=True,
+                enforce_trade_gate=True,
+                http_request_json=fake_http_request_json,
+                plan_runner=lambda **kwargs: {
+                    "status": "ready",
+                    "planned_orders": 1,
+                    "total_planned_cost_dollars": 0.42,
+                    "actual_live_balance_dollars": 40.0,
+                    "actual_live_balance_source": "live",
+                    "balance_live_verified": True,
+                    "funding_gap_dollars": 0.0,
+                    "board_warning": None,
+                    "output_file": str(base / "plan.json"),
+                    "output_csv": str(base / "plan.csv"),
+                    "orders": [
+                        {
+                            "plan_rank": 1,
+                            "category": "Climate",
+                            "canonical_niche": "weather_climate",
+                            "market_ticker": "KXTEST-RAIN",
+                            "side": "yes",
+                            "contracts_per_order": 1,
+                            "hours_to_close": 12.0,
+                            "confidence": 0.7,
+                            "maker_entry_price_dollars": 0.42,
+                            "maker_yes_price_dollars": 0.42,
+                            "yes_ask_dollars": 0.43,
+                            "maker_entry_edge_conservative_net_total": 0.08,
+                            "estimated_entry_cost_dollars": 0.42,
+                            "order_payload_preview": {
+                                "ticker": "KXTEST-RAIN",
+                                "side": "yes",
+                                "action": "buy",
+                                "count": 1,
+                                "yes_price_dollars": "0.4200",
+                                "time_in_force": "good_till_canceled",
+                                "post_only": True,
+                                "cancel_order_on_pause": True,
+                                "self_trade_prevention_type": "maker",
+                            },
+                        }
+                    ],
+                },
+                quality_runner=lambda **kwargs: {"meaningful_markets": 2},
+                signal_runner=lambda **kwargs: {"eligible_markets": 2},
+                persistence_runner=lambda **kwargs: {"persistent_tradeable_markets": 1},
+                delta_runner=lambda **kwargs: {
+                    "improved_two_sided_markets": 1,
+                    "newly_tradeable_markets": 0,
+                    "board_change_label": "improving",
+                },
+                category_runner=lambda **kwargs: {
+                    "tradeable_categories": 1,
+                    "watch_categories": 0,
+                    "top_categories": [{"category": "Climate", "category_label": "Climate"}],
+                    "concentration_warning": "",
+                },
+                pressure_runner=lambda **kwargs: {"build_markets": 1, "watch_markets": 0},
+                sign_request=lambda *_: "signed",
+                now=datetime(2026, 3, 27, 21, 0, tzinfo=timezone.utc),
+            )
+
+            self.assertIn(summary["status"], {"live_submitted", "live_submitted_and_canceled"})
+            self.assertEqual(summary["untrusted_bucket_probe_submitted_attempts"], 1)
+            self.assertEqual(
+                summary["untrusted_bucket_probe_reason_counts"].get("probe_submit_untrusted_bucket_sample_depth"),
+                1,
+            )
+            self.assertTrue(summary["attempts"][0]["execution_untrusted_bucket_probe"])
+            self.assertEqual(summary["attempts"][0]["execution_policy_reason"], "submit_probe_untrusted_bucket")
 
     def test_should_allow_untrusted_bucket_probe_requires_edge_buffer_and_budget(self) -> None:
         attempt = {
