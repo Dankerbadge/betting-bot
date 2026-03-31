@@ -15,6 +15,11 @@ from betbot.kalshi_micro_execute import (
 from betbot.kalshi_micro_ledger import default_ledger_path, summarize_trade_ledger, trading_day_for_timestamp
 from betbot.kalshi_micro_prior_plan import LIVE_ALLOWED_CANONICAL_NICHES, run_kalshi_micro_prior_plan
 from betbot.kalshi_nonsports_quality import _parse_timestamp, load_history_rows
+from betbot.runtime_version import (
+    build_runtime_version_block,
+    file_mtime_utc,
+    infer_fill_model_mode,
+)
 from betbot.kalshi_weather_settlement import build_weather_settlement_spec
 from betbot.live_smoke import HttpGetter, KalshiSigner, _http_get_json, _kalshi_sign_request
 from betbot.onboarding import _parse_env_file
@@ -452,6 +457,7 @@ def build_prior_trade_gate_decision(
         "top_market_estimated_max_loss_dollars": plan_summary.get("top_market_estimated_max_loss_dollars"),
         "top_market_max_profit_roi_on_cost": plan_summary.get("top_market_max_profit_roi_on_cost"),
         "top_market_fair_probability": plan_summary.get("top_market_fair_probability"),
+        "top_market_fair_probability_conservative": plan_summary.get("top_market_fair_probability_conservative"),
         "top_market_confidence": plan_summary.get("top_market_confidence"),
         "top_market_thesis": plan_summary.get("top_market_thesis"),
     }
@@ -519,6 +525,7 @@ def run_kalshi_micro_prior_execute(
     now: datetime | None = None,
 ) -> dict[str, Any]:
     captured_at = now or datetime.now(timezone.utc)
+    run_id = f"kalshi_micro_prior_execute::{captured_at.strftime('%Y%m%d_%H%M%S_%f')[:-3]}"
     env_data = _parse_env_file(Path(env_file))
     timezone_name = str(env_data.get("BETBOT_TIMEZONE") or "America/New_York").strip()
     trading_day = trading_day_for_timestamp(captured_at, timezone_name)
@@ -712,9 +719,36 @@ def run_kalshi_micro_prior_execute(
     summary_status = execute_summary.get("status")
     if allow_live_orders and not prior_trade_gate_summary.get("gate_pass", False):
         summary_status = "blocked_prior_trade_gate"
+    execute_attempts = execute_summary.get("attempts")
+    fill_model_mode = infer_fill_model_mode(
+        attempts=execute_attempts if isinstance(execute_attempts, list) else None,
+        prefer_empirical_fill_model=execute_summary.get("execution_empirical_fill_model_prefer_empirical"),
+        empirical_fill_enabled=execute_summary.get("execution_empirical_fill_model_enabled"),
+    )
+    top_market_fair_probability_raw = prior_trade_gate_summary.get("top_market_fair_probability")
+    top_market_execution_probability_guarded = (
+        prior_trade_gate_summary.get("top_market_fair_probability_conservative")
+        if isinstance(prior_trade_gate_summary, dict)
+        else None
+    )
+    if top_market_execution_probability_guarded in (None, ""):
+        top_market_execution_probability_guarded = top_market_fair_probability_raw
+    execution_frontier_reference_file = execute_summary.get("execution_frontier_break_even_reference_file")
+    runtime_version = build_runtime_version_block(
+        run_started_at=captured_at,
+        run_id=run_id,
+        git_cwd=Path.cwd(),
+        fill_model_mode=fill_model_mode,
+        prefer_empirical_fill_model=execute_summary.get("execution_empirical_fill_model_prefer_empirical"),
+        frontier_artifact_path=execution_frontier_reference_file,
+        frontier_selection_mode=execute_summary.get("execution_frontier_selection_mode"),
+        as_of=captured_at,
+    )
 
     summary = {
+        "run_id": run_id,
         "captured_at": captured_at.isoformat(),
+        "run_started_at_utc": captured_at.isoformat(),
         "env_file": env_file,
         "allow_live_orders_requested": allow_live_orders,
         "allow_live_orders_effective": effective_allow_live_orders,
@@ -745,6 +779,12 @@ def run_kalshi_micro_prior_execute(
         "daily_weather_board_max_age_seconds": max(0.0, float(daily_weather_board_max_age_seconds)),
         "allowed_live_canonical_niches": list(allowed_live_canonical_niches) if allowed_live_canonical_niches else None,
         "weather_board_summary": weather_board_summary,
+        "history_csv_path": str(history_csv),
+        "history_csv_mtime_utc": file_mtime_utc(history_csv),
+        "daily_weather_board_age_seconds": weather_board_summary.get("latest_capture_age_seconds"),
+        "weather_station_history_cache_age_seconds": plan_summary.get("top_market_weather_station_history_cache_age_seconds"),
+        "balance_heartbeat_age_seconds": execute_summary.get("balance_cache_age_seconds"),
+        "fill_model_mode": fill_model_mode,
         "weather_history_live_gate_effective": weather_history_live_gate_effective,
         "plan_weather_history_live_filter_enabled": plan_summary.get("weather_history_live_filter_enabled"),
         "plan_weather_history_daily_candidates_total": plan_summary.get("weather_history_daily_candidates_total"),
@@ -818,8 +858,40 @@ def run_kalshi_micro_prior_execute(
         "top_market_estimated_max_loss_dollars": prior_trade_gate_summary.get("top_market_estimated_max_loss_dollars"),
         "top_market_max_profit_roi_on_cost": prior_trade_gate_summary.get("top_market_max_profit_roi_on_cost"),
         "top_market_fair_probability": prior_trade_gate_summary.get("top_market_fair_probability"),
+        "top_market_fair_probability_raw": top_market_fair_probability_raw,
+        "top_market_execution_probability_guarded": top_market_execution_probability_guarded,
         "top_market_confidence": prior_trade_gate_summary.get("top_market_confidence"),
         "top_market_thesis": prior_trade_gate_summary.get("top_market_thesis"),
+        "fill_probability_source": (
+            execute_summary.get("attempts")[0].get("execution_fill_probability_source")
+            if isinstance(execute_summary.get("attempts"), list) and execute_summary.get("attempts")
+            and isinstance(execute_summary.get("attempts")[0], dict)
+            else None
+        ),
+        "empirical_fill_weight": (
+            execute_summary.get("attempts")[0].get("execution_fill_probability_model_weight_empirical")
+            if isinstance(execute_summary.get("attempts"), list) and execute_summary.get("attempts")
+            and isinstance(execute_summary.get("attempts")[0], dict)
+            else None
+        ),
+        "heuristic_fill_weight": (
+            execute_summary.get("attempts")[0].get("execution_fill_probability_model_weight_heuristic")
+            if isinstance(execute_summary.get("attempts"), list) and execute_summary.get("attempts")
+            and isinstance(execute_summary.get("attempts")[0], dict)
+            else None
+        ),
+        "probe_lane_used": (
+            execute_summary.get("attempts")[0].get("probe_lane_used")
+            if isinstance(execute_summary.get("attempts"), list) and execute_summary.get("attempts")
+            and isinstance(execute_summary.get("attempts")[0], dict)
+            else None
+        ),
+        "probe_reason": (
+            execute_summary.get("attempts")[0].get("probe_reason")
+            if isinstance(execute_summary.get("attempts"), list) and execute_summary.get("attempts")
+            and isinstance(execute_summary.get("attempts")[0], dict)
+            else None
+        ),
         "status": summary_status,
         "blocked_duplicate_open_order_attempts": execute_summary.get("blocked_duplicate_open_order_attempts"),
         "blocked_submission_budget_attempts": execute_summary.get("blocked_submission_budget_attempts"),
@@ -844,6 +916,10 @@ def run_kalshi_micro_prior_execute(
         "execution_frontier_break_even_reference_file": execute_summary.get(
             "execution_frontier_break_even_reference_file"
         ),
+        "frontier_artifact_path": runtime_version.get("frontier_artifact_path"),
+        "frontier_artifact_sha256": runtime_version.get("frontier_artifact_sha256"),
+        "frontier_artifact_as_of_utc": runtime_version.get("frontier_artifact_as_of_utc"),
+        "frontier_artifact_age_seconds": runtime_version.get("frontier_artifact_age_seconds"),
         "execution_frontier_selection_mode": execute_summary.get("execution_frontier_selection_mode"),
         "execution_frontier_report_age_seconds": execute_summary.get("execution_frontier_report_age_seconds"),
         "execution_frontier_report_stale": execute_summary.get("execution_frontier_report_stale"),
@@ -890,6 +966,7 @@ def run_kalshi_micro_prior_execute(
         ),
         "duplicate_open_order_markets": execute_summary.get("duplicate_open_order_markets"),
         "attempts": execute_summary.get("attempts"),
+        "runtime_version": runtime_version,
     }
 
     stamp = captured_at.astimezone().strftime("%Y%m%d_%H%M%S_%f")[:-3]

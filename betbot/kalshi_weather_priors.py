@@ -13,6 +13,12 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from betbot.kalshi_nonsports_priors import PRIOR_FIELDNAMES, load_prior_rows
 from betbot.kalshi_nonsports_quality import _parse_timestamp, load_history_rows
+from betbot.runtime_version import (
+    build_runtime_version_block,
+    detect_weather_model_tags,
+    file_mtime_utc,
+    weather_priors_version,
+)
 from betbot.kalshi_weather_ingest import (
     fetch_ncei_cdo_station_daily_history,
     fetch_noaa_global_land_ocean_anomaly_series,
@@ -1323,6 +1329,7 @@ def run_kalshi_weather_priors(
     now: datetime | None = None,
 ) -> dict[str, Any]:
     captured_at = now or datetime.now(timezone.utc)
+    run_id = f"kalshi_weather_priors::{captured_at.strftime('%Y%m%d_%H%M%S_%f')[:-3]}"
     priors_path = Path(priors_csv)
     history_path = Path(history_csv)
     prior_rows = load_prior_rows(priors_path)
@@ -1637,10 +1644,32 @@ def run_kalshi_weather_priors(
     skipped_csv_path = out_dir / f"kalshi_weather_priors_skipped_{stamp}.csv"
     _write_csv(generated_csv_path, generated_rows, WEATHER_PRIOR_OUTPUT_FIELDNAMES)
     _write_csv(skipped_csv_path, skipped_rows, ["market_ticker", "contract_family", "skip_reason"])
+    model_tags = detect_weather_model_tags(generated_rows)
+    rain_model_tag = model_tags.get("rain_model_tag")
+    temperature_model_tag = model_tags.get("temperature_model_tag")
+    weather_priors_version_name = weather_priors_version(
+        rain_model_tag=rain_model_tag,
+        temperature_model_tag=temperature_model_tag,
+    )
+    weather_station_history_cache_age_seconds: float | None = None
+    if supports_history_cache_dir and station_history_cache_dir:
+        cache_dir = Path(station_history_cache_dir)
+        if cache_dir.exists():
+            cache_files = [path for path in cache_dir.glob("*.json") if path.is_file()]
+            if cache_files:
+                newest_mtime = max(path.stat().st_mtime for path in cache_files)
+                newest_dt = datetime.fromtimestamp(newest_mtime, tz=timezone.utc)
+                weather_station_history_cache_age_seconds = round(
+                    max(0.0, (captured_at - newest_dt).total_seconds()),
+                    3,
+                )
 
     summary = {
+        "run_id": run_id,
         "captured_at": captured_at.isoformat(),
         "history_csv": str(history_path),
+        "history_csv_path": str(history_path),
+        "history_csv_mtime_utc": file_mtime_utc(history_path),
         "priors_csv": str(priors_path),
         "write_back_to_priors": write_back_to_priors,
         "protect_manual": protect_manual,
@@ -1660,7 +1689,11 @@ def run_kalshi_weather_priors(
         "contract_family_generated_counts": family_generated_counts,
         "contract_family_skipped_counts": family_skipped_counts,
         "station_history_cache_entries": len(station_history_cache),
+        "weather_station_history_cache_age_seconds": weather_station_history_cache_age_seconds,
         "station_history_status_counts": history_fetch_status_counts,
+        "rain_model_tag": rain_model_tag,
+        "temperature_model_tag": temperature_model_tag,
+        "weather_priors_version": weather_priors_version_name,
         "top_market_ticker": generated_rows[0]["market_ticker"] if generated_rows else None,
         "top_market_confidence": generated_rows[0]["confidence"] if generated_rows else None,
         "top_markets": generated_rows[: max(1, int(top_n))],
@@ -1675,6 +1708,15 @@ def run_kalshi_weather_priors(
     }
 
     summary_path = out_dir / f"kalshi_weather_priors_summary_{stamp}.json"
+    summary["runtime_version"] = build_runtime_version_block(
+        run_started_at=captured_at,
+        run_id=run_id,
+        git_cwd=Path.cwd(),
+        rain_model_tag=rain_model_tag,
+        temperature_model_tag=temperature_model_tag,
+        weather_priors_version_name=weather_priors_version_name,
+        as_of=captured_at,
+    )
     summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
     summary["output_file"] = str(summary_path)
     return summary

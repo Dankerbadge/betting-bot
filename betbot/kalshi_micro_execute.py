@@ -54,6 +54,11 @@ from betbot.live_smoke import (
     kalshi_api_root_candidates,
 )
 from betbot.onboarding import _parse_env_file
+from betbot.runtime_version import (
+    build_runtime_version_block,
+    file_mtime_utc,
+    infer_fill_model_mode,
+)
 
 try:  # pragma: no cover - platform specific
     import fcntl  # type: ignore[attr-defined]
@@ -1355,6 +1360,8 @@ def _write_attempts_csv(path: Path, attempts: list[dict[str, Any]]) -> None:
         "signal_confidence",
         "signal_evidence_count",
         "signal_age_seconds",
+        "fair_yes_probability_raw",
+        "execution_probability_guarded",
         "execution_fill_probability_10s",
         "execution_fill_probability_60s",
         "execution_fill_probability_300s",
@@ -1391,6 +1398,8 @@ def _write_attempts_csv(path: Path, attempts: list[dict[str, Any]]) -> None:
         "execution_frontier_bucket_markout_300s_samples",
         "execution_untrusted_bucket_probe",
         "execution_untrusted_bucket_probe_reason",
+        "probe_lane_used",
+        "probe_reason",
         "planned_yes_bid_dollars",
         "planned_yes_ask_dollars",
         "current_best_yes_bid_dollars",
@@ -1947,6 +1956,7 @@ def run_kalshi_micro_execute(
                 "market_ticker": ticker,
                 "canonical_ticker": plan.get("canonical_ticker", ""),
                 "canonical_niche": plan.get("canonical_niche", ""),
+                "contract_family": plan.get("contract_family", ""),
                 "planned_side": str(plan.get("side") or plan.get("order_payload_preview", {}).get("side") or "yes"),
                 "planned_contracts": (
                     plan.get("contracts_per_order")
@@ -1966,6 +1976,16 @@ def run_kalshi_micro_execute(
                 "signal_confidence": plan.get("confidence", ""),
                 "signal_evidence_count": plan.get("effective_min_evidence_count", ""),
                 "signal_age_seconds": "",
+                "fair_yes_probability_raw": (
+                    plan.get("fair_probability")
+                    if plan.get("fair_probability") not in (None, "")
+                    else plan.get("fair_yes_probability", "")
+                ),
+                "execution_probability_guarded": (
+                    plan.get("fair_probability_conservative")
+                    if plan.get("fair_probability_conservative") not in (None, "")
+                    else plan.get("fair_yes_probability_conservative", "")
+                ),
                 "execution_fill_probability_10s": "",
                 "execution_fill_probability_60s": "",
                 "execution_fill_probability_300s": "",
@@ -2002,6 +2022,8 @@ def run_kalshi_micro_execute(
                 "execution_frontier_bucket_markout_300s_samples": "",
                 "execution_untrusted_bucket_probe": False,
                 "execution_untrusted_bucket_probe_reason": "",
+                "probe_lane_used": False,
+                "probe_reason": "",
                 "planned_yes_bid_dollars": plan.get("maker_yes_price_dollars"),
                 "planned_yes_ask_dollars": plan.get("yes_ask_dollars"),
                 "current_best_yes_bid_dollars": orderbook.get("best_yes_bid_dollars", ""),
@@ -2144,6 +2166,8 @@ def run_kalshi_micro_execute(
                             attempt["execution_policy_reason"] = "insufficient_empirical_markout_samples_bucket"
                         else:
                             attempt["execution_policy_reason"] = "missing_empirical_break_even_bucket"
+            attempt["probe_lane_used"] = bool(attempt.get("execution_untrusted_bucket_probe"))
+            attempt["probe_reason"] = str(attempt.get("execution_untrusted_bucket_probe_reason") or "").strip()
             _append_journal_event("candidate_seen", attempt)
             _append_book_snapshot_event(
                 attempt,
@@ -2627,10 +2651,47 @@ def run_kalshi_micro_execute(
         if not reason:
             continue
         untrusted_bucket_probe_reason_counts[reason] = untrusted_bucket_probe_reason_counts.get(reason, 0) + 1
+    fill_model_mode = infer_fill_model_mode(
+        attempts=attempts,
+        prefer_empirical_fill_model=execution_empirical_fill_model_prefer_empirical,
+        empirical_fill_enabled=execution_empirical_fill_model_enabled,
+    )
+    top_attempt = attempts[0] if attempts else {}
+    if not isinstance(top_attempt, dict):
+        top_attempt = {}
+    top_market_ticker = str(plan_summary.get("top_market_ticker") or "").strip() or None
+    top_market_contract_family = str(plan_summary.get("top_market_contract_family") or "").strip().lower() or None
+    top_market_fair_probability_raw = _parse_float(plan_summary.get("top_market_fair_probability"))
+    top_market_execution_probability_guarded = _parse_float(
+        plan_summary.get("top_market_fair_probability_conservative")
+    )
+    if top_market_execution_probability_guarded is None:
+        top_market_execution_probability_guarded = top_market_fair_probability_raw
+    daily_weather_board_age_seconds = None
+    if isinstance(trade_gate_summary, dict):
+        daily_weather_board_age_seconds = _parse_float(
+            trade_gate_summary.get("daily_weather_board_latest_capture_age_seconds")
+        )
+    weather_station_history_cache_age_seconds = _parse_float(
+        plan_summary.get("top_market_weather_station_history_cache_age_seconds")
+    )
+    balance_heartbeat_age_seconds = _parse_float(plan_summary.get("balance_cache_age_seconds"))
+    runtime_version = build_runtime_version_block(
+        run_started_at=captured_at,
+        run_id=run_id,
+        git_cwd=Path.cwd(),
+        fill_model_mode=fill_model_mode,
+        prefer_empirical_fill_model=execution_empirical_fill_model_prefer_empirical,
+        frontier_artifact_path=execution_frontier_break_even_reference_file,
+        frontier_selection_mode=str(execution_frontier_report_meta.get("selection_mode") or "").strip() or None,
+        as_of=captured_at,
+    )
 
     summary = {
+        "run_id": run_id,
         "env_file": str(env_path),
         "captured_at": captured_at.isoformat(),
+        "run_started_at_utc": captured_at.isoformat(),
         "jurisdiction": (env_data.get("BETBOT_JURISDICTION") or "").strip(),
         "kalshi_env": (env_data.get("KALSHI_ENV") or "").strip().lower(),
         "allow_live_orders": allow_live_orders,
@@ -2668,8 +2729,23 @@ def run_kalshi_micro_execute(
         "balance_check_error": plan_summary.get("balance_check_error"),
         "balance_cache_file": plan_summary.get("balance_cache_file"),
         "balance_cache_age_seconds": plan_summary.get("balance_cache_age_seconds"),
+        "balance_heartbeat_age_seconds": balance_heartbeat_age_seconds,
         "funding_gap_dollars": plan_summary.get("funding_gap_dollars"),
         "board_warning": plan_summary.get("board_warning"),
+        "history_csv_path": str(effective_history_csv),
+        "history_csv_mtime_utc": file_mtime_utc(effective_history_csv),
+        "daily_weather_board_age_seconds": daily_weather_board_age_seconds,
+        "weather_station_history_cache_age_seconds": weather_station_history_cache_age_seconds,
+        "top_market_ticker": top_market_ticker,
+        "top_market_contract_family": top_market_contract_family,
+        "fair_yes_probability_raw": top_market_fair_probability_raw,
+        "execution_probability_guarded": top_market_execution_probability_guarded,
+        "fill_model_mode": fill_model_mode,
+        "fill_probability_source": str(top_attempt.get("execution_fill_probability_source") or "").strip() or None,
+        "empirical_fill_weight": _parse_float(top_attempt.get("execution_fill_probability_model_weight_empirical")),
+        "heuristic_fill_weight": _parse_float(top_attempt.get("execution_fill_probability_model_weight_heuristic")),
+        "probe_lane_used": bool(top_attempt.get("probe_lane_used")),
+        "probe_reason": str(top_attempt.get("probe_reason") or "").strip() or None,
         "ledger_csv": str(ledger_path),
         "book_db_path": str(effective_book_db_path),
         "ledger_summary_before": ledger_summary_before,
@@ -2715,6 +2791,10 @@ def run_kalshi_micro_execute(
         "execution_frontier_report_stale_reason": execution_frontier_report_meta.get("stale_reason"),
         "execution_frontier_max_report_age_seconds": execution_frontier_report_meta.get("max_age_seconds"),
         "execution_frontier_recommendations": execution_frontier_summary.get("recommendations"),
+        "frontier_artifact_path": runtime_version.get("frontier_artifact_path"),
+        "frontier_artifact_sha256": runtime_version.get("frontier_artifact_sha256"),
+        "frontier_artifact_as_of_utc": runtime_version.get("frontier_artifact_as_of_utc"),
+        "frontier_artifact_age_seconds": runtime_version.get("frontier_artifact_age_seconds"),
         "execution_empirical_fill_model_enabled": bool(execution_empirical_fill_model_enabled),
         "execution_empirical_fill_model_lookback_days": safe_execution_empirical_fill_model_lookback_days,
         "execution_empirical_fill_model_recent_events": safe_execution_empirical_fill_model_recent_events,
@@ -2743,6 +2823,7 @@ def run_kalshi_micro_execute(
         "duplicate_open_order_markets": duplicate_open_order_markets,
         "attempts": attempts,
         "output_csv": str(csv_path),
+        "runtime_version": runtime_version,
     }
     record_order_attempts(
         book_db_path=effective_book_db_path,

@@ -31,10 +31,17 @@ import json
 import os
 from pathlib import Path
 
+try:
+    from betbot.runtime_version import build_runtime_version_block
+except Exception:  # pragma: no cover - best effort metadata only
+    build_runtime_version_block = None  # type: ignore[assignment]
+
 captured_at = datetime.now(timezone.utc).isoformat()
+run_started_dt = datetime.now(timezone.utc)
 output_dir = Path(os.environ["BETBOT_OUTPUT_DIR"])
 run_root = output_dir / "overnight_alpha"
 payload = {
+    "run_id": f"hourly_alpha_overnight::{run_started_dt.strftime('%Y%m%d_%H%M%S_%f')[:-3]}",
     "run_started_at_utc": captured_at,
     "run_finished_at_utc": captured_at,
     "run_stamp_utc": datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S"),
@@ -64,11 +71,27 @@ payload = {
         "bucket_markout_sample_counts_by_horizon": {},
         "output_file": None,
     },
+    "top_market_ticker": None,
+    "top_market_contract_family": None,
+    "fair_yes_probability_raw": None,
+    "execution_probability_guarded": None,
+    "fill_probability_source": None,
+    "empirical_fill_weight": None,
+    "heuristic_fill_weight": None,
+    "probe_lane_used": None,
+    "probe_reason": None,
     "skip_reason": "skipped_locked",
     "steps": [],
     "failed_steps": [],
     "degraded_reasons": [],
 }
+if callable(build_runtime_version_block):
+    payload["runtime_version"] = build_runtime_version_block(
+        run_started_at=run_started_dt,
+        run_id=f"hourly_alpha_overnight::{run_started_dt.strftime('%Y%m%d_%H%M%S_%f')[:-3]}",
+        git_cwd=Path(os.environ.get("BETBOT_REPO_ROOT") or "."),
+        as_of=run_started_dt,
+    )
 (run_root / "last_lock_skip.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
 (output_dir / "overnight_alpha_latest.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
 print(
@@ -105,6 +128,11 @@ import sys
 import tempfile
 import time
 from typing import Any
+
+try:
+    from betbot.runtime_version import build_runtime_version_block
+except Exception:  # pragma: no cover - best effort metadata only
+    build_runtime_version_block = None  # type: ignore[assignment]
 
 
 def _now_iso() -> str:
@@ -328,6 +356,11 @@ def _run_step(
             step["untrusted_bucket_count"] = untrusted_bucket_count
             step["bucket_markout_sample_counts_by_horizon"] = parsed.get("bucket_markout_sample_counts_by_horizon")
             step["recommendations"] = parsed.get("recommendations")
+            step["frontier_artifact_path"] = parsed.get("frontier_artifact_path")
+            step["frontier_artifact_sha256"] = parsed.get("frontier_artifact_sha256")
+            step["frontier_artifact_as_of_utc"] = parsed.get("frontier_artifact_as_of_utc")
+            step["frontier_artifact_age_seconds"] = parsed.get("frontier_artifact_age_seconds")
+            step["frontier_selection_mode"] = parsed.get("frontier_selection_mode")
         elif name == "prior_trader_dry_run":
             step["allow_live_orders_effective"] = parsed.get("allow_live_orders_effective")
             step["prior_execute_status"] = parsed.get("prior_execute_status")
@@ -356,6 +389,34 @@ def _run_step(
             step["daily_weather_board_freshness_threshold_seconds"] = parsed.get(
                 "daily_weather_board_freshness_threshold_seconds"
             )
+            step["rain_model_tag"] = parsed.get("rain_model_tag")
+            step["temperature_model_tag"] = parsed.get("temperature_model_tag")
+            step["weather_priors_version"] = parsed.get("weather_priors_version")
+            step["fill_model_mode"] = parsed.get("fill_model_mode")
+            step["execution_empirical_fill_model_prefer_empirical"] = parsed.get(
+                "execution_empirical_fill_model_prefer_empirical"
+            )
+            step["history_csv_path"] = parsed.get("history_csv_path")
+            step["history_csv_mtime_utc"] = parsed.get("history_csv_mtime_utc")
+            step["weather_station_history_cache_age_seconds"] = parsed.get("weather_station_history_cache_age_seconds")
+            step["balance_heartbeat_age_seconds"] = parsed.get("balance_heartbeat_age_seconds")
+            step["fair_yes_probability_raw"] = (
+                parsed.get("fair_yes_probability_raw")
+                or parsed.get("top_market_fair_probability_raw")
+            )
+            step["execution_probability_guarded"] = (
+                parsed.get("execution_probability_guarded")
+                or parsed.get("top_market_execution_probability_guarded")
+            )
+            step["fill_probability_source"] = parsed.get("fill_probability_source")
+            step["empirical_fill_weight"] = parsed.get("empirical_fill_weight")
+            step["heuristic_fill_weight"] = parsed.get("heuristic_fill_weight")
+            step["probe_lane_used"] = parsed.get("probe_lane_used")
+            step["probe_reason"] = parsed.get("probe_reason")
+            step["frontier_artifact_path"] = parsed.get("frontier_artifact_path")
+            step["frontier_artifact_sha256"] = parsed.get("frontier_artifact_sha256")
+            step["frontier_artifact_as_of_utc"] = parsed.get("frontier_artifact_as_of_utc")
+            step["frontier_artifact_age_seconds"] = parsed.get("frontier_artifact_age_seconds")
 
     return step
 
@@ -606,6 +667,112 @@ def _top_level_execution_frontier(step: dict[str, Any] | None) -> dict[str, Any]
     }
 
 
+def _runtime_version_for_report(
+    *,
+    run_started_at: str,
+    run_id: str,
+    repo_root: Path,
+    prior_trader_step: dict[str, Any] | None,
+    frontier_step: dict[str, Any] | None,
+    as_of: datetime,
+) -> dict[str, Any]:
+    if not callable(build_runtime_version_block):
+        return {
+            "git_sha": "unknown",
+            "git_branch": "unknown",
+            "git_dirty": None,
+            "run_id": run_id,
+            "run_started_at_utc": run_started_at,
+            "rain_model_tag": None,
+            "temperature_model_tag": None,
+            "fill_model_mode": None,
+            "prefer_empirical_fill_model": None,
+            "weather_priors_version": None,
+            "frontier_artifact_path": None,
+            "frontier_artifact_sha256": None,
+            "frontier_artifact_as_of_utc": None,
+            "frontier_artifact_age_seconds": None,
+            "frontier_selection_mode": None,
+            "frontier_trusted_bucket_count": 0,
+            "frontier_untrusted_bucket_count": 0,
+        }
+    frontier_path = None
+    frontier_selection_mode = None
+    if isinstance(prior_trader_step, dict):
+        frontier_path = (
+            prior_trader_step.get("execution_frontier_report_reference_file")
+            or prior_trader_step.get("execution_frontier_break_even_reference_file")
+            or prior_trader_step.get("frontier_artifact_path")
+        )
+        frontier_selection_mode = (
+            prior_trader_step.get("execution_frontier_report_selection_mode")
+            or prior_trader_step.get("execution_frontier_selection_mode")
+        )
+    if not frontier_path and isinstance(frontier_step, dict):
+        frontier_path = frontier_step.get("output_file") or frontier_step.get("frontier_artifact_path")
+    if not frontier_selection_mode and isinstance(frontier_step, dict):
+        frontier_selection_mode = frontier_step.get("frontier_selection_mode") or "self_generated"
+    return build_runtime_version_block(
+        run_started_at=run_started_at,
+        run_id=run_id,
+        git_cwd=repo_root,
+        rain_model_tag=(
+            prior_trader_step.get("rain_model_tag")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        temperature_model_tag=(
+            prior_trader_step.get("temperature_model_tag")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        fill_model_mode=(
+            prior_trader_step.get("fill_model_mode")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        prefer_empirical_fill_model=(
+            prior_trader_step.get("execution_empirical_fill_model_prefer_empirical")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        weather_priors_version_name=(
+            prior_trader_step.get("weather_priors_version")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        frontier_artifact_path=frontier_path,
+        frontier_selection_mode=frontier_selection_mode,
+        as_of=as_of,
+    )
+
+
+def _top_level_decision_identity(step: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(step, dict):
+        return {
+            "top_market_ticker": None,
+            "top_market_contract_family": None,
+            "fair_yes_probability_raw": None,
+            "execution_probability_guarded": None,
+            "fill_probability_source": None,
+            "empirical_fill_weight": None,
+            "heuristic_fill_weight": None,
+            "probe_lane_used": None,
+            "probe_reason": None,
+        }
+    return {
+        "top_market_ticker": step.get("top_market_ticker"),
+        "top_market_contract_family": step.get("top_market_contract_family"),
+        "fair_yes_probability_raw": _parse_float(step.get("fair_yes_probability_raw")),
+        "execution_probability_guarded": _parse_float(step.get("execution_probability_guarded")),
+        "fill_probability_source": step.get("fill_probability_source"),
+        "empirical_fill_weight": _parse_float(step.get("empirical_fill_weight")),
+        "heuristic_fill_weight": _parse_float(step.get("heuristic_fill_weight")),
+        "probe_lane_used": step.get("probe_lane_used"),
+        "probe_reason": step.get("probe_reason"),
+    }
+
+
 def _write_report(
     *,
     run_report_path: Path,
@@ -624,6 +791,7 @@ def main() -> int:
     priors_csv = Path(os.environ["BETBOT_PRIORS_CSV"])
 
     run_stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    run_id = f"hourly_alpha_overnight::{run_stamp}"
     run_root = output_dir / "overnight_alpha"
     run_logs = run_root / "logs" / run_stamp
     run_reports = run_root / "reports"
@@ -643,6 +811,7 @@ def main() -> int:
             age_seconds = max(0.0, (datetime.now(timezone.utc) - previous_started).total_seconds())
             if age_seconds < min_seconds_between_runs:
                 report = {
+                    "run_id": run_id,
                     "run_started_at_utc": started_at,
                     "run_finished_at_utc": _now_iso(),
                     "run_stamp_utc": run_stamp,
@@ -671,6 +840,21 @@ def main() -> int:
                     "live_blockers": ["run_skipped_recent_run"],
                     "balance_heartbeat": _top_level_balance_heartbeat(None),
                     "execution_frontier": _top_level_execution_frontier(None),
+                    "decision_identity": _top_level_decision_identity(None),
+                    "top_market_ticker": None,
+                    "top_market_contract_family": None,
+                    "fair_yes_probability_raw": None,
+                    "execution_probability_guarded": None,
+                    "fill_probability_source": None,
+                    "empirical_fill_weight": None,
+                    "heuristic_fill_weight": None,
+                    "probe_lane_used": None,
+                    "probe_reason": None,
+                    "history_csv_path": str(history_csv),
+                    "history_csv_mtime_utc": _file_meta(history_csv).get("mtime_utc"),
+                    "daily_weather_board_age_seconds": None,
+                    "weather_station_history_cache_age_seconds": None,
+                    "balance_heartbeat_age_seconds": None,
                     "skip_reason": "skipped_recent_run",
                     "freshness": {
                         "history_csv": _file_meta(history_csv),
@@ -686,6 +870,14 @@ def main() -> int:
                         },
                     },
                 }
+                report["runtime_version"] = _runtime_version_for_report(
+                    run_started_at=started_at,
+                    run_id=run_id,
+                    repo_root=repo_root,
+                    prior_trader_step=None,
+                    frontier_step=None,
+                    as_of=datetime.now(timezone.utc),
+                )
                 _write_report(run_report_path=run_report_path, latest_report_path=latest_report_path, report=report)
                 print(
                     json.dumps(
@@ -707,6 +899,7 @@ def main() -> int:
     if not bool(preflight_step.get("ok")):
         failed_steps = [step["name"] for step in steps if not bool(step.get("ok"))]
         report = {
+            "run_id": run_id,
             "run_started_at_utc": started_at,
             "run_finished_at_utc": _now_iso(),
             "run_stamp_utc": run_stamp,
@@ -723,6 +916,21 @@ def main() -> int:
             "live_blockers": ["preflight_failed"],
             "balance_heartbeat": _top_level_balance_heartbeat(None),
             "execution_frontier": _top_level_execution_frontier(None),
+            "decision_identity": _top_level_decision_identity(None),
+            "top_market_ticker": None,
+            "top_market_contract_family": None,
+            "fair_yes_probability_raw": None,
+            "execution_probability_guarded": None,
+            "fill_probability_source": None,
+            "empirical_fill_weight": None,
+            "heuristic_fill_weight": None,
+            "probe_lane_used": None,
+            "probe_reason": None,
+            "history_csv_path": str(history_csv),
+            "history_csv_mtime_utc": _file_meta(history_csv).get("mtime_utc"),
+            "daily_weather_board_age_seconds": None,
+            "weather_station_history_cache_age_seconds": None,
+            "balance_heartbeat_age_seconds": None,
             "freshness": {
                 "history_csv": _file_meta(history_csv),
                 "priors_csv": _file_meta(priors_csv),
@@ -737,6 +945,14 @@ def main() -> int:
                 },
             },
         }
+        report["runtime_version"] = _runtime_version_for_report(
+            run_started_at=started_at,
+            run_id=run_id,
+            repo_root=repo_root,
+            prior_trader_step=None,
+            frontier_step=None,
+            as_of=datetime.now(timezone.utc),
+        )
         _write_report(run_report_path=run_report_path, latest_report_path=latest_report_path, report=report)
         print(
             json.dumps(
@@ -935,12 +1151,22 @@ def main() -> int:
     live_ready = pipeline_ready and not live_blockers
     top_level_balance = _top_level_balance_heartbeat(balance_step if isinstance(balance_step, dict) else None)
     top_level_frontier = _top_level_execution_frontier(frontier_step if isinstance(frontier_step, dict) else None)
+    decision_identity = _top_level_decision_identity(prior_trader_step if isinstance(prior_trader_step, dict) else None)
+    runtime_version = _runtime_version_for_report(
+        run_started_at=started_at,
+        run_id=run_id,
+        repo_root=repo_root,
+        prior_trader_step=prior_trader_step if isinstance(prior_trader_step, dict) else None,
+        frontier_step=frontier_step if isinstance(frontier_step, dict) else None,
+        as_of=datetime.now(timezone.utc),
+    )
 
     latest_prior_summary_file = ""
     if isinstance(prior_trader_step, dict):
         latest_prior_summary_file = str(prior_trader_step.get("output_file") or "").strip()
 
     report = {
+        "run_id": run_id,
         "run_started_at_utc": started_at,
         "run_finished_at_utc": _now_iso(),
         "run_stamp_utc": run_stamp,
@@ -957,6 +1183,65 @@ def main() -> int:
         "live_blockers": live_blockers,
         "balance_heartbeat": top_level_balance,
         "execution_frontier": top_level_frontier,
+        "decision_identity": decision_identity,
+        "top_market_ticker": decision_identity.get("top_market_ticker"),
+        "top_market_contract_family": decision_identity.get("top_market_contract_family"),
+        "fair_yes_probability_raw": decision_identity.get("fair_yes_probability_raw"),
+        "execution_probability_guarded": decision_identity.get("execution_probability_guarded"),
+        "fill_probability_source": decision_identity.get("fill_probability_source"),
+        "empirical_fill_weight": decision_identity.get("empirical_fill_weight"),
+        "heuristic_fill_weight": decision_identity.get("heuristic_fill_weight"),
+        "probe_lane_used": decision_identity.get("probe_lane_used"),
+        "probe_reason": decision_identity.get("probe_reason"),
+        "rain_model_tag": (
+            prior_trader_step.get("rain_model_tag")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        "temperature_model_tag": (
+            prior_trader_step.get("temperature_model_tag")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        "fill_model_mode": (
+            prior_trader_step.get("fill_model_mode")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        "prefer_empirical_fill_model": (
+            prior_trader_step.get("execution_empirical_fill_model_prefer_empirical")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        "weather_priors_version": (
+            prior_trader_step.get("weather_priors_version")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        "frontier_artifact_path": runtime_version.get("frontier_artifact_path"),
+        "frontier_artifact_sha256": runtime_version.get("frontier_artifact_sha256"),
+        "frontier_artifact_as_of_utc": runtime_version.get("frontier_artifact_as_of_utc"),
+        "frontier_artifact_age_seconds": runtime_version.get("frontier_artifact_age_seconds"),
+        "frontier_selection_mode": runtime_version.get("frontier_selection_mode"),
+        "frontier_trusted_bucket_count": runtime_version.get("frontier_trusted_bucket_count"),
+        "frontier_untrusted_bucket_count": runtime_version.get("frontier_untrusted_bucket_count"),
+        "history_csv_path": str(history_csv),
+        "history_csv_mtime_utc": _file_meta(history_csv).get("mtime_utc"),
+        "daily_weather_board_age_seconds": (
+            prior_trader_step.get("daily_weather_board_age_seconds")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        "weather_station_history_cache_age_seconds": (
+            prior_trader_step.get("weather_station_history_cache_age_seconds")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        "balance_heartbeat_age_seconds": (
+            prior_trader_step.get("balance_heartbeat_age_seconds")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
         "freshness": {
             "history_csv": _file_meta(history_csv),
             "priors_csv": _file_meta(priors_csv),
@@ -970,8 +1255,9 @@ def main() -> int:
                 "mtime_utc": None,
                 "age_seconds": None,
                 "size_bytes": None,
-            },
+                },
         },
+        "runtime_version": runtime_version,
     }
 
     _write_report(run_report_path=run_report_path, latest_report_path=latest_report_path, report=report)

@@ -13,6 +13,7 @@ from betbot.kalshi_execution_journal import (
     default_execution_journal_db_path,
     load_execution_events,
 )
+from betbot.runtime_version import build_runtime_version_block
 
 
 FRONTIER_BUCKET_FIELDNAMES = [
@@ -211,6 +212,7 @@ def run_kalshi_execution_frontier(
     now: datetime | None = None,
 ) -> dict[str, Any]:
     captured_at = now or datetime.now(timezone.utc)
+    run_id = f"kalshi_execution_frontier::{captured_at.strftime('%Y%m%d_%H%M%S_%f')[:-3]}"
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     journal_path = Path(journal_db_path) if journal_db_path else default_execution_journal_db_path(output_dir)
@@ -594,6 +596,7 @@ def run_kalshi_execution_frontier(
         writer.writerows(bucket_rows)
 
     summary = {
+        "run_id": run_id,
         "captured_at": captured_at.isoformat(),
         "status": status,
         "journal_db_path": str(journal_path),
@@ -615,6 +618,23 @@ def run_kalshi_execution_frontier(
         "recommendations": recommendations,
     }
     summary_path = out_dir / f"execution_frontier_report_{stamp}.json"
+    runtime_version = build_runtime_version_block(
+        run_started_at=captured_at,
+        run_id=run_id,
+        git_cwd=Path.cwd(),
+        frontier_artifact_path=summary_path,
+        frontier_selection_mode="self_generated",
+        frontier_payload=summary,
+        as_of=captured_at,
+    )
+    summary["runtime_version"] = runtime_version
+    summary["frontier_artifact_path"] = runtime_version.get("frontier_artifact_path")
+    summary["frontier_artifact_sha256"] = runtime_version.get("frontier_artifact_sha256")
+    summary["frontier_artifact_as_of_utc"] = runtime_version.get("frontier_artifact_as_of_utc")
+    summary["frontier_artifact_age_seconds"] = runtime_version.get("frontier_artifact_age_seconds")
+    summary["frontier_selection_mode"] = runtime_version.get("frontier_selection_mode")
+    summary["frontier_trusted_bucket_count"] = runtime_version.get("frontier_trusted_bucket_count")
+    summary["frontier_untrusted_bucket_count"] = runtime_version.get("frontier_untrusted_bucket_count")
     summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
     summary["output_file"] = str(summary_path)
     return summary

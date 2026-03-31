@@ -16,6 +16,13 @@ from betbot.kalshi_nonsports_capture import run_kalshi_nonsports_capture
 from betbot.kalshi_weather_priors import run_kalshi_weather_priors, run_kalshi_weather_station_history_prewarm
 from betbot.live_smoke import HttpGetter, KalshiSigner, _http_get_json, _kalshi_sign_request
 from betbot.kalshi_micro_execute import _http_request_json
+from betbot.runtime_version import (
+    build_runtime_version_block,
+    detect_weather_model_tags,
+    file_mtime_utc,
+    infer_fill_model_mode,
+    weather_priors_version,
+)
 from betbot.temporary_live_env import temporary_live_env_file
 
 
@@ -152,6 +159,18 @@ def _build_capture_failure_reason(summary: dict[str, Any]) -> str:
     if retries_used > 0:
         reason = f"{reason} Scan retries used: {retries_used}."
     return reason
+
+
+def _weather_station_history_cache_age_seconds(output_dir: str, *, now: datetime) -> float | None:
+    cache_dir = Path(output_dir) / "weather_station_history_cache"
+    if not cache_dir.exists():
+        return None
+    cache_files = [path for path in cache_dir.glob("*.json") if path.is_file()]
+    if not cache_files:
+        return None
+    newest_mtime = max(path.stat().st_mtime for path in cache_files)
+    newest_dt = datetime.fromtimestamp(newest_mtime, tz=timezone.utc)
+    return round(max(0.0, (now - newest_dt).total_seconds()), 3)
 
 
 def _classify_prior_execute_error(summary: dict[str, Any]) -> str | None:
@@ -688,10 +707,15 @@ def run_kalshi_micro_prior_trader(
                 "priors_csv": priors_csv,
             }
 
+    run_id = f"kalshi_micro_prior_trader::{captured_at.strftime('%Y%m%d_%H%M%S_%f')[:-3]}"
     summary = {
+        "run_id": run_id,
         "captured_at": captured_at.isoformat(),
+        "run_started_at_utc": captured_at.isoformat(),
         "env_file": env_file,
         "priors_csv": priors_csv,
+        "history_csv_path": effective_history_csv,
+        "history_csv_mtime_utc": file_mtime_utc(effective_history_csv),
         "allow_live_orders_requested": allow_live_orders_requested,
         "allow_live_orders_effective": bool(allow_live_orders),
         "live_orders_downgraded_reason": live_orders_downgraded_reason,
@@ -1123,6 +1147,9 @@ def run_kalshi_micro_prior_trader(
                     "top_market_canonical_niche": (
                         prior_gate.get("top_market_canonical_niche") if isinstance(prior_gate, dict) else None
                     ),
+                    "top_market_contract_family": (
+                        prior_gate.get("top_market_contract_family") if isinstance(prior_gate, dict) else None
+                    ),
                     "top_market_canonical_policy_applied": (
                         prior_gate.get("top_market_canonical_policy_applied") if isinstance(prior_gate, dict) else None
                     ),
@@ -1178,6 +1205,10 @@ def run_kalshi_micro_prior_trader(
                     ),
                     "top_market_fair_probability": (
                         prior_gate.get("top_market_fair_probability") if isinstance(prior_gate, dict) else None
+                    ),
+                    "top_market_fair_probability_conservative": (
+                        prior_gate.get("top_market_fair_probability_conservative")
+                        if isinstance(prior_gate, dict) else None
                     ),
                     "top_market_confidence": (
                         prior_gate.get("top_market_confidence") if isinstance(prior_gate, dict) else None
@@ -1331,6 +1362,66 @@ def run_kalshi_micro_prior_trader(
     ready_for_auto_live_order, auto_live_reason = _ready_for_auto_live_order(summary)
     summary["ready_for_auto_live_order"] = ready_for_auto_live_order
     summary["ready_for_auto_live_order_reason"] = auto_live_reason
+    weather_rows_for_tags: list[dict[str, Any]] | None = None
+    if isinstance(weather_prior_summary, dict):
+        top_markets_payload = weather_prior_summary.get("top_markets")
+        if isinstance(top_markets_payload, list):
+            weather_rows_for_tags = [row for row in top_markets_payload if isinstance(row, dict)]
+    weather_model_tags = detect_weather_model_tags(weather_rows_for_tags)
+    rain_model_tag = weather_model_tags.get("rain_model_tag")
+    temperature_model_tag = weather_model_tags.get("temperature_model_tag")
+    weather_priors_version_name = weather_priors_version(
+        rain_model_tag=rain_model_tag,
+        temperature_model_tag=temperature_model_tag,
+    )
+    weather_station_history_cache_age_seconds = _weather_station_history_cache_age_seconds(output_dir, now=captured_at)
+    prior_execute_attempts = summary.get("prior_execute_attempts")
+    fill_model_mode = infer_fill_model_mode(
+        attempts=prior_execute_attempts if isinstance(prior_execute_attempts, list) else None,
+        prefer_empirical_fill_model=summary.get("execution_empirical_fill_model_prefer_empirical"),
+        empirical_fill_enabled=summary.get("execution_empirical_fill_model_enabled"),
+    )
+    top_attempt: dict[str, Any] = {}
+    if isinstance(prior_execute_attempts, list) and prior_execute_attempts and isinstance(prior_execute_attempts[0], dict):
+        top_attempt = prior_execute_attempts[0]
+    runtime_version = build_runtime_version_block(
+        run_started_at=captured_at,
+        run_id=run_id,
+        git_cwd=Path.cwd(),
+        rain_model_tag=rain_model_tag,
+        temperature_model_tag=temperature_model_tag,
+        fill_model_mode=fill_model_mode,
+        prefer_empirical_fill_model=summary.get("execution_empirical_fill_model_prefer_empirical"),
+        weather_priors_version_name=weather_priors_version_name,
+        frontier_artifact_path=summary.get("execution_frontier_break_even_reference_file"),
+        frontier_selection_mode=summary.get("execution_frontier_selection_mode"),
+        as_of=captured_at,
+    )
+    summary["rain_model_tag"] = rain_model_tag
+    summary["temperature_model_tag"] = temperature_model_tag
+    summary["weather_priors_version"] = weather_priors_version_name
+    summary["fill_model_mode"] = fill_model_mode
+    summary["daily_weather_board_age_seconds"] = summary.get("daily_weather_board_latest_capture_age_seconds")
+    summary["weather_station_history_cache_age_seconds"] = weather_station_history_cache_age_seconds
+    summary["balance_heartbeat_age_seconds"] = summary.get("balance_cache_age_seconds")
+    summary["fair_yes_probability_raw"] = summary.get("top_market_fair_probability")
+    summary["execution_probability_guarded"] = (
+        summary.get("top_market_fair_probability_conservative")
+        if summary.get("top_market_fair_probability_conservative") not in (None, "")
+        else summary.get("top_market_fair_probability")
+    )
+    summary["fill_probability_source"] = top_attempt.get("execution_fill_probability_source")
+    summary["empirical_fill_weight"] = top_attempt.get("execution_fill_probability_model_weight_empirical")
+    summary["heuristic_fill_weight"] = top_attempt.get("execution_fill_probability_model_weight_heuristic")
+    summary["probe_lane_used"] = top_attempt.get("probe_lane_used")
+    summary["probe_reason"] = top_attempt.get("probe_reason")
+    summary["frontier_artifact_path"] = runtime_version.get("frontier_artifact_path")
+    summary["frontier_artifact_sha256"] = runtime_version.get("frontier_artifact_sha256")
+    summary["frontier_artifact_as_of_utc"] = runtime_version.get("frontier_artifact_as_of_utc")
+    summary["frontier_artifact_age_seconds"] = runtime_version.get("frontier_artifact_age_seconds")
+    summary["frontier_trusted_bucket_count"] = runtime_version.get("frontier_trusted_bucket_count")
+    summary["frontier_untrusted_bucket_count"] = runtime_version.get("frontier_untrusted_bucket_count")
+    summary["runtime_version"] = runtime_version
 
     stamp = captured_at.astimezone().strftime("%Y%m%d_%H%M%S_%f")[:-3]
     out_dir = Path(output_dir)
