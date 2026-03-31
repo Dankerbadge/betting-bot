@@ -641,16 +641,23 @@ def _execution_policy_metrics(
             )
             markout_trusted = bool(empirical_fill_profile.get("markout_trusted"))
             if empirical_profile_source == "learned_hazard":
-                empirical_fill_weight = _clamp(
+                learned_weight = _clamp(
                     (float(effective_samples) - 1.5)
                     / max(1.0, float(empirical_fill_min_effective_samples) * 1.8),
                     0.0,
                     0.95,
                 )
                 if markout_trusted:
-                    empirical_fill_weight = min(0.98, empirical_fill_weight + 0.08)
+                    learned_weight = min(0.98, learned_weight + 0.08)
                 if prefer_empirical_fill_model and float(effective_samples) >= float(empirical_fill_min_effective_samples):
-                    empirical_fill_weight = max(0.75, empirical_fill_weight)
+                    # Evidence-first execution posture: once learned hazard has enough
+                    # effective samples, treat heuristic fill math as fallback only.
+                    if markout_trusted:
+                        empirical_fill_weight = 1.0
+                    else:
+                        empirical_fill_weight = max(0.90, learned_weight)
+                else:
+                    empirical_fill_weight = learned_weight
             else:
                 empirical_fill_weight = _empirical_fill_weight(
                     orders_submitted=orders_submitted_bucket,

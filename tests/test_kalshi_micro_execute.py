@@ -12,6 +12,7 @@ from urllib.error import URLError
 from betbot.kalshi_execution_journal import append_execution_events
 from betbot.kalshi_book import ensure_book_schema
 from betbot.kalshi_micro_execute import (
+    _execution_policy_metrics,
     _build_empirical_fill_training_rows,
     _http_request_json,
     _estimate_empirical_fill_probabilities_from_rows,
@@ -683,6 +684,45 @@ class KalshiMicroExecuteTests(unittest.TestCase):
             )
             self.assertTrue(summary["attempts"][0]["execution_untrusted_bucket_probe"])
             self.assertEqual(summary["attempts"][0]["execution_policy_reason"], "submit_probe_untrusted_bucket")
+
+    def test_execution_policy_metrics_prefers_learned_hazard_when_trusted(self) -> None:
+        metrics = _execution_policy_metrics(
+            plan={
+                "contracts_per_order": 1,
+                "hours_to_close": 12.0,
+                "maker_entry_edge_conservative_net_total": 0.03,
+                "confidence": 0.7,
+            },
+            attempt={
+                "planned_side": "yes",
+                "planned_contracts": 1,
+                "planned_entry_price_dollars": 0.42,
+                "current_best_same_side_bid_dollars": 0.41,
+                "current_best_same_side_bid_size_contracts": 120.0,
+                "current_best_yes_bid_dollars": 0.41,
+                "market_hours_to_close": 12.0,
+            },
+            orderbook={"best_yes_ask_dollars": 0.43, "http_status": 200},
+            resting_hold_seconds=60.0,
+            empirical_fill_profile={
+                "source": "learned_hazard",
+                "effective_samples": 12.0,
+                "rows_used": 24,
+                "fill_prob_10s": 0.25,
+                "fill_prob_60s": 0.72,
+                "fill_prob_300s": 0.90,
+                "fill_prob_horizon": 0.78,
+                "full_fill_prob_horizon": 0.62,
+                "partial_fill_prob_horizon": 0.16,
+                "markout_trusted": True,
+            },
+            empirical_fill_min_effective_samples=6.0,
+            prefer_empirical_fill_model=True,
+        )
+
+        self.assertEqual(metrics["execution_fill_probability_source"], "empirical_primary_learned_hazard")
+        self.assertEqual(float(metrics["execution_fill_probability_model_weight_empirical"]), 1.0)
+        self.assertEqual(float(metrics["execution_fill_probability_model_weight_heuristic"]), 0.0)
 
     def test_should_allow_untrusted_bucket_probe_requires_edge_buffer_and_budget(self) -> None:
         attempt = {
