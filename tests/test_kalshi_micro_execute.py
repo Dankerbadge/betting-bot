@@ -9,7 +9,13 @@ from unittest.mock import patch
 from urllib.error import URLError
 
 from betbot.kalshi_book import ensure_book_schema
-from betbot.kalshi_micro_execute import _http_request_json, _read_exchange_status, _signed_kalshi_request, run_kalshi_micro_execute
+from betbot.kalshi_micro_execute import (
+    _http_request_json,
+    _read_exchange_status,
+    _should_allow_untrusted_bucket_probe,
+    _signed_kalshi_request,
+    run_kalshi_micro_execute,
+)
 from betbot.kalshi_micro_ledger import LEDGER_FIELDNAMES
 
 
@@ -303,6 +309,141 @@ class KalshiMicroExecuteTests(unittest.TestCase):
             self.assertTrue(Path(summary["execution_event_log_csv"]).exists())
             self.assertTrue(Path(summary["execution_frontier_summary_file"]).exists())
             self.assertTrue(Path(summary["execution_frontier_bucket_csv"]).exists())
+
+    def test_run_kalshi_micro_execute_blends_empirical_fill_probabilities_from_frontier_bucket(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            env_file = base / "env.txt"
+            env_file.write_text(
+                (
+                    "KALSHI_ENV=prod\n"
+                    "BETBOT_JURISDICTION=new_jersey\n"
+                    "KALSHI_ACCESS_KEY_ID=key123\n"
+                    "KALSHI_PRIVATE_KEY_PATH=/tmp/key.pem\n"
+                ),
+                encoding="utf-8",
+            )
+            frontier_bucket = "aggr_mid|spread_mid|ttc_short"
+            (base / "execution_frontier_report_20260327_205959_000.json").write_text(
+                json.dumps(
+                    {
+                        "trusted_break_even_edge_by_bucket": {frontier_bucket: 0.02},
+                        "bucket_markout_trust_by_bucket": {
+                            frontier_bucket: {
+                                "trusted": True,
+                                "reason": "ready",
+                                "markout_10s_samples": 8,
+                                "markout_60s_samples": 9,
+                                "markout_300s_samples": 6,
+                            }
+                        },
+                        "bucket_rows": [
+                            {
+                                "bucket": frontier_bucket,
+                                "orders_submitted": 24,
+                                "fill_rate": 0.84,
+                                "full_fill_rate": 0.62,
+                                "median_time_to_fill_seconds": 40.0,
+                                "p90_time_to_fill_seconds": 120.0,
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            summary = run_kalshi_micro_execute(
+                env_file=str(env_file),
+                output_dir=str(base),
+                http_request_json=lambda *args, **kwargs: (
+                    200,
+                    {
+                        "orderbook_fp": {
+                            "yes_dollars": [["0.4200", "120.00"]],
+                            "no_dollars": [["0.5600", "120.00"]],
+                        }
+                    },
+                ),
+                plan_runner=lambda **kwargs: {
+                    "status": "ready",
+                    "planned_orders": 1,
+                    "total_planned_cost_dollars": 0.42,
+                    "actual_live_balance_dollars": 40.0,
+                    "funding_gap_dollars": 0.0,
+                    "board_warning": None,
+                    "output_file": str(base / "plan.json"),
+                    "output_csv": str(base / "plan.csv"),
+                    "orders": [
+                        {
+                            "plan_rank": 1,
+                            "category": "Economics",
+                            "market_ticker": "KXTEST-EDGE",
+                            "side": "yes",
+                            "contracts_per_order": 1,
+                            "hours_to_close": 12.0,
+                            "confidence": 0.72,
+                            "maker_entry_price_dollars": 0.42,
+                            "maker_yes_price_dollars": 0.42,
+                            "yes_ask_dollars": 0.43,
+                            "maker_entry_edge_conservative_net_total": 0.03,
+                            "estimated_entry_cost_dollars": 0.42,
+                            "order_payload_preview": {
+                                "ticker": "KXTEST-EDGE",
+                                "side": "yes",
+                                "action": "buy",
+                                "count": 1,
+                                "yes_price_dollars": "0.4200",
+                                "time_in_force": "good_till_canceled",
+                                "post_only": True,
+                                "cancel_order_on_pause": True,
+                                "self_trade_prevention_type": "maker",
+                            },
+                        }
+                    ],
+                },
+                sign_request=lambda *_: "signed",
+                now=datetime(2026, 3, 27, 21, 0, tzinfo=timezone.utc),
+            )
+
+            attempt = summary["attempts"][0]
+            self.assertEqual(attempt["execution_fill_probability_source"], "blended_empirical")
+            self.assertGreater(float(attempt["execution_fill_probability_model_weight_empirical"]), 0.0)
+            self.assertEqual(attempt["execution_empirical_orders_submitted_bucket"], 24)
+            self.assertEqual(attempt["execution_empirical_fill_rate_bucket"], 0.84)
+
+    def test_should_allow_untrusted_bucket_probe_requires_edge_buffer_and_budget(self) -> None:
+        attempt = {
+            "canonical_niche": "weather_climate",
+            "planned_contracts": 1,
+            "execution_policy_decision": "submit",
+            "execution_forecast_edge_net_per_contract_dollars": 0.08,
+            "execution_break_even_edge_per_contract_dollars": 0.05,
+        }
+        bucket_trust = {
+            "trusted": False,
+            "reason": "markout_10s_samples_below_min:1<3;markout_60s_samples_below_min:1<3",
+        }
+        allowed, reason = _should_allow_untrusted_bucket_probe(
+            attempt=attempt,
+            bucket_trust=bucket_trust,
+            probe_enabled=True,
+            probe_budget_remaining=1,
+            required_edge_buffer_dollars=0.01,
+            contracts_cap=1,
+        )
+        self.assertTrue(allowed)
+        self.assertEqual(reason, "probe_submit_untrusted_bucket_sample_depth")
+
+        blocked, blocked_reason = _should_allow_untrusted_bucket_probe(
+            attempt={**attempt, "execution_forecast_edge_net_per_contract_dollars": 0.055},
+            bucket_trust=bucket_trust,
+            probe_enabled=True,
+            probe_budget_remaining=1,
+            required_edge_buffer_dollars=0.01,
+            contracts_cap=1,
+        )
+        self.assertFalse(blocked)
+        self.assertTrue(blocked_reason.startswith("probe_edge_buffer_not_met:"))
 
     def test_run_kalshi_micro_execute_blocks_negative_ev_submit_policy(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

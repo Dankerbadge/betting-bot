@@ -156,12 +156,106 @@ def _coalesce_float(*values: Any) -> float | None:
     return None
 
 
+def _derive_empirical_fill_probabilities(
+    *,
+    bucket_profile: dict[str, Any],
+    horizon_seconds: float,
+) -> dict[str, float] | None:
+    orders_submitted = max(0, int(bucket_profile.get("orders_submitted") or 0))
+    fill_rate = _parse_float(bucket_profile.get("fill_rate"))
+    full_fill_rate = _parse_float(bucket_profile.get("full_fill_rate"))
+    median_time_to_fill_seconds = _parse_float(bucket_profile.get("median_time_to_fill_seconds"))
+    if orders_submitted < 1 or fill_rate is None or fill_rate <= 0.0:
+        return None
+    fill_rate = _clamp(fill_rate, 0.01, 0.99)
+    if full_fill_rate is None:
+        full_fill_rate = fill_rate * 0.65
+    full_fill_rate = _clamp(full_fill_rate, 0.0, fill_rate)
+
+    half_life_seconds = 75.0
+    if isinstance(median_time_to_fill_seconds, float) and median_time_to_fill_seconds > 0.0:
+        half_life_seconds = median_time_to_fill_seconds
+    half_life_seconds = _clamp(half_life_seconds, 8.0, 600.0)
+
+    def _horizon_fill(seconds: float) -> float:
+        return _clamp(fill_rate * (1.0 - (0.5 ** (seconds / half_life_seconds))), 0.01, fill_rate)
+
+    fill_prob_10s = _horizon_fill(10.0)
+    fill_prob_60s = _horizon_fill(60.0)
+    fill_prob_300s = _horizon_fill(300.0)
+    fill_prob_horizon = _horizon_fill(max(10.0, min(300.0, horizon_seconds)))
+    full_share = _clamp((full_fill_rate / fill_rate) if fill_rate > 1e-9 else 0.65, 0.05, 1.0)
+    full_fill_prob_horizon = _clamp(fill_prob_horizon * full_share, 0.0, fill_prob_horizon)
+    partial_fill_prob_horizon = max(0.0, fill_prob_horizon - full_fill_prob_horizon)
+
+    return {
+        "orders_submitted": float(orders_submitted),
+        "fill_rate": float(fill_rate),
+        "full_fill_rate": float(full_fill_rate),
+        "full_share": float(full_share),
+        "fill_prob_10s": float(fill_prob_10s),
+        "fill_prob_60s": float(fill_prob_60s),
+        "fill_prob_300s": float(fill_prob_300s),
+        "fill_prob_horizon": float(fill_prob_horizon),
+        "full_fill_prob_horizon": float(full_fill_prob_horizon),
+        "partial_fill_prob_horizon": float(partial_fill_prob_horizon),
+    }
+
+
+def _empirical_fill_weight(*, orders_submitted: int, markout_trusted: bool) -> float:
+    weight = _clamp((float(orders_submitted) - 2.0) / 12.0, 0.0, 0.75)
+    if markout_trusted:
+        weight = min(0.88, weight + 0.1)
+    return float(round(weight, 6))
+
+
+def _should_allow_untrusted_bucket_probe(
+    *,
+    attempt: dict[str, Any],
+    bucket_trust: dict[str, Any],
+    probe_enabled: bool,
+    probe_budget_remaining: int,
+    required_edge_buffer_dollars: float,
+    contracts_cap: int,
+) -> tuple[bool, str]:
+    if not probe_enabled:
+        return False, "probe_exploration_disabled"
+    if probe_budget_remaining <= 0:
+        return False, "probe_budget_exhausted"
+    if not bucket_trust or bool(bucket_trust.get("trusted")):
+        return False, "probe_bucket_not_marked_untrusted"
+    untrusted_reason = str(bucket_trust.get("reason") or "").strip().lower()
+    if "below_min" not in untrusted_reason:
+        return False, "probe_untrusted_reason_not_sample_depth"
+    canonical_niche = str(attempt.get("canonical_niche") or "").strip().lower()
+    if canonical_niche and canonical_niche != "weather_climate":
+        return False, "probe_only_weather_climate_allowed"
+    planned_contracts = _parse_float(attempt.get("planned_contracts"))
+    safe_contracts_cap = max(1, int(contracts_cap))
+    if not isinstance(planned_contracts, float) or planned_contracts <= 0.0:
+        return False, "probe_contracts_missing"
+    if planned_contracts > float(safe_contracts_cap):
+        return False, f"probe_contracts_above_cap:{planned_contracts:.4f}>{safe_contracts_cap}"
+    forecast_edge = _parse_float(attempt.get("execution_forecast_edge_net_per_contract_dollars"))
+    model_break_even = _parse_float(attempt.get("execution_break_even_edge_per_contract_dollars"))
+    if not isinstance(forecast_edge, float) or not isinstance(model_break_even, float):
+        return False, "probe_edge_inputs_missing"
+    required_edge = model_break_even + max(0.0, float(required_edge_buffer_dollars))
+    if forecast_edge + 1e-9 < required_edge:
+        return False, f"probe_edge_buffer_not_met:{forecast_edge:.6f}<{required_edge:.6f}"
+    decision = str(attempt.get("execution_policy_decision") or "").strip().lower()
+    if decision != "submit":
+        return False, "probe_execution_policy_not_submit"
+    return True, "probe_submit_untrusted_bucket_sample_depth"
+
+
 def _execution_policy_metrics(
     *,
     plan: dict[str, Any],
     attempt: dict[str, Any],
     orderbook: dict[str, Any],
     resting_hold_seconds: float,
+    empirical_fill_profile: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     planned_contracts = _coalesce_float(
         plan.get("contracts_per_order"),
@@ -222,9 +316,9 @@ def _execution_policy_metrics(
         0.02,
         0.98,
     )
-    fill_prob_10s = round(1.0 - ((1.0 - base_fill_60s) ** (10.0 / 60.0)), 6)
-    fill_prob_60s = round(base_fill_60s, 6)
-    fill_prob_300s = round(1.0 - ((1.0 - base_fill_60s) ** (300.0 / 60.0)), 6)
+    heuristic_fill_prob_10s = 1.0 - ((1.0 - base_fill_60s) ** (10.0 / 60.0))
+    heuristic_fill_prob_60s = base_fill_60s
+    heuristic_fill_prob_300s = 1.0 - ((1.0 - base_fill_60s) ** (300.0 / 60.0))
 
     if resting_hold_seconds > 0:
         horizon_seconds = max(10.0, min(300.0, resting_hold_seconds))
@@ -232,8 +326,69 @@ def _execution_policy_metrics(
         horizon_seconds = max(60.0, min(300.0, hours_to_close * 90.0))
     else:
         horizon_seconds = 180.0
-    fill_prob_horizon = round(1.0 - ((1.0 - base_fill_60s) ** (horizon_seconds / 60.0)), 6)
-    full_fill_prob_horizon = round(fill_prob_horizon * _clamp(1.0 - (0.55 * order_size_depth_ratio), 0.05, 1.0), 6)
+    heuristic_fill_prob_horizon = 1.0 - ((1.0 - base_fill_60s) ** (horizon_seconds / 60.0))
+    heuristic_full_share = _clamp(1.0 - (0.55 * order_size_depth_ratio), 0.05, 1.0)
+
+    fill_probability_source = "heuristic"
+    fill_probability_model_weight_empirical = 0.0
+    fill_probability_model_weight_heuristic = 1.0
+    empirical_orders_submitted_bucket = ""
+    empirical_fill_rate_bucket = ""
+    empirical_full_fill_rate_bucket = ""
+
+    fill_prob_10s = heuristic_fill_prob_10s
+    fill_prob_60s = heuristic_fill_prob_60s
+    fill_prob_300s = heuristic_fill_prob_300s
+    fill_prob_horizon = heuristic_fill_prob_horizon
+    full_share = heuristic_full_share
+
+    if isinstance(empirical_fill_profile, dict) and empirical_fill_profile:
+        empirical_probs = _derive_empirical_fill_probabilities(
+            bucket_profile=empirical_fill_profile,
+            horizon_seconds=horizon_seconds,
+        )
+        if isinstance(empirical_probs, dict):
+            orders_submitted_bucket = max(0, int(empirical_probs.get("orders_submitted") or 0))
+            empirical_fill_weight = _empirical_fill_weight(
+                orders_submitted=orders_submitted_bucket,
+                markout_trusted=bool(empirical_fill_profile.get("markout_trusted")),
+            )
+            if empirical_fill_weight > 0.0:
+                heuristic_fill_weight = _clamp(1.0 - empirical_fill_weight, 0.0, 1.0)
+                fill_probability_source = "blended_empirical"
+                fill_probability_model_weight_empirical = empirical_fill_weight
+                fill_probability_model_weight_heuristic = heuristic_fill_weight
+                fill_prob_10s = (
+                    (heuristic_fill_weight * heuristic_fill_prob_10s)
+                    + (empirical_fill_weight * float(empirical_probs.get("fill_prob_10s") or 0.0))
+                )
+                fill_prob_60s = (
+                    (heuristic_fill_weight * heuristic_fill_prob_60s)
+                    + (empirical_fill_weight * float(empirical_probs.get("fill_prob_60s") or 0.0))
+                )
+                fill_prob_300s = (
+                    (heuristic_fill_weight * heuristic_fill_prob_300s)
+                    + (empirical_fill_weight * float(empirical_probs.get("fill_prob_300s") or 0.0))
+                )
+                fill_prob_horizon = (
+                    (heuristic_fill_weight * heuristic_fill_prob_horizon)
+                    + (empirical_fill_weight * float(empirical_probs.get("fill_prob_horizon") or 0.0))
+                )
+                empirical_full_share = _clamp(float(empirical_probs.get("full_share") or 0.0), 0.05, 1.0)
+                full_share = _clamp(
+                    (heuristic_fill_weight * heuristic_full_share) + (empirical_fill_weight * empirical_full_share),
+                    0.05,
+                    1.0,
+                )
+                empirical_orders_submitted_bucket = orders_submitted_bucket
+                empirical_fill_rate_bucket = round(float(empirical_probs.get("fill_rate") or 0.0), 6)
+                empirical_full_fill_rate_bucket = round(float(empirical_probs.get("full_fill_rate") or 0.0), 6)
+
+    fill_prob_10s = round(_clamp(fill_prob_10s, 0.01, 0.99), 6)
+    fill_prob_60s = round(_clamp(fill_prob_60s, 0.01, 0.99), 6)
+    fill_prob_300s = round(_clamp(fill_prob_300s, 0.01, 0.99), 6)
+    fill_prob_horizon = round(_clamp(fill_prob_horizon, 0.01, 0.99), 6)
+    full_fill_prob_horizon = round(_clamp(fill_prob_horizon * full_share, 0.0, fill_prob_horizon), 6)
     partial_fill_prob_horizon = round(max(0.0, fill_prob_horizon - full_fill_prob_horizon), 6)
 
     edge_net_per_contract = _coalesce_float(
@@ -261,6 +416,12 @@ def _execution_policy_metrics(
             "execution_fill_probability_horizon": fill_prob_horizon,
             "execution_full_fill_probability_horizon": full_fill_prob_horizon,
             "execution_partial_fill_probability_horizon": partial_fill_prob_horizon,
+            "execution_fill_probability_source": fill_probability_source,
+            "execution_fill_probability_model_weight_empirical": round(fill_probability_model_weight_empirical, 6),
+            "execution_fill_probability_model_weight_heuristic": round(fill_probability_model_weight_heuristic, 6),
+            "execution_empirical_orders_submitted_bucket": empirical_orders_submitted_bucket,
+            "execution_empirical_fill_rate_bucket": empirical_fill_rate_bucket,
+            "execution_empirical_full_fill_rate_bucket": empirical_full_fill_rate_bucket,
             "execution_expected_spread_capture_per_contract_dollars": "",
             "execution_expected_adverse_selection_per_contract_dollars": "",
             "execution_expected_partial_fill_drag_per_contract_dollars": "",
@@ -336,6 +497,12 @@ def _execution_policy_metrics(
         "execution_fill_probability_horizon": fill_prob_horizon,
         "execution_full_fill_probability_horizon": full_fill_prob_horizon,
         "execution_partial_fill_probability_horizon": partial_fill_prob_horizon,
+        "execution_fill_probability_source": fill_probability_source,
+        "execution_fill_probability_model_weight_empirical": round(fill_probability_model_weight_empirical, 6),
+        "execution_fill_probability_model_weight_heuristic": round(fill_probability_model_weight_heuristic, 6),
+        "execution_empirical_orders_submitted_bucket": empirical_orders_submitted_bucket,
+        "execution_empirical_fill_rate_bucket": empirical_fill_rate_bucket,
+        "execution_empirical_full_fill_rate_bucket": empirical_full_fill_rate_bucket,
         "execution_expected_spread_capture_per_contract_dollars": round(expected_spread_capture, 6),
         "execution_expected_adverse_selection_per_contract_dollars": round(expected_adverse_selection, 6),
         "execution_expected_partial_fill_drag_per_contract_dollars": round(expected_partial_fill_drag, 6),
@@ -425,26 +592,31 @@ def _execution_frontier_bucket_for_attempt(attempt: dict[str, Any]) -> str:
 
 def _load_latest_break_even_edges_by_bucket(
     output_dir: str,
-) -> tuple[dict[str, float], str | None, dict[str, dict[str, Any]]]:
+) -> tuple[
+    dict[str, float],
+    str | None,
+    dict[str, dict[str, Any]],
+    dict[str, dict[str, Any]],
+]:
     out_dir = Path(output_dir)
     candidates = sorted(
         out_dir.glob("execution_frontier_report_*.json"),
         key=lambda path: path.stat().st_mtime,
     )
     if not candidates:
-        return {}, None, {}
+        return {}, None, {}, {}
     latest_path = candidates[-1]
     try:
         payload = json.loads(latest_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return {}, str(latest_path), {}
+        return {}, str(latest_path), {}, {}
     if not isinstance(payload, dict):
-        return {}, str(latest_path), {}
+        return {}, str(latest_path), {}, {}
     raw = payload.get("trusted_break_even_edge_by_bucket")
     if not isinstance(raw, dict):
         raw = payload.get("break_even_edge_by_bucket")
     if not isinstance(raw, dict):
-        return {}, str(latest_path), {}
+        return {}, str(latest_path), {}, {}
     edges: dict[str, float] = {}
     for bucket, value in raw.items():
         if not isinstance(bucket, str):
@@ -465,7 +637,35 @@ def _load_latest_break_even_edges_by_bucket(
                 "markout_60s_samples": int(trust_payload.get("markout_60s_samples") or 0),
                 "markout_300s_samples": int(trust_payload.get("markout_300s_samples") or 0),
             }
-    return edges, str(latest_path), bucket_trust_by_bucket
+    fill_profile_by_bucket: dict[str, dict[str, Any]] = {}
+    bucket_rows = payload.get("bucket_rows")
+    if isinstance(bucket_rows, list):
+        for row in bucket_rows:
+            if not isinstance(row, dict):
+                continue
+            bucket_name = str(row.get("bucket") or "").strip()
+            if not bucket_name:
+                continue
+            orders_submitted = max(0, int(_parse_float(row.get("orders_submitted")) or 0))
+            fill_rate = _parse_float(row.get("fill_rate"))
+            full_fill_rate = _parse_float(row.get("full_fill_rate"))
+            median_ttf_seconds = _parse_float(row.get("median_time_to_fill_seconds"))
+            p90_ttf_seconds = _parse_float(row.get("p90_time_to_fill_seconds"))
+            if orders_submitted <= 0 or fill_rate is None or fill_rate <= 0.0:
+                continue
+            profile = {
+                "orders_submitted": orders_submitted,
+                "fill_rate": float(fill_rate),
+                "full_fill_rate": float(full_fill_rate) if isinstance(full_fill_rate, float) else None,
+                "median_time_to_fill_seconds": float(median_ttf_seconds) if isinstance(median_ttf_seconds, float) else None,
+                "p90_time_to_fill_seconds": float(p90_ttf_seconds) if isinstance(p90_ttf_seconds, float) else None,
+                "markout_trusted": False,
+            }
+            trust_info = bucket_trust_by_bucket.get(bucket_name)
+            if trust_info:
+                profile["markout_trusted"] = bool(trust_info.get("trusted"))
+            fill_profile_by_bucket[bucket_name] = profile
+    return edges, str(latest_path), bucket_trust_by_bucket, fill_profile_by_bucket
 
 
 def _signed_kalshi_request(
@@ -779,6 +979,12 @@ def _write_attempts_csv(path: Path, attempts: list[dict[str, Any]]) -> None:
         "execution_fill_probability_horizon",
         "execution_full_fill_probability_horizon",
         "execution_partial_fill_probability_horizon",
+        "execution_fill_probability_source",
+        "execution_fill_probability_model_weight_empirical",
+        "execution_fill_probability_model_weight_heuristic",
+        "execution_empirical_orders_submitted_bucket",
+        "execution_empirical_fill_rate_bucket",
+        "execution_empirical_full_fill_rate_bucket",
         "execution_expected_spread_capture_per_contract_dollars",
         "execution_expected_adverse_selection_per_contract_dollars",
         "execution_expected_partial_fill_drag_per_contract_dollars",
@@ -799,6 +1005,8 @@ def _write_attempts_csv(path: Path, attempts: list[dict[str, Any]]) -> None:
         "execution_frontier_bucket_markout_10s_samples",
         "execution_frontier_bucket_markout_60s_samples",
         "execution_frontier_bucket_markout_300s_samples",
+        "execution_untrusted_bucket_probe",
+        "execution_untrusted_bucket_probe_reason",
         "planned_yes_bid_dollars",
         "planned_yes_ask_dollars",
         "current_best_yes_bid_dollars",
@@ -914,6 +1122,10 @@ def run_kalshi_micro_execute(
     execution_event_log_csv: str | None = None,
     execution_journal_db_path: str | None = None,
     execution_frontier_recent_rows: int = 5000,
+    enable_untrusted_bucket_probe_exploration: bool = True,
+    untrusted_bucket_probe_max_orders_per_run: int = 1,
+    untrusted_bucket_probe_required_edge_buffer_dollars: float = 0.01,
+    untrusted_bucket_probe_contracts_cap: int = 1,
     history_csv: str | None = None,
     scan_csv: str | None = None,
     enforce_trade_gate: bool = False,
@@ -1009,6 +1221,20 @@ def run_kalshi_micro_execute(
         and live_execution_lock_acquired
         and live_submission_budget_remaining > 0
         and live_cost_remaining > 0
+    )
+    safe_untrusted_bucket_probe_max_orders_per_run = max(0, int(untrusted_bucket_probe_max_orders_per_run))
+    safe_untrusted_bucket_probe_required_edge_buffer_dollars = max(
+        0.0, float(untrusted_bucket_probe_required_edge_buffer_dollars)
+    )
+    safe_untrusted_bucket_probe_contracts_cap = max(1, int(untrusted_bucket_probe_contracts_cap))
+    untrusted_bucket_probe_enabled_effective = bool(
+        allow_live_orders
+        and enforce_trade_gate
+        and enable_untrusted_bucket_probe_exploration
+        and safe_untrusted_bucket_probe_max_orders_per_run > 0
+    )
+    untrusted_bucket_probe_budget_remaining = (
+        safe_untrusted_bucket_probe_max_orders_per_run if untrusted_bucket_probe_enabled_effective else 0
     )
     exchange_status = {
         "checked": False,
@@ -1126,6 +1352,7 @@ def run_kalshi_micro_execute(
         execution_frontier_break_even_by_bucket,
         execution_frontier_break_even_reference_file,
         execution_frontier_bucket_trust_by_bucket,
+        execution_frontier_fill_profile_by_bucket,
     ) = (
         _load_latest_break_even_edges_by_bucket(output_dir)
     )
@@ -1150,9 +1377,27 @@ def run_kalshi_micro_execute(
             "execution_break_even_edge_per_contract_dollars": attempt.get(
                 "execution_break_even_edge_per_contract_dollars"
             ),
+            "execution_fill_probability_source": attempt.get("execution_fill_probability_source"),
+            "execution_fill_probability_model_weight_empirical": attempt.get(
+                "execution_fill_probability_model_weight_empirical"
+            ),
+            "execution_fill_probability_model_weight_heuristic": attempt.get(
+                "execution_fill_probability_model_weight_heuristic"
+            ),
+            "execution_empirical_orders_submitted_bucket": attempt.get(
+                "execution_empirical_orders_submitted_bucket"
+            ),
+            "execution_empirical_fill_rate_bucket": attempt.get("execution_empirical_fill_rate_bucket"),
+            "execution_empirical_full_fill_rate_bucket": attempt.get(
+                "execution_empirical_full_fill_rate_bucket"
+            ),
             "execution_frontier_bucket": attempt.get("execution_frontier_bucket"),
             "execution_frontier_break_even_edge_per_contract_dollars": attempt.get(
                 "execution_frontier_break_even_edge_per_contract_dollars"
+            ),
+            "execution_untrusted_bucket_probe": attempt.get("execution_untrusted_bucket_probe"),
+            "execution_untrusted_bucket_probe_reason": attempt.get(
+                "execution_untrusted_bucket_probe_reason"
             ),
         }
         event_payload.update(extra.pop("payload", {}) if isinstance(extra.get("payload"), dict) else {})
@@ -1304,6 +1549,12 @@ def run_kalshi_micro_execute(
                 "execution_fill_probability_horizon": "",
                 "execution_full_fill_probability_horizon": "",
                 "execution_partial_fill_probability_horizon": "",
+                "execution_fill_probability_source": "",
+                "execution_fill_probability_model_weight_empirical": "",
+                "execution_fill_probability_model_weight_heuristic": "",
+                "execution_empirical_orders_submitted_bucket": "",
+                "execution_empirical_fill_rate_bucket": "",
+                "execution_empirical_full_fill_rate_bucket": "",
                 "execution_expected_spread_capture_per_contract_dollars": "",
                 "execution_expected_adverse_selection_per_contract_dollars": "",
                 "execution_expected_partial_fill_drag_per_contract_dollars": "",
@@ -1324,6 +1575,8 @@ def run_kalshi_micro_execute(
                 "execution_frontier_bucket_markout_10s_samples": "",
                 "execution_frontier_bucket_markout_60s_samples": "",
                 "execution_frontier_bucket_markout_300s_samples": "",
+                "execution_untrusted_bucket_probe": False,
+                "execution_untrusted_bucket_probe_reason": "",
                 "planned_yes_bid_dollars": plan.get("maker_yes_price_dollars"),
                 "planned_yes_ask_dollars": plan.get("yes_ask_dollars"),
                 "current_best_yes_bid_dollars": orderbook.get("best_yes_bid_dollars", ""),
@@ -1376,6 +1629,23 @@ def run_kalshi_micro_execute(
             frontier_bucket = _execution_frontier_bucket_for_attempt(attempt)
             attempt["execution_frontier_bucket"] = frontier_bucket
             bucket_trust = execution_frontier_bucket_trust_by_bucket.get(frontier_bucket, {})
+            bucket_fill_profile = execution_frontier_fill_profile_by_bucket.get(frontier_bucket, {})
+            if bucket_fill_profile:
+                empirical_fill_profile = dict(bucket_fill_profile)
+                if bucket_trust:
+                    empirical_fill_profile["markout_trusted"] = bool(bucket_trust.get("trusted"))
+                attempt.update(
+                    _execution_policy_metrics(
+                        plan=plan,
+                        attempt=attempt,
+                        orderbook=orderbook,
+                        resting_hold_seconds=resting_hold_seconds,
+                        empirical_fill_profile=empirical_fill_profile,
+                    )
+                )
+                frontier_bucket = _execution_frontier_bucket_for_attempt(attempt)
+                attempt["execution_frontier_bucket"] = frontier_bucket
+                bucket_trust = execution_frontier_bucket_trust_by_bucket.get(frontier_bucket, bucket_trust)
             if bucket_trust:
                 attempt["execution_frontier_bucket_markout_trusted"] = bool(bucket_trust.get("trusted"))
                 attempt["execution_frontier_bucket_markout_trust_reason"] = str(bucket_trust.get("reason") or "").strip()
@@ -1407,11 +1677,28 @@ def run_kalshi_micro_execute(
                     attempt["execution_policy_decision"] = "skip"
                     attempt["execution_policy_reason"] = "execution_frontier_insufficient_data"
                 elif empirical_break_even is None:
-                    attempt["execution_policy_decision"] = "skip"
-                    if bucket_trust and not bool(bucket_trust.get("trusted")):
-                        attempt["execution_policy_reason"] = "insufficient_empirical_markout_samples_bucket"
+                    probe_allowed, probe_reason = _should_allow_untrusted_bucket_probe(
+                        attempt=attempt,
+                        bucket_trust=bucket_trust,
+                        probe_enabled=untrusted_bucket_probe_enabled_effective,
+                        probe_budget_remaining=untrusted_bucket_probe_budget_remaining,
+                        required_edge_buffer_dollars=safe_untrusted_bucket_probe_required_edge_buffer_dollars,
+                        contracts_cap=safe_untrusted_bucket_probe_contracts_cap,
+                    )
+                    attempt["execution_untrusted_bucket_probe_reason"] = probe_reason
+                    if probe_allowed:
+                        attempt["execution_untrusted_bucket_probe"] = True
+                        attempt["execution_policy_reason"] = "submit_probe_untrusted_bucket"
+                        untrusted_bucket_probe_budget_remaining = max(
+                            0,
+                            untrusted_bucket_probe_budget_remaining - 1,
+                        )
                     else:
-                        attempt["execution_policy_reason"] = "missing_empirical_break_even_bucket"
+                        attempt["execution_policy_decision"] = "skip"
+                        if bucket_trust and not bool(bucket_trust.get("trusted")):
+                            attempt["execution_policy_reason"] = "insufficient_empirical_markout_samples_bucket"
+                        else:
+                            attempt["execution_policy_reason"] = "missing_empirical_break_even_bucket"
             _append_journal_event("candidate_seen", attempt)
             _append_book_snapshot_event(
                 attempt,
@@ -1970,7 +2257,22 @@ def run_kalshi_micro_execute(
         "execution_frontier_bucket_csv": execution_frontier_summary.get("bucket_csv"),
         "execution_frontier_break_even_reference_file": execution_frontier_break_even_reference_file,
         "execution_frontier_break_even_buckets_loaded": len(execution_frontier_break_even_by_bucket),
+        "execution_frontier_fill_profiles_loaded": len(execution_frontier_fill_profile_by_bucket),
         "execution_frontier_recommendations": execution_frontier_summary.get("recommendations"),
+        "untrusted_bucket_probe_exploration_enabled": untrusted_bucket_probe_enabled_effective,
+        "untrusted_bucket_probe_max_orders_per_run": safe_untrusted_bucket_probe_max_orders_per_run,
+        "untrusted_bucket_probe_required_edge_buffer_dollars": safe_untrusted_bucket_probe_required_edge_buffer_dollars,
+        "untrusted_bucket_probe_contracts_cap": safe_untrusted_bucket_probe_contracts_cap,
+        "untrusted_bucket_probe_budget_remaining": untrusted_bucket_probe_budget_remaining,
+        "untrusted_bucket_probe_submitted_attempts": sum(
+            1 for attempt in attempts if bool(attempt.get("execution_untrusted_bucket_probe"))
+        ),
+        "untrusted_bucket_probe_blocked_attempts": sum(
+            1
+            for attempt in attempts
+            if str(attempt.get("execution_policy_reason") or "").strip().startswith("insufficient_empirical_markout_samples_bucket")
+            and str(attempt.get("execution_untrusted_bucket_probe_reason") or "").strip().startswith("probe_")
+        ),
         "orderbook_outage_short_circuit_triggered": orderbook_outage_short_circuit_triggered,
         "orderbook_outage_short_circuit_trigger_market_ticker": orderbook_outage_short_circuit_trigger_market_ticker,
         "orderbook_outage_short_circuit_skipped_orders": orderbook_outage_short_circuit_skipped_orders,
