@@ -14,6 +14,7 @@ export BETBOT_WEATHER_PREWARM_MAX_KEYS="${BETBOT_WEATHER_PREWARM_MAX_KEYS:-500}"
 export BETBOT_WEATHER_CACHE_MAX_AGE_HOURS="${BETBOT_WEATHER_CACHE_MAX_AGE_HOURS:-24}"
 export BETBOT_TIMEOUT_SECONDS="${BETBOT_TIMEOUT_SECONDS:-15}"
 export BETBOT_FRONTIER_RECENT_ROWS="${BETBOT_FRONTIER_RECENT_ROWS:-20000}"
+export BETBOT_FRONTIER_MAX_AGE_SECONDS="${BETBOT_FRONTIER_MAX_AGE_SECONDS:-10800}"
 export BETBOT_BALANCE_MAX_AGE_SECONDS="${BETBOT_BALANCE_MAX_AGE_SECONDS:-900}"
 export BETBOT_MIN_SECONDS_BETWEEN_RUNS="${BETBOT_MIN_SECONDS_BETWEEN_RUNS:-2700}"
 
@@ -331,6 +332,16 @@ def _run_step(
             step["allow_live_orders_effective"] = parsed.get("allow_live_orders_effective")
             step["prior_execute_status"] = parsed.get("prior_execute_status")
             step["execution_frontier_status"] = parsed.get("execution_frontier_status")
+            step["execution_frontier_report_reference_file"] = (
+                parsed.get("execution_frontier_report_reference_file")
+                or parsed.get("execution_frontier_break_even_reference_file")
+            )
+            step["execution_frontier_report_selection_mode"] = (
+                parsed.get("execution_frontier_report_selection_mode")
+                or parsed.get("execution_frontier_selection_mode")
+            )
+            step["execution_frontier_report_stale"] = parsed.get("execution_frontier_report_stale")
+            step["execution_frontier_report_stale_reason"] = parsed.get("execution_frontier_report_stale_reason")
             step["capture_status"] = parsed.get("capture_status")
             step["prior_trade_gate_status"] = parsed.get("prior_trade_gate_status")
             step["top_market_ticker"] = parsed.get("top_market_ticker")
@@ -826,23 +837,22 @@ def main() -> int:
             )
         )
 
-    steps.append(
-        _run_step(
-            name="execution_frontier_refresh",
-            launcher=launcher,
-            args=[
-                "kalshi-execution-frontier",
-                "--output-dir",
-                str(output_dir),
-                "--journal-db-path",
-                str(output_dir / "kalshi_execution_journal.sqlite3"),
-                "--recent-rows",
-                str(max(1, int(os.environ.get("BETBOT_FRONTIER_RECENT_ROWS", "20000")))),
-            ],
-            cwd=repo_root,
-            run_dir=run_logs,
-        )
+    frontier_refresh_step = _run_step(
+        name="execution_frontier_refresh",
+        launcher=launcher,
+        args=[
+            "kalshi-execution-frontier",
+            "--output-dir",
+            str(output_dir),
+            "--journal-db-path",
+            str(output_dir / "kalshi_execution_journal.sqlite3"),
+            "--recent-rows",
+            str(max(1, int(os.environ.get("BETBOT_FRONTIER_RECENT_ROWS", "20000")))),
+        ],
+        cwd=repo_root,
+        run_dir=run_logs,
     )
+    steps.append(frontier_refresh_step)
 
     micro_status_step = next((step for step in steps if step.get("name") == "micro_status"), None)
     steps.append(
@@ -853,26 +863,38 @@ def main() -> int:
         )
     )
 
+    prior_trader_args = [
+        "kalshi-micro-prior-trader",
+        "--env-file",
+        str(env_file),
+        "--priors-csv",
+        str(priors_csv),
+        "--history-csv",
+        str(history_csv),
+        "--output-dir",
+        str(output_dir),
+        "--timeout-seconds",
+        str(float(os.environ.get("BETBOT_TIMEOUT_SECONDS", "15"))),
+        "--enforce-ws-state-authority",
+        "--disable-auto-refresh-weather-priors",
+        "--disable-auto-refresh-priors",
+    ]
+    frontier_report_path = str(frontier_refresh_step.get("output_file") or "").strip()
+    if bool(frontier_refresh_step.get("ok")) and frontier_report_path and Path(frontier_report_path).exists():
+        prior_trader_args.extend(
+            [
+                "--execution-frontier-report-json",
+                frontier_report_path,
+                "--execution-frontier-max-report-age-seconds",
+                str(max(0.0, float(os.environ.get("BETBOT_FRONTIER_MAX_AGE_SECONDS", "10800")))),
+            ]
+        )
+
     steps.append(
         _run_step(
             name="prior_trader_dry_run",
             launcher=launcher,
-            args=[
-                "kalshi-micro-prior-trader",
-                "--env-file",
-                str(env_file),
-                "--priors-csv",
-                str(priors_csv),
-                "--history-csv",
-                str(history_csv),
-                "--output-dir",
-                str(output_dir),
-                "--timeout-seconds",
-                str(float(os.environ.get("BETBOT_TIMEOUT_SECONDS", "15"))),
-                "--enforce-ws-state-authority",
-                "--disable-auto-refresh-weather-priors",
-                "--disable-auto-refresh-priors",
-            ],
+            args=prior_trader_args,
             cwd=repo_root,
             run_dir=run_logs,
         )

@@ -35,6 +35,19 @@ def _write_csv(path: Path, fieldnames: list[str], rows: list[dict[str, str]]) ->
         writer.writerows(rows)
 
 
+def _source_note_value(source_note: str, key: str) -> float | None:
+    for part in source_note.split(";"):
+        token = part.strip()
+        prefix = f"{key}="
+        if not token.startswith(prefix):
+            continue
+        try:
+            return float(token[len(prefix):])
+        except ValueError:
+            return None
+    return None
+
+
 class KalshiWeatherPriorsTests(unittest.TestCase):
     def test_run_kalshi_weather_priors_generates_and_upserts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -778,6 +791,107 @@ class KalshiWeatherPriorsTests(unittest.TestCase):
             self.assertLess(float(row["confidence"]), 0.50)
             self.assertEqual(row["weather_station_history_live_ready"], "False")
             self.assertEqual(row["weather_station_history_live_ready_reason"], "insufficient_sample_years")
+
+    def test_run_kalshi_weather_priors_adapts_rain_climatology_weight_by_regime(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            history_csv = base / "history.csv"
+            priors_csv = base / "priors.csv"
+            _write_csv(
+                history_csv,
+                HISTORY_FIELDNAMES,
+                [
+                    {
+                        "captured_at": "2026-03-29T12:00:00+00:00",
+                        "category": "Climate and Weather",
+                        "series_ticker": "KXRAINNYC",
+                        "event_ticker": "KXRAINNYC-26MAR29",
+                        "market_ticker": "KXRAINNYC-26MAR29",
+                        "event_title": "Will it rain in NYC today?",
+                        "market_title": "Will it rain in NYC today?",
+                        "rules_primary": "If measurable rain is recorded at station KJFK, this market resolves to Yes.",
+                        "close_time": "2026-03-30T03:59:00+00:00",
+                        "hours_to_close": "10",
+                        "yes_bid_dollars": "0.30",
+                        "yes_ask_dollars": "0.40",
+                        "spread_dollars": "0.10",
+                    },
+                ],
+            )
+            _write_csv(priors_csv, PRIOR_FIELDNAMES, [])
+
+            history_payload = {
+                "status": "ready",
+                "sample_years": 16,
+                "sample_years_precip": 16,
+                "rain_day_frequency": 0.32,
+                "tmax_values_f": [55.0, 58.0, 60.0, 63.0, 61.0, 59.0, 57.0, 62.0],
+                "tmin_values_f": [43.0, 45.0, 47.0, 49.0, 46.0, 44.0, 42.0, 48.0],
+                "daily_mean_values_f": [49.0, 51.0, 53.5, 56.0, 53.5, 51.5, 49.5, 55.0],
+                "cache_hit": True,
+                "cache_fallback_used": False,
+                "cache_fresh": True,
+                "cache_age_seconds": 120.0,
+            }
+
+            run_kalshi_weather_priors(
+                priors_csv=str(priors_csv),
+                history_csv=str(history_csv),
+                output_dir=str(base),
+                station_forecast_fetcher=lambda **kwargs: {
+                    "status": "ready",
+                    "station_id": "KJFK",
+                    "forecast_updated_at": "2026-03-26T12:00:00+00:00",
+                    "periods": [
+                        {"startTime": "2026-03-29T13:00:00+00:00", "temperature": 53, "probabilityOfPrecipitation": {"value": 5}},
+                        {"startTime": "2026-03-29T14:00:00+00:00", "temperature": 54, "probabilityOfPrecipitation": {"value": 15}},
+                        {"startTime": "2026-03-29T15:00:00+00:00", "temperature": 55, "probabilityOfPrecipitation": {"value": 10}},
+                        {"startTime": "2026-03-29T16:00:00+00:00", "temperature": 56, "probabilityOfPrecipitation": {"value": 25}},
+                        {"startTime": "2026-03-29T17:00:00+00:00", "temperature": 56, "probabilityOfPrecipitation": {"value": 5}},
+                        {"startTime": "2026-03-29T18:00:00+00:00", "temperature": 55, "probabilityOfPrecipitation": {"value": 20}},
+                        {"startTime": "2026-03-29T19:00:00+00:00", "temperature": 54, "probabilityOfPrecipitation": {"value": 10}},
+                        {"startTime": "2026-03-29T20:00:00+00:00", "temperature": 53, "probabilityOfPrecipitation": {"value": 15}},
+                    ],
+                },
+                station_history_fetcher=lambda **kwargs: dict(history_payload),
+                anomaly_series_fetcher=lambda **kwargs: {"status": "ready", "values": [0.0] * 24},
+                now=datetime(2026, 3, 29, 12, 5, tzinfo=timezone.utc),
+            )
+            with priors_csv.open("r", newline="", encoding="utf-8") as handle:
+                stale_row = next(dict(row) for row in csv.DictReader(handle) if row["market_ticker"] == "KXRAINNYC-26MAR29")
+            stale_weight = _source_note_value(stale_row.get("source_note", ""), "rain_climatology_blend_weight")
+
+            run_kalshi_weather_priors(
+                priors_csv=str(priors_csv),
+                history_csv=str(history_csv),
+                output_dir=str(base),
+                station_forecast_fetcher=lambda **kwargs: {
+                    "status": "ready",
+                    "station_id": "KJFK",
+                    "forecast_updated_at": "2026-03-29T12:00:00+00:00",
+                    "periods": [
+                        {"startTime": "2026-03-29T13:00:00+00:00", "temperature": 53, "probabilityOfPrecipitation": {"value": 85}},
+                        {"startTime": "2026-03-29T14:00:00+00:00", "temperature": 54, "probabilityOfPrecipitation": {"value": 92}},
+                        {"startTime": "2026-03-29T15:00:00+00:00", "temperature": 55, "probabilityOfPrecipitation": {"value": 88}},
+                    ],
+                },
+                station_history_fetcher=lambda **kwargs: dict(history_payload),
+                anomaly_series_fetcher=lambda **kwargs: {"status": "ready", "values": [0.0] * 24},
+                now=datetime(2026, 3, 29, 12, 5, tzinfo=timezone.utc),
+            )
+            with priors_csv.open("r", newline="", encoding="utf-8") as handle:
+                fresh_row = next(dict(row) for row in csv.DictReader(handle) if row["market_ticker"] == "KXRAINNYC-26MAR29")
+            fresh_weight = _source_note_value(fresh_row.get("source_note", ""), "rain_climatology_blend_weight")
+
+            self.assertIsNotNone(stale_weight)
+            self.assertIsNotNone(fresh_weight)
+            assert isinstance(stale_weight, float)
+            assert isinstance(fresh_weight, float)
+            self.assertGreater(stale_weight, fresh_weight)
+            self.assertGreaterEqual(stale_weight, 0.06)
+            self.assertLessEqual(stale_weight, 0.45)
+            self.assertGreaterEqual(fresh_weight, 0.06)
+            self.assertLessEqual(fresh_weight, 0.45)
 
 
 if __name__ == "__main__":

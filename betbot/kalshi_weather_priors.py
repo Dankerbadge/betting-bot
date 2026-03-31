@@ -831,6 +831,49 @@ def _rain_probability_regime_adjusted(pop_values: list[float]) -> dict[str, floa
     }
 
 
+def _adaptive_rain_climatology_blend_weight(
+    *,
+    pop_values: list[float],
+    rain_regime: dict[str, float],
+    climatology_count: int,
+    forecast_age_hours: float | None,
+    history_live_ready: bool,
+) -> float:
+    if climatology_count <= 0 or not pop_values:
+        return 0.0
+
+    def _unit_clamp(value: float) -> float:
+        return max(0.0, min(1.0, float(value)))
+
+    # Higher climatology blend when we have deeper station history, stale forecasts,
+    # and noisier/dispersed PoP structure; lower blend when short-term rain regime
+    # structure is concentrated and persistent.
+    depth_score = _unit_clamp((float(climatology_count) - 6.0) / 12.0)
+    pop_dispersion = pstdev(pop_values) if len(pop_values) > 1 else 0.0
+    dispersion_score = _unit_clamp(pop_dispersion / 0.20)
+    horizon_score = _unit_clamp((float(len(pop_values)) - 8.0) / 18.0)
+    freshness_score = _unit_clamp((float(forecast_age_hours or 0.0)) / 36.0)
+
+    concentration_ratio = _unit_clamp(float(rain_regime.get("concentration_ratio") or 0.0))
+    lag1 = _unit_clamp(max(0.0, float(rain_regime.get("lag1_autocorrelation") or 0.0)))
+    burst_weight = _unit_clamp(float(rain_regime.get("burst_blend_weight") or 0.0))
+    regime_strength = _unit_clamp(
+        (0.40 * concentration_ratio) + (0.25 * lag1) + (0.35 * burst_weight),
+    )
+
+    blend_weight = (
+        0.08
+        + (0.18 * depth_score)
+        + (0.14 * dispersion_score)
+        + (0.10 * horizon_score)
+        + (0.12 * freshness_score)
+        - (0.24 * regime_strength)
+    )
+    if not history_live_ready:
+        blend_weight *= 0.75
+    return round(max(0.06, min(0.45, blend_weight)), 6)
+
+
 def _build_daily_rain_prior(
     *,
     row: dict[str, str],
@@ -878,13 +921,37 @@ def _build_daily_rain_prior(
     rain_regime = _rain_probability_regime_adjusted(pop_values)
     model_probability_raw_independent = float(rain_regime.get("independent_probability") or 0.0)
     model_probability_raw_unclamped = float(rain_regime.get("regime_adjusted_probability") or 0.0)
+    history_health = _history_live_health(
+        history_payload,
+        contract_family="daily_rain",
+        sample_metric="precip",
+    )
+    climatology_count = int(_history_sample_years_for_metric(history_payload, sample_metric="precip") or 0)
     climatology_frequency = None
     if isinstance(history_payload, dict):
         rain_frequency = history_payload.get("rain_day_frequency")
         if isinstance(rain_frequency, (int, float)):
             climatology_frequency = max(0.0, min(1.0, float(rain_frequency)))
+    rain_climatology_blend_weight = 0.0
+    updated_at = str(forecast.get("forecast_updated_at") or "").strip()
+    age_penalty = 0.0
+    age_hours = 0.0
+    updated_dt = _parse_datetime(updated_at)
+    if isinstance(updated_dt, datetime):
+        age_hours = max(0.0, (now - updated_dt).total_seconds() / 3600.0)
+        age_penalty = min(0.2, age_hours / 48.0)
     if climatology_frequency is not None:
-        model_probability_raw_unclamped = 0.78 * model_probability_raw_unclamped + 0.22 * climatology_frequency
+        rain_climatology_blend_weight = _adaptive_rain_climatology_blend_weight(
+            pop_values=pop_values,
+            rain_regime=rain_regime,
+            climatology_count=climatology_count,
+            forecast_age_hours=age_hours,
+            history_live_ready=bool(history_health.get("live_ready")),
+        )
+        model_probability_raw_unclamped = (
+            (1.0 - rain_climatology_blend_weight) * model_probability_raw_unclamped
+            + (rain_climatology_blend_weight * climatology_frequency)
+        )
     model_probability = _clamp_probability(model_probability_raw_unclamped)
     execution_probability = _execution_guard_probability(
         model_probability_raw_unclamped,
@@ -894,18 +961,6 @@ def _build_daily_rain_prior(
     )
     market_midpoint = _midpoint_probability_from_market(row)
 
-    updated_at = str(forecast.get("forecast_updated_at") or "").strip()
-    age_penalty = 0.0
-    updated_dt = _parse_datetime(updated_at)
-    if isinstance(updated_dt, datetime):
-        age_hours = max(0.0, (now - updated_dt).total_seconds() / 3600.0)
-        age_penalty = min(0.2, age_hours / 48.0)
-    history_health = _history_live_health(
-        history_payload,
-        contract_family="daily_rain",
-        sample_metric="precip",
-    )
-    climatology_count = int(_history_sample_years_for_metric(history_payload, sample_metric="precip") or 0)
     confidence = round(
         min(
             0.92,
@@ -924,11 +979,15 @@ def _build_daily_rain_prior(
     high = _clamp_probability(execution_probability + interval_half_width)
     thesis_suffix = ""
     if climatology_frequency is not None:
-        thesis_suffix = f" Blended with {climatology_count}y station climatology rain frequency {climatology_frequency:.1%}."
+        thesis_suffix = (
+            f" Adaptive climatology blend weight {rain_climatology_blend_weight:.1%} "
+            f"with {climatology_count}y station rain frequency {climatology_frequency:.1%}."
+        )
     source_parts = [
         f"nws_station_hourly_forecast:{station_id}",
         f"periods_used={len(pop_values)}",
         f"forecast_updated_at={updated_at or 'unknown'}",
+        f"rain_forecast_age_hours={age_hours:.2f}",
         f"raw_pop_independent={model_probability_raw_independent:.4f}",
         f"raw_pop_persistence_adjusted={float(rain_regime.get('persistence_adjusted_probability') or 0.0):.4f}",
         f"raw_pop_regime_adjusted={float(rain_regime.get('regime_adjusted_probability') or 0.0):.4f}",
@@ -936,6 +995,7 @@ def _build_daily_rain_prior(
         f"rain_effective_independence_ratio={float(rain_regime.get('effective_independence_ratio') or 1.0):.3f}",
         f"rain_hourly_concentration_ratio={float(rain_regime.get('concentration_ratio') or 1.0):.3f}",
         f"rain_burst_blend_weight={float(rain_regime.get('burst_blend_weight') or 0.0):.3f}",
+        f"rain_climatology_blend_weight={rain_climatology_blend_weight:.4f}",
     ]
     window_start = str(settlement.get("observation_window_local_start") or "").strip()
     window_end = str(settlement.get("observation_window_local_end") or "").strip()
@@ -981,7 +1041,7 @@ def _build_daily_rain_prior(
             "last_evidence_at": updated_at,
             "contract_family": "daily_rain",
             "resolution_source_type": "weather_forecast",
-            "model_name": "weather_rain_pop_regime_historical_v3",
+            "model_name": "weather_rain_pop_regime_historical_v4",
             "model_probability_raw": round(float(model_probability_raw_unclamped), 6),
             "execution_probability_guarded": execution_probability,
             "market_midpoint_probability": market_midpoint if market_midpoint is not None else "",

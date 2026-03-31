@@ -1585,6 +1585,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Recent execution-event rows to scan when building each frontier snapshot",
     )
     kalshi_micro_prior_execute.add_argument(
+        "--execution-frontier-report-json",
+        default=None,
+        help="Optional explicit execution-frontier report JSON path; if omitted, latest report by mtime is used",
+    )
+    kalshi_micro_prior_execute.add_argument(
+        "--execution-frontier-max-report-age-seconds",
+        type=float,
+        default=10800.0,
+        help="Maximum accepted age for the selected execution-frontier report before gating treats it as stale",
+    )
+    kalshi_micro_prior_execute.add_argument(
         "--enforce-ws-state-authority",
         dest="enforce_ws_state_authority",
         action="store_true",
@@ -1823,6 +1834,17 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=5000,
         help="Recent execution-event rows to scan when building each frontier snapshot",
+    )
+    kalshi_micro_prior_trader.add_argument(
+        "--execution-frontier-report-json",
+        default=None,
+        help="Optional explicit execution-frontier report JSON path; if omitted, latest report by mtime is used",
+    )
+    kalshi_micro_prior_trader.add_argument(
+        "--execution-frontier-max-report-age-seconds",
+        type=float,
+        default=10800.0,
+        help="Maximum accepted age for the selected execution-frontier report before gating treats it as stale",
     )
     kalshi_micro_prior_trader.add_argument(
         "--enforce-ws-state-authority",
@@ -4349,6 +4371,8 @@ def main() -> None:
             execution_event_log_csv=args.execution_event_log_csv,
             execution_journal_db_path=args.execution_journal_db_path,
             execution_frontier_recent_rows=args.execution_frontier_recent_rows,
+            execution_frontier_report_json=args.execution_frontier_report_json,
+            execution_frontier_max_report_age_seconds=args.execution_frontier_max_report_age_seconds,
             enforce_ws_state_authority=args.enforce_ws_state_authority,
             ws_state_json=args.ws_state_json,
             ws_state_max_age_seconds=args.ws_state_max_age_seconds,
@@ -4400,6 +4424,8 @@ def main() -> None:
             execution_event_log_csv=args.execution_event_log_csv,
             execution_journal_db_path=args.execution_journal_db_path,
             execution_frontier_recent_rows=args.execution_frontier_recent_rows,
+            execution_frontier_report_json=args.execution_frontier_report_json,
+            execution_frontier_max_report_age_seconds=args.execution_frontier_max_report_age_seconds,
             enforce_ws_state_authority=args.enforce_ws_state_authority,
             ws_state_json=args.ws_state_json,
             ws_state_max_age_seconds=args.ws_state_max_age_seconds,
