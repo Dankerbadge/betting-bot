@@ -30,6 +30,9 @@ export BETBOT_BALANCE_SMOKE_ON_FAILURE="${BETBOT_BALANCE_SMOKE_ON_FAILURE:-1}"
 export BETBOT_DAILY_WEATHER_STALE_RECOVERY_ENABLED="${BETBOT_DAILY_WEATHER_STALE_RECOVERY_ENABLED:-1}"
 export BETBOT_DAILY_WEATHER_STALE_RECOVERY_MAX_RETRIES="${BETBOT_DAILY_WEATHER_STALE_RECOVERY_MAX_RETRIES:-1}"
 export BETBOT_DAILY_WEATHER_STALE_RECOVERY_SLEEP_SECONDS="${BETBOT_DAILY_WEATHER_STALE_RECOVERY_SLEEP_SECONDS:-2}"
+export BETBOT_DAILY_WEATHER_RECOVERY_ALERT_WINDOW_HOURS="${BETBOT_DAILY_WEATHER_RECOVERY_ALERT_WINDOW_HOURS:-6}"
+export BETBOT_DAILY_WEATHER_RECOVERY_ALERT_THRESHOLD="${BETBOT_DAILY_WEATHER_RECOVERY_ALERT_THRESHOLD:-3}"
+export BETBOT_DAILY_WEATHER_RECOVERY_ALERT_MAX_EVENTS="${BETBOT_DAILY_WEATHER_RECOVERY_ALERT_MAX_EVENTS:-500}"
 export BETBOT_MIN_SECONDS_BETWEEN_RUNS="${BETBOT_MIN_SECONDS_BETWEEN_RUNS:-2700}"
 
 RUN_ROOT="$BETBOT_OUTPUT_DIR/overnight_alpha"
@@ -1019,6 +1022,118 @@ def _dedupe(values: list[str]) -> list[str]:
     return result
 
 
+def _daily_weather_recovery_failure_kind(
+    *,
+    stale_recovery_triggered: bool,
+    stale_recovery_resolved: bool,
+    recovery_capture_step: dict[str, Any] | None,
+    prior_trader_step: dict[str, Any] | None,
+) -> str | None:
+    if not stale_recovery_triggered or stale_recovery_resolved:
+        return None
+    if isinstance(recovery_capture_step, dict):
+        status = str(recovery_capture_step.get("status") or "").strip().lower()
+        if status and status not in {"ready", "ok"}:
+            return f"capture_{status}"
+        scan_status = str(recovery_capture_step.get("scan_status") or "").strip().lower()
+        if scan_status and scan_status not in {"ready", "ok"}:
+            return f"capture_scan_{scan_status}"
+    if isinstance(prior_trader_step, dict):
+        gate_status = str(prior_trader_step.get("prior_trade_gate_status") or "").strip().lower()
+        if gate_status:
+            return f"gate_{gate_status}"
+    return "unknown"
+
+
+def _daily_weather_recovery_alert_state(
+    *,
+    run_root: Path,
+    run_id: str,
+    run_started_at_utc: str,
+    stale_recovery_triggered: bool,
+    stale_recovery_resolved: bool,
+    failure_kind: str | None,
+    recovery_capture_status: str | None,
+    recovery_capture_scan_status: str | None,
+    window_hours: float,
+    threshold: int,
+    max_events: int,
+) -> dict[str, Any]:
+    now_dt = _parse_iso(run_started_at_utc) or datetime.now(timezone.utc)
+    window_seconds = max(0.0, float(window_hours)) * 3600.0
+    threshold_effective = max(1, int(threshold))
+    max_events_effective = max(25, int(max_events))
+    state_path = run_root / "daily_weather_recovery_health.json"
+    existing_events: list[dict[str, Any]] = []
+    parse_error: str | None = None
+    write_error: str | None = None
+
+    existing_payload = _load_json(state_path)
+    if isinstance(existing_payload, dict):
+        raw_events = existing_payload.get("events")
+        if isinstance(raw_events, list):
+            for item in raw_events:
+                if isinstance(item, dict):
+                    existing_events.append(dict(item))
+
+    cutoff = now_dt.timestamp() - window_seconds
+    pruned_events: list[dict[str, Any]] = []
+    for event in existing_events:
+        occurred_text = str(event.get("occurred_at_utc") or "").strip()
+        occurred_dt = _parse_iso(occurred_text)
+        if occurred_dt is None:
+            continue
+        if occurred_dt.timestamp() < cutoff:
+            continue
+        pruned_events.append(event)
+
+    if stale_recovery_triggered and not stale_recovery_resolved:
+        pruned_events.append(
+            {
+                "run_id": run_id,
+                "occurred_at_utc": now_dt.isoformat(),
+                "failure_kind": str(failure_kind or "unknown"),
+                "capture_status": str(recovery_capture_status or "") or None,
+                "capture_scan_status": str(recovery_capture_scan_status or "") or None,
+            }
+        )
+
+    if len(pruned_events) > max_events_effective:
+        pruned_events = pruned_events[-max_events_effective:]
+
+    failure_counts_by_kind: dict[str, int] = {}
+    for event in pruned_events:
+        kind = str(event.get("failure_kind") or "unknown").strip().lower() or "unknown"
+        failure_counts_by_kind[kind] = failure_counts_by_kind.get(kind, 0) + 1
+    failure_count_window = len(pruned_events)
+    alert_triggered = failure_count_window >= threshold_effective
+
+    payload = {
+        "updated_at_utc": now_dt.isoformat(),
+        "window_hours": max(0.0, float(window_hours)),
+        "threshold": threshold_effective,
+        "max_events": max_events_effective,
+        "events": pruned_events,
+    }
+    try:
+        state_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    except OSError as exc:
+        write_error = str(exc)
+
+    return {
+        "state_file": str(state_path),
+        "window_hours": max(0.0, float(window_hours)),
+        "threshold": threshold_effective,
+        "max_events": max_events_effective,
+        "failure_count_window": failure_count_window,
+        "failure_counts_by_kind": dict(sorted(failure_counts_by_kind.items())),
+        "alert_triggered": alert_triggered,
+        "last_failure_kind": str(failure_kind or "") or None,
+        "parse_error": parse_error,
+        "write_error": write_error,
+    }
+
+
 def _top_level_balance_heartbeat(step: dict[str, Any] | None) -> dict[str, Any]:
     if not isinstance(step, dict):
         return {
@@ -1753,6 +1868,60 @@ def main() -> int:
     if stale_recovery_triggered and not _is_daily_weather_board_stale_gate(prior_trader_step):
         stale_recovery_resolved = True
 
+    recovery_capture_step = _latest_step_with_prefix(steps, "capture_recovery_daily_weather")
+    daily_weather_recovery_failure_kind = _daily_weather_recovery_failure_kind(
+        stale_recovery_triggered=stale_recovery_triggered,
+        stale_recovery_resolved=stale_recovery_resolved,
+        recovery_capture_step=recovery_capture_step if isinstance(recovery_capture_step, dict) else None,
+        prior_trader_step=prior_trader_step if isinstance(prior_trader_step, dict) else None,
+    )
+    daily_weather_recovery_alert_window_hours = max(
+        0.0,
+        float(os.environ.get("BETBOT_DAILY_WEATHER_RECOVERY_ALERT_WINDOW_HOURS", "6")),
+    )
+    daily_weather_recovery_alert_threshold = max(
+        1,
+        int(os.environ.get("BETBOT_DAILY_WEATHER_RECOVERY_ALERT_THRESHOLD", "3")),
+    )
+    daily_weather_recovery_alert_max_events = max(
+        25,
+        int(os.environ.get("BETBOT_DAILY_WEATHER_RECOVERY_ALERT_MAX_EVENTS", "500")),
+    )
+    daily_weather_recovery_alert_state = _daily_weather_recovery_alert_state(
+        run_root=run_root,
+        run_id=run_id,
+        run_started_at_utc=started_at,
+        stale_recovery_triggered=stale_recovery_triggered,
+        stale_recovery_resolved=stale_recovery_resolved,
+        failure_kind=daily_weather_recovery_failure_kind,
+        recovery_capture_status=(
+            str(recovery_capture_step.get("status") or "").strip()
+            if isinstance(recovery_capture_step, dict)
+            else None
+        ),
+        recovery_capture_scan_status=(
+            str(recovery_capture_step.get("scan_status") or "").strip()
+            if isinstance(recovery_capture_step, dict)
+            else None
+        ),
+        window_hours=daily_weather_recovery_alert_window_hours,
+        threshold=daily_weather_recovery_alert_threshold,
+        max_events=daily_weather_recovery_alert_max_events,
+    )
+    steps.append(
+        _synthetic_step(
+            name="daily_weather_stale_recovery_health",
+            status="alert" if bool(daily_weather_recovery_alert_state.get("alert_triggered")) else "ready",
+            ok=True,
+            reason=(
+                f"failure_burst:{daily_weather_recovery_failure_kind or 'none'}"
+                if bool(daily_weather_recovery_alert_state.get("alert_triggered"))
+                else "within_threshold"
+            ),
+            payload=dict(daily_weather_recovery_alert_state),
+        )
+    )
+
     failed_steps = [step["name"] for step in steps if not bool(step.get("ok"))]
     degraded_reasons: list[str] = []
 
@@ -1823,6 +1992,10 @@ def main() -> int:
         live_blockers.append("weather_history_station_mapping_missing")
     if int(weather_history_state.get("weather_history_sample_depth_block_count") or 0) > 0:
         live_blockers.append("weather_history_sample_depth_insufficient")
+    if bool(daily_weather_recovery_alert_state.get("alert_triggered")):
+        live_blockers.append("daily_weather_recovery_failure_burst")
+        if str(daily_weather_recovery_failure_kind or "").strip().lower().startswith("capture_upstream_error"):
+            live_blockers.append("daily_weather_recovery_upstream_error_burst")
     live_blockers = _dedupe(live_blockers)
     pipeline_ready = overall_status == "ok"
     live_ready = pipeline_ready and not live_blockers
@@ -1933,6 +2106,16 @@ def main() -> int:
         "daily_weather_stale_recovery_triggered": stale_recovery_triggered,
         "daily_weather_stale_recovery_attempts": stale_recovery_attempts,
         "daily_weather_stale_recovery_resolved": stale_recovery_resolved,
+        "daily_weather_stale_recovery_failure_kind": daily_weather_recovery_failure_kind,
+        "daily_weather_recovery_alert_window_hours": daily_weather_recovery_alert_state.get("window_hours"),
+        "daily_weather_recovery_alert_threshold": daily_weather_recovery_alert_state.get("threshold"),
+        "daily_weather_recovery_alert_max_events": daily_weather_recovery_alert_state.get("max_events"),
+        "daily_weather_recovery_failure_count_window": daily_weather_recovery_alert_state.get("failure_count_window"),
+        "daily_weather_recovery_failure_counts_by_kind": daily_weather_recovery_alert_state.get("failure_counts_by_kind"),
+        "daily_weather_recovery_alert_triggered": daily_weather_recovery_alert_state.get("alert_triggered"),
+        "daily_weather_recovery_health_file": daily_weather_recovery_alert_state.get("state_file"),
+        "daily_weather_recovery_alert_parse_error": daily_weather_recovery_alert_state.get("parse_error"),
+        "daily_weather_recovery_alert_write_error": daily_weather_recovery_alert_state.get("write_error"),
         "capture_max_hours_to_close": capture_max_hours_to_close,
         "capture_page_limit": capture_page_limit,
         "capture_max_pages": capture_max_pages,
