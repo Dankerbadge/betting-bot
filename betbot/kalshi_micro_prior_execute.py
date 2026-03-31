@@ -90,6 +90,7 @@ def _daily_weather_board_summary(
     daily_weather_tickers: list[str] = []
     contract_family_by_ticker: dict[str, str] = {}
     latest_captured_at_dt: datetime | None = None
+    latest_daily_weather_captured_at_dt: datetime | None = None
 
     for ticker, row in latest_rows.items():
         captured_value = _parse_timestamp(str(row.get("captured_at") or ""))
@@ -106,10 +107,18 @@ def _daily_weather_board_summary(
         if contract_family in _DAILY_WEATHER_CONTRACT_FAMILIES:
             daily_weather_family_counts[contract_family] = daily_weather_family_counts.get(contract_family, 0) + 1
             daily_weather_tickers.append(ticker)
+            if isinstance(captured_value, datetime):
+                if latest_daily_weather_captured_at_dt is None or captured_value > latest_daily_weather_captured_at_dt:
+                    latest_daily_weather_captured_at_dt = captured_value
 
-    latest_capture_age_seconds = (
+    latest_overall_capture_age_seconds = (
         round(max(0.0, (captured_at - latest_captured_at_dt).total_seconds()), 3)
         if isinstance(latest_captured_at_dt, datetime)
+        else None
+    )
+    latest_capture_age_seconds = (
+        round(max(0.0, (captured_at - latest_daily_weather_captured_at_dt).total_seconds()), 3)
+        if isinstance(latest_daily_weather_captured_at_dt, datetime)
         else None
     )
     capture_fresh = (
@@ -118,7 +127,9 @@ def _daily_weather_board_summary(
         else None
     )
     board_status = "ready"
-    if latest_captured_at_dt is None:
+    if sum(daily_weather_family_counts.values()) <= 0:
+        board_status = "daily_weather_missing"
+    elif latest_daily_weather_captured_at_dt is None:
         board_status = "missing_capture_timestamp"
     elif capture_fresh is False:
         board_status = "stale"
@@ -135,10 +146,16 @@ def _daily_weather_board_summary(
         ),
         "daily_weather_tickers": sorted(daily_weather_tickers)[:25],
         "contract_family_by_ticker": contract_family_by_ticker,
-        "latest_captured_at": latest_captured_at_dt.isoformat() if isinstance(latest_captured_at_dt, datetime) else None,
+        "latest_captured_at": (
+            latest_daily_weather_captured_at_dt.isoformat()
+            if isinstance(latest_daily_weather_captured_at_dt, datetime)
+            else None
+        ),
         "latest_capture_age_seconds": latest_capture_age_seconds,
         "max_capture_age_seconds": capture_age_limit_seconds,
         "capture_fresh": capture_fresh,
+        "latest_overall_captured_at": latest_captured_at_dt.isoformat() if isinstance(latest_captured_at_dt, datetime) else None,
+        "latest_overall_capture_age_seconds": latest_overall_capture_age_seconds,
     }
 
 
@@ -224,6 +241,17 @@ def build_prior_trade_gate_decision(
         if isinstance(daily_weather_board_max_capture_age_seconds_raw, (int, float))
         else None
     )
+    daily_weather_candidates_total = int(plan_summary.get("weather_history_daily_candidates_total") or 0)
+    stale_daily_weather_board = (
+        require_daily_weather_board_freshness
+        and daily_weather_markets_total > 0
+        and daily_weather_board_capture_fresh is not True
+        and (
+            enforce_daily_weather_live_only
+            or top_market_contract_family_normalized in _DAILY_WEATHER_CONTRACT_FAMILIES
+            or daily_weather_candidates_total > 0
+        )
+    )
 
     blockers: list[str] = []
     if actual_live_balance_dollars is None:
@@ -266,12 +294,7 @@ def build_prior_trade_gate_decision(
         blockers.append(
             "No daily weather markets are present in the captured board snapshot; refusing live mode until board coverage is restored."
         )
-    if (
-        require_daily_weather_board_freshness
-        and planned_orders > 0
-        and top_market_contract_family_normalized in _DAILY_WEATHER_CONTRACT_FAMILIES
-        and daily_weather_board_capture_fresh is not True
-    ):
+    if stale_daily_weather_board:
         freshness_label = (
             f"age={daily_weather_board_latest_capture_age_seconds:.1f}s"
             if isinstance(daily_weather_board_latest_capture_age_seconds, float)
@@ -334,12 +357,7 @@ def build_prior_trade_gate_decision(
             gate_status = "cap_reached"
         elif require_daily_weather_board_coverage and daily_weather_markets_total <= 0:
             gate_status = "daily_weather_board_missing"
-        elif (
-            require_daily_weather_board_freshness
-            and planned_orders > 0
-            and top_market_contract_family_normalized in _DAILY_WEATHER_CONTRACT_FAMILIES
-            and daily_weather_board_capture_fresh is not True
-        ):
+        elif stale_daily_weather_board:
             gate_status = "daily_weather_board_stale"
         elif (
             enforce_daily_weather_live_only

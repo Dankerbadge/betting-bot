@@ -524,6 +524,50 @@ def run_kalshi_micro_prior_trader(
                 "priors_csv": priors_csv,
             }
 
+    weather_refresh_live_ready = True
+    weather_refresh_live_ready_reason: str | None = None
+    if allow_live_orders and auto_refresh_weather_priors:
+        weather_prior_status = str(
+            weather_prior_summary.get("status") if isinstance(weather_prior_summary, dict) else ""
+        ).strip().lower()
+        if weather_prior_status != "ready":
+            weather_refresh_live_ready = False
+            weather_refresh_live_ready_reason = (
+                "Live orders were downgraded to dry-run because weather prior refresh did not complete cleanly "
+                f"(status={weather_prior_status or 'unknown'})."
+            )
+        elif auto_prewarm_weather_station_history:
+            prewarm_status = str(
+                weather_prewarm_summary.get("status") if isinstance(weather_prewarm_summary, dict) else ""
+            ).strip().lower()
+            prewarm_keys_attempted = (
+                int(weather_prewarm_summary.get("prewarm_keys_attempted") or 0)
+                if isinstance(weather_prewarm_summary, dict)
+                else 0
+            )
+            prewarm_live_ready_counts = (
+                dict(weather_prewarm_summary.get("live_ready_counts") or {})
+                if isinstance(weather_prewarm_summary, dict)
+                else {}
+            )
+            prewarm_live_ready_count = int(prewarm_live_ready_counts.get("live_ready") or 0)
+            if prewarm_status != "ready":
+                weather_refresh_live_ready = False
+                weather_refresh_live_ready_reason = (
+                    "Live orders were downgraded to dry-run because weather station-history prewarm was not ready "
+                    f"(status={prewarm_status or 'unknown'})."
+                )
+            elif prewarm_keys_attempted > 0 and prewarm_live_ready_count <= 0:
+                weather_refresh_live_ready = False
+                weather_refresh_live_ready_reason = (
+                    "Live orders were downgraded to dry-run because weather station-history prewarm produced "
+                    "zero live-ready station/day keys."
+                )
+    if allow_live_orders and not weather_refresh_live_ready:
+        allow_live_orders = False
+        if not live_orders_downgraded_reason:
+            live_orders_downgraded_reason = weather_refresh_live_ready_reason
+
     auto_prior_summary: dict[str, Any] | None = None
     if auto_refresh_priors:
         history_path = Path(effective_history_csv)
@@ -643,6 +687,8 @@ def run_kalshi_micro_prior_trader(
         "weather_prewarm_summary_file": (
             weather_prewarm_summary.get("output_file") if isinstance(weather_prewarm_summary, dict) else None
         ),
+        "weather_refresh_live_ready": weather_refresh_live_ready,
+        "weather_refresh_live_ready_reason": weather_refresh_live_ready_reason,
         "auto_refresh_priors": auto_refresh_priors,
         "auto_prior_restrict_to_mapped_live_tickers": auto_prior_restrict_to_mapped_live_tickers,
         "auto_prior_allowed_canonical_niches": sorted(
