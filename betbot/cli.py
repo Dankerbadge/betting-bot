@@ -45,7 +45,7 @@ from betbot.kalshi_nonsports_signals import run_kalshi_nonsports_signals
 from betbot.kalshi_nonsports_scan import run_kalshi_nonsports_scan
 from betbot.kalshi_nonsports_thresholds import run_kalshi_nonsports_thresholds
 from betbot.kalshi_weather_catalog import run_kalshi_weather_catalog
-from betbot.kalshi_weather_priors import run_kalshi_weather_priors
+from betbot.kalshi_weather_priors import run_kalshi_weather_priors, run_kalshi_weather_station_history_prewarm
 from betbot.live_candidates import run_live_candidates
 from betbot.live_paper import run_live_paper
 from betbot.sports_archive import run_sports_archive
@@ -1264,6 +1264,41 @@ def build_parser() -> argparse.ArgumentParser:
         help="Number of top weather priors embedded in the summary",
     )
     kalshi_weather_priors.add_argument("--output-dir", default="outputs", help="Output directory")
+
+    kalshi_weather_prewarm = subparsers.add_parser(
+        "kalshi-weather-prewarm",
+        help="Prewarm NOAA CDO station/day climatology cache for daily weather markets",
+    )
+    kalshi_weather_prewarm.add_argument(
+        "--history-csv",
+        default="outputs/kalshi_nonsports_history.csv",
+        help="Stable history CSV path from kalshi-nonsports-capture",
+    )
+    kalshi_weather_prewarm.add_argument(
+        "--historical-lookback-years",
+        type=int,
+        default=15,
+        help="Years of station-level historical day-of-year samples to cache",
+    )
+    kalshi_weather_prewarm.add_argument(
+        "--station-history-cache-max-age-hours",
+        type=float,
+        default=24.0,
+        help="Max age for cached station-history snapshots before forcing refresh",
+    )
+    kalshi_weather_prewarm.add_argument(
+        "--timeout-seconds",
+        type=float,
+        default=12.0,
+        help="HTTP timeout per station/day prewarm fetch",
+    )
+    kalshi_weather_prewarm.add_argument(
+        "--max-station-day-keys",
+        type=int,
+        default=500,
+        help="Maximum unique station/day keys to prewarm per run",
+    )
+    kalshi_weather_prewarm.add_argument("--output-dir", default="outputs", help="Output directory")
 
     kalshi_focus_dossier = subparsers.add_parser(
         "kalshi-focus-dossier",
@@ -4202,6 +4237,15 @@ def main() -> None:
             protect_manual=not args.disable_protect_manual,
             write_back_to_priors=not args.dry_run,
             top_n=args.top_n,
+        )
+    elif args.command == "kalshi-weather-prewarm":
+        summary = run_kalshi_weather_station_history_prewarm(
+            history_csv=args.history_csv,
+            output_dir=args.output_dir,
+            historical_lookback_years=args.historical_lookback_years,
+            station_history_cache_max_age_hours=args.station_history_cache_max_age_hours,
+            timeout_seconds=args.timeout_seconds,
+            max_station_day_keys=args.max_station_day_keys,
         )
     elif args.command == "kalshi-focus-dossier":
         summary = run_kalshi_focus_dossier(

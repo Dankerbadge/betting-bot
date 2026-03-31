@@ -1345,3 +1345,176 @@ def run_kalshi_weather_priors(
     summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
     summary["output_file"] = str(summary_path)
     return summary
+
+
+def run_kalshi_weather_station_history_prewarm(
+    *,
+    history_csv: str = "outputs/kalshi_nonsports_history.csv",
+    output_dir: str = "outputs",
+    historical_lookback_years: int = _DEFAULT_HISTORICAL_LOOKBACK_YEARS,
+    station_history_cache_max_age_hours: float = _DEFAULT_STATION_HISTORY_CACHE_MAX_AGE_HOURS,
+    timeout_seconds: float = 12.0,
+    max_station_day_keys: int = 500,
+    station_history_fetcher: StationHistoryFetcher = fetch_ncei_cdo_station_daily_history,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    captured_at = now or datetime.now(timezone.utc)
+    history_path = Path(history_csv)
+    history_rows = load_history_rows(history_path)
+    latest_rows = _latest_market_rows(history_rows)
+
+    key_index: dict[tuple[str, int, int], dict[str, Any]] = {}
+    for row in latest_rows.values():
+        settlement = build_weather_settlement_spec(row)
+        family = str(settlement.get("contract_family") or "").strip().lower()
+        if family not in {"daily_rain", "daily_temperature", "daily_snow"}:
+            continue
+        station_id = _infer_station_id(row, str(settlement.get("settlement_station") or ""))
+        if not station_id:
+            continue
+        month_value, day_value = _target_month_day(row=row, settlement=settlement, now=captured_at)
+        key = (station_id, month_value, day_value)
+        hours_to_close = _parse_float(row.get("hours_to_close"))
+        entry = key_index.setdefault(
+            key,
+            {
+                "station_id": station_id,
+                "month": month_value,
+                "day": day_value,
+                "markets": 0,
+                "min_hours_to_close": hours_to_close if isinstance(hours_to_close, float) else None,
+                "sample_tickers": [],
+            },
+        )
+        entry["markets"] = int(entry.get("markets") or 0) + 1
+        if isinstance(hours_to_close, float):
+            current_min = entry.get("min_hours_to_close")
+            if not isinstance(current_min, float) or hours_to_close < current_min:
+                entry["min_hours_to_close"] = hours_to_close
+        sample_tickers = entry.get("sample_tickers")
+        if isinstance(sample_tickers, list):
+            ticker = str(row.get("market_ticker") or "").strip()
+            if ticker and ticker not in sample_tickers and len(sample_tickers) < 5:
+                sample_tickers.append(ticker)
+
+    ranked_keys = sorted(
+        key_index.values(),
+        key=lambda item: (
+            item.get("min_hours_to_close") if isinstance(item.get("min_hours_to_close"), float) else 1e9,
+            -int(item.get("markets") or 0),
+            str(item.get("station_id") or ""),
+            int(item.get("month") or 0),
+            int(item.get("day") or 0),
+        ),
+    )
+    if max_station_day_keys > 0:
+        ranked_keys = ranked_keys[: int(max_station_day_keys)]
+
+    station_history_cache_dir = str(Path(output_dir) / "weather_station_history_cache")
+    fetcher_signature = inspect.signature(station_history_fetcher)
+    supports_history_cache_dir = "cache_dir" in fetcher_signature.parameters
+    supports_history_cache_age = "cache_max_age_hours" in fetcher_signature.parameters
+
+    status_counts: dict[str, int] = {}
+    live_ready_counts: dict[str, int] = {}
+    fetch_error_kind_counts: dict[str, int] = {}
+    entries: list[dict[str, Any]] = []
+    for key in ranked_keys:
+        station_id = str(key.get("station_id") or "").strip()
+        month_value = int(key.get("month") or 0)
+        day_value = int(key.get("day") or 0)
+        payload: dict[str, Any]
+        try:
+            history_fetch_kwargs: dict[str, Any] = {
+                "station_id": station_id,
+                "month": month_value,
+                "day": day_value,
+                "lookback_years": int(historical_lookback_years),
+                "timeout_seconds": float(timeout_seconds),
+                "now": captured_at,
+            }
+            if supports_history_cache_dir:
+                history_fetch_kwargs["cache_dir"] = station_history_cache_dir
+            if supports_history_cache_age:
+                history_fetch_kwargs["cache_max_age_hours"] = max(0.0, float(station_history_cache_max_age_hours))
+            payload = station_history_fetcher(**history_fetch_kwargs)
+        except Exception as exc:
+            error_kind = _classify_fetch_error(exc)
+            fetch_error_kind_counts[error_kind] = fetch_error_kind_counts.get(error_kind, 0) + 1
+            payload = {
+                "status": "upstream_error",
+                "error": str(exc),
+                "error_kind": error_kind,
+            }
+        health = _history_live_health(payload)
+        status_value = str(health.get("status") or "").strip().lower() or "unknown"
+        status_counts[status_value] = status_counts.get(status_value, 0) + 1
+        live_ready_key = "live_ready" if bool(health.get("live_ready")) else "not_live_ready"
+        live_ready_counts[live_ready_key] = live_ready_counts.get(live_ready_key, 0) + 1
+        entries.append(
+            {
+                "station_id": station_id,
+                "month": month_value,
+                "day": day_value,
+                "markets": int(key.get("markets") or 0),
+                "min_hours_to_close": key.get("min_hours_to_close"),
+                "status": status_value,
+                "cache_hit": bool(health.get("cache_hit")),
+                "cache_fallback_used": bool(health.get("cache_fallback_used")),
+                "cache_fresh": bool(health.get("cache_fresh")),
+                "cache_age_seconds": health.get("cache_age_seconds"),
+                "live_ready": bool(health.get("live_ready")),
+                "live_ready_reason": str(health.get("live_ready_reason") or "").strip(),
+                "sample_tickers": ",".join(str(value) for value in (key.get("sample_tickers") or [])),
+            }
+        )
+
+    stamp = captured_at.astimezone().strftime("%Y%m%d_%H%M%S")
+    out_dir = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    output_csv = out_dir / f"kalshi_weather_station_history_prewarm_{stamp}.csv"
+    _write_csv(
+        output_csv,
+        entries,
+        [
+            "station_id",
+            "month",
+            "day",
+            "markets",
+            "min_hours_to_close",
+            "status",
+            "cache_hit",
+            "cache_fallback_used",
+            "cache_fresh",
+            "cache_age_seconds",
+            "live_ready",
+            "live_ready_reason",
+            "sample_tickers",
+        ],
+    )
+
+    summary = {
+        "captured_at": captured_at.isoformat(),
+        "history_csv": str(history_path),
+        "candidate_markets": len(latest_rows),
+        "daily_weather_station_day_keys_total": len(key_index),
+        "prewarm_keys_attempted": len(ranked_keys),
+        "max_station_day_keys": int(max_station_day_keys),
+        "historical_lookback_years": int(historical_lookback_years),
+        "station_history_cache_dir": station_history_cache_dir if supports_history_cache_dir else None,
+        "station_history_cache_max_age_hours": (
+            max(0.0, float(station_history_cache_max_age_hours)) if supports_history_cache_age else None
+        ),
+        "status_counts": status_counts,
+        "live_ready_counts": live_ready_counts,
+        "fetch_error_kind_counts": fetch_error_kind_counts,
+        "top_unhealthy_keys": [
+            item for item in entries if not bool(item.get("live_ready"))
+        ][:25],
+        "output_csv": str(output_csv),
+        "status": "ready",
+    }
+    output_file = out_dir / f"kalshi_weather_station_history_prewarm_summary_{stamp}.json"
+    output_file.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    summary["output_file"] = str(output_file)
+    return summary

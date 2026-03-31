@@ -8,7 +8,7 @@ import unittest
 from urllib.error import URLError
 
 from betbot.kalshi_nonsports_priors import PRIOR_FIELDNAMES
-from betbot.kalshi_weather_priors import run_kalshi_weather_priors
+from betbot.kalshi_weather_priors import run_kalshi_weather_priors, run_kalshi_weather_station_history_prewarm
 
 
 HISTORY_FIELDNAMES = [
@@ -535,6 +535,87 @@ class KalshiWeatherPriorsTests(unittest.TestCase):
             self.assertEqual(generated["observation_window_local_start"], "18:00")
             self.assertEqual(generated["observation_window_local_end"], "06:00")
             self.assertIn("settlement_window_local=18:00-06:00", generated["source_note"])
+
+    def test_run_kalshi_weather_station_history_prewarm_deduplicates_station_day_keys(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            history_csv = base / "history.csv"
+            _write_csv(
+                history_csv,
+                HISTORY_FIELDNAMES,
+                [
+                    {
+                        "captured_at": "2026-03-30T00:00:00+00:00",
+                        "category": "Climate and Weather",
+                        "series_ticker": "KXRAINNYC",
+                        "event_ticker": "KXRAINNYC-26MAR30",
+                        "market_ticker": "KXRAINNYC-26MAR30",
+                        "event_title": "Will it rain in NYC today?",
+                        "market_title": "Will it rain in NYC today?",
+                        "rules_primary": "If measurable rain is recorded at station KJFK, this market resolves to Yes.",
+                        "close_time": "2026-03-30T18:00:00+00:00",
+                        "hours_to_close": "12",
+                        "yes_bid_dollars": "0.40",
+                        "yes_ask_dollars": "0.42",
+                        "spread_dollars": "0.02",
+                    },
+                    {
+                        "captured_at": "2026-03-30T00:00:00+00:00",
+                        "category": "Climate and Weather",
+                        "series_ticker": "KXTEMPNYC",
+                        "event_ticker": "KXTEMPNYC-26MAR30",
+                        "market_ticker": "KXTEMPNYC-26MAR30",
+                        "event_title": "NYC high temperature today",
+                        "market_title": "Will NYC high temperature be above 65?",
+                        "rules_primary": "If high temperature is measured at station KJFK, resolves Yes above 65.",
+                        "close_time": "2026-03-30T20:00:00+00:00",
+                        "hours_to_close": "14",
+                        "yes_bid_dollars": "0.30",
+                        "yes_ask_dollars": "0.31",
+                        "spread_dollars": "0.01",
+                    },
+                ],
+            )
+
+            fetch_calls: list[tuple[str, int, int]] = []
+
+            def fake_station_history_fetcher(
+                *,
+                station_id: str,
+                month: int,
+                day: int,
+                lookback_years: int,
+                timeout_seconds: float,
+                now: datetime,
+                cache_dir: str,
+                cache_max_age_hours: float,
+            ):
+                fetch_calls.append((station_id, month, day))
+                return {
+                    "status": "ready",
+                    "cache_hit": True,
+                    "cache_fallback_used": False,
+                    "cache_fresh": True,
+                    "cache_age_seconds": 120.0,
+                    "sample_years": 10,
+                }
+
+            summary = run_kalshi_weather_station_history_prewarm(
+                history_csv=str(history_csv),
+                output_dir=str(base),
+                station_history_fetcher=fake_station_history_fetcher,
+                max_station_day_keys=50,
+                now=datetime(2026, 3, 30, 0, 5, tzinfo=timezone.utc),
+            )
+
+            self.assertEqual(summary["status"], "ready")
+            self.assertEqual(summary["daily_weather_station_day_keys_total"], 1)
+            self.assertEqual(summary["prewarm_keys_attempted"], 1)
+            self.assertEqual(fetch_calls, [("KJFK", 3, 30)])
+            self.assertEqual(summary["status_counts"], {"ready": 1})
+            self.assertEqual(summary["live_ready_counts"], {"live_ready": 1})
+            self.assertTrue(Path(summary["output_csv"]).exists())
+            self.assertTrue(Path(summary["output_file"]).exists())
 
 
 if __name__ == "__main__":
