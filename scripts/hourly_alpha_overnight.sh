@@ -426,6 +426,85 @@ def _weather_prior_state(
     return state
 
 
+def _as_bool(value: Any) -> bool:
+    text = str(value or "").strip().lower()
+    return text in {"1", "true", "yes", "y", "on"}
+
+
+def _weather_history_token_state(env_values: dict[str, str]) -> dict[str, Any]:
+    keys = ["BETBOT_NOAA_CDO_TOKEN", "NOAA_CDO_TOKEN", "NCEI_CDO_TOKEN"]
+    for key in keys:
+        value = env_values.get(key)
+        if value is None:
+            continue
+        if _is_placeholder_value(value):
+            continue
+        if str(value).strip():
+            return {
+                "weather_history_token_present": True,
+                "weather_history_token_env_key": key,
+            }
+    return {
+        "weather_history_token_present": False,
+        "weather_history_token_env_key": None,
+    }
+
+
+def _weather_history_readiness_state(
+    *,
+    priors_csv: Path,
+    allowed_contract_families: list[str],
+) -> dict[str, Any]:
+    state: dict[str, Any] = {
+        "weather_history_rows_total": 0,
+        "weather_history_live_ready_rows": 0,
+        "weather_history_unhealthy_rows": 0,
+        "weather_history_status_counts": {},
+        "weather_history_live_ready_reason_counts": {},
+        "weather_history_missing_token_count": 0,
+        "weather_history_station_mapping_missing_count": 0,
+        "weather_history_sample_depth_block_count": 0,
+        "weather_history_parse_error": None,
+    }
+    if not priors_csv.exists():
+        state["weather_history_parse_error"] = "priors_missing"
+        return state
+    try:
+        with priors_csv.open("r", newline="", encoding="utf-8") as handle:
+            reader = csv.DictReader(handle)
+            for row in reader:
+                family = str((row or {}).get("contract_family") or "").strip()
+                if family not in allowed_contract_families:
+                    continue
+                state["weather_history_rows_total"] += 1
+                status_text = str((row or {}).get("weather_station_history_status") or "").strip()
+                reason_text = str((row or {}).get("weather_station_history_live_ready_reason") or "").strip()
+                live_ready = _as_bool((row or {}).get("weather_station_history_live_ready"))
+                if status_text:
+                    counts = state["weather_history_status_counts"]
+                    counts[status_text] = int(counts.get(status_text, 0)) + 1
+                if live_ready:
+                    state["weather_history_live_ready_rows"] += 1
+                else:
+                    state["weather_history_unhealthy_rows"] += 1
+                    if reason_text:
+                        reason_counts = state["weather_history_live_ready_reason_counts"]
+                        reason_counts[reason_text] = int(reason_counts.get(reason_text, 0)) + 1
+                    if status_text == "disabled_missing_token" or reason_text.startswith(
+                        "status_disabled_missing_token"
+                    ):
+                        state["weather_history_missing_token_count"] += 1
+                    if status_text == "station_mapping_missing" or reason_text.startswith(
+                        "status_station_mapping_missing"
+                    ):
+                        state["weather_history_station_mapping_missing_count"] += 1
+                    if "sample_years_below_min" in reason_text:
+                        state["weather_history_sample_depth_block_count"] += 1
+    except Exception as exc:  # pragma: no cover - best effort diagnostics
+        state["weather_history_parse_error"] = str(exc)
+    return state
+
+
 def _classify_balance_smoke_failure(*, message: Any, http_status: Any) -> str:
     text = str(message or "").strip().lower()
     status_text = str(http_status or "").strip()
@@ -1028,6 +1107,7 @@ def main() -> int:
     except Exception as exc:  # pragma: no cover - defensive fallback
         env_file_values = {}
         env_file_parse_error = str(exc)
+    weather_history_token_state = _weather_history_token_state(env_file_values)
     history_csv = Path(os.environ["BETBOT_HISTORY_CSV"])
     priors_csv = Path(os.environ["BETBOT_PRIORS_CSV"])
 
@@ -1067,6 +1147,8 @@ def main() -> int:
                     "env_file_kalshi_ready_reason": env_resolution.get("env_file_kalshi_ready_reason"),
                     "env_file_loaded_key_count": len(env_file_values),
                     "env_file_parse_error": env_file_parse_error,
+                    "weather_history_token_present": weather_history_token_state.get("weather_history_token_present"),
+                    "weather_history_token_env_key": weather_history_token_state.get("weather_history_token_env_key"),
                     "betbot_launcher": launcher,
                     "steps": [
                         _synthetic_step(
@@ -1163,6 +1245,8 @@ def main() -> int:
             "env_file_kalshi_ready_reason": env_resolution.get("env_file_kalshi_ready_reason"),
             "env_file_loaded_key_count": len(env_file_values),
             "env_file_parse_error": env_file_parse_error,
+            "weather_history_token_present": weather_history_token_state.get("weather_history_token_present"),
+            "weather_history_token_env_key": weather_history_token_state.get("weather_history_token_env_key"),
             "betbot_launcher": launcher,
             "steps": steps,
             "overall_status": "failed",
@@ -1497,6 +1581,23 @@ def main() -> int:
         max_age_hours=float(os.environ.get("BETBOT_WEATHER_PRIOR_MAX_AGE_HOURS", "6")),
         allowed_contract_families=allowed_weather_contract_families,
     )
+    weather_history_state = _weather_history_readiness_state(
+        priors_csv=priors_csv,
+        allowed_contract_families=allowed_weather_contract_families,
+    )
+    steps.append(
+        _synthetic_step(
+            name="weather_history_health",
+            status="ready" if not weather_history_state.get("weather_history_parse_error") else "degraded",
+            ok=True,
+            reason=(
+                None
+                if not weather_history_state.get("weather_history_parse_error")
+                else f"weather_history_parse_error:{weather_history_state.get('weather_history_parse_error')}"
+            ),
+            payload=dict(weather_history_state),
+        )
+    )
 
     live_blockers: list[str] = []
     if isinstance(balance_step, dict) and not bool(balance_step.get("balance_live_ready")):
@@ -1520,6 +1621,14 @@ def main() -> int:
             live_blockers.append(f"capture_{capture_status}")
     if bool(weather_prior_state_after.get("stale")):
         live_blockers.append("weather_priors_stale_or_empty")
+    if not bool(weather_history_token_state.get("weather_history_token_present")) and int(
+        weather_history_state.get("weather_history_missing_token_count") or 0
+    ) > 0:
+        live_blockers.append("weather_history_missing_noaa_token")
+    if int(weather_history_state.get("weather_history_station_mapping_missing_count") or 0) > 0:
+        live_blockers.append("weather_history_station_mapping_missing")
+    if int(weather_history_state.get("weather_history_sample_depth_block_count") or 0) > 0:
+        live_blockers.append("weather_history_sample_depth_insufficient")
     live_blockers = _dedupe(live_blockers)
     pipeline_ready = overall_status == "ok"
     live_ready = pipeline_ready and not live_blockers
@@ -1555,6 +1664,8 @@ def main() -> int:
         "env_file_kalshi_ready_reason": env_resolution.get("env_file_kalshi_ready_reason"),
         "env_file_loaded_key_count": len(env_file_values),
         "env_file_parse_error": env_file_parse_error,
+        "weather_history_token_present": weather_history_token_state.get("weather_history_token_present"),
+        "weather_history_token_env_key": weather_history_token_state.get("weather_history_token_env_key"),
         "betbot_launcher": launcher,
         "steps": steps,
         "overall_status": overall_status,
@@ -1626,6 +1737,21 @@ def main() -> int:
         "weather_prior_state_reason": weather_prior_state_after.get("reason"),
         "weather_prior_stale": bool(weather_prior_state_after.get("stale")),
         "weather_prior_age_seconds": weather_prior_state_after.get("priors_age_seconds"),
+        "weather_history_rows_total": weather_history_state.get("weather_history_rows_total"),
+        "weather_history_live_ready_rows": weather_history_state.get("weather_history_live_ready_rows"),
+        "weather_history_unhealthy_rows": weather_history_state.get("weather_history_unhealthy_rows"),
+        "weather_history_status_counts": weather_history_state.get("weather_history_status_counts"),
+        "weather_history_live_ready_reason_counts": weather_history_state.get(
+            "weather_history_live_ready_reason_counts"
+        ),
+        "weather_history_missing_token_count": weather_history_state.get("weather_history_missing_token_count"),
+        "weather_history_station_mapping_missing_count": weather_history_state.get(
+            "weather_history_station_mapping_missing_count"
+        ),
+        "weather_history_sample_depth_block_count": weather_history_state.get(
+            "weather_history_sample_depth_block_count"
+        ),
+        "weather_history_parse_error": weather_history_state.get("weather_history_parse_error"),
         "prefer_empirical_fill_model": (
             prior_trader_step.get("execution_empirical_fill_model_prefer_empirical")
             if isinstance(prior_trader_step, dict)
