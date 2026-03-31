@@ -19,6 +19,7 @@ export BETBOT_TIMEOUT_SECONDS="${BETBOT_TIMEOUT_SECONDS:-15}"
 export BETBOT_FRONTIER_RECENT_ROWS="${BETBOT_FRONTIER_RECENT_ROWS:-20000}"
 export BETBOT_FRONTIER_MAX_AGE_SECONDS="${BETBOT_FRONTIER_MAX_AGE_SECONDS:-10800}"
 export BETBOT_BALANCE_MAX_AGE_SECONDS="${BETBOT_BALANCE_MAX_AGE_SECONDS:-900}"
+export BETBOT_BALANCE_SMOKE_ON_FAILURE="${BETBOT_BALANCE_SMOKE_ON_FAILURE:-1}"
 export BETBOT_MIN_SECONDS_BETWEEN_RUNS="${BETBOT_MIN_SECONDS_BETWEEN_RUNS:-2700}"
 
 RUN_ROOT="$BETBOT_OUTPUT_DIR/overnight_alpha"
@@ -340,6 +341,24 @@ def _weather_prior_state(
     return state
 
 
+def _classify_balance_smoke_failure(*, message: Any, http_status: Any) -> str:
+    text = str(message or "").strip().lower()
+    status_text = str(http_status or "").strip()
+    if "missing" in text and ("credential" in text or "environment" in text):
+        return "missing_credentials"
+    if "dns" in text:
+        return "dns_failure"
+    if "timeout" in text or "timed out" in text:
+        return "timeout"
+    if status_text in {"401", "403"} or "unauthorized" in text or "forbidden" in text:
+        return "auth_failed"
+    if "connection" in text or "network" in text:
+        return "network_failure"
+    if status_text:
+        return f"http_{status_text}"
+    return "unknown"
+
+
 def _run_step(
     *,
     name: str,
@@ -426,6 +445,32 @@ def _run_step(
             step["station_history_status_counts"] = parsed.get("station_history_status_counts")
             step["top_market_ticker"] = parsed.get("top_market_ticker")
             step["top_market_confidence"] = parsed.get("top_market_confidence")
+        elif name == "balance_smoke":
+            checks = parsed.get("checks")
+            step["checks_total"] = parsed.get("checks_total")
+            step["checks_failed"] = parsed.get("checks_failed")
+            step["smoke_status"] = parsed.get("status")
+            step["kalshi_ok"] = None
+            step["kalshi_message"] = None
+            step["kalshi_http_status"] = None
+            step["kalshi_failure_kind"] = None
+            if isinstance(checks, list):
+                kalshi_check = next(
+                    (
+                        item
+                        for item in checks
+                        if isinstance(item, dict) and str(item.get("component") or "").strip().lower() == "kalshi"
+                    ),
+                    None,
+                )
+                if isinstance(kalshi_check, dict):
+                    step["kalshi_ok"] = bool(kalshi_check.get("ok"))
+                    step["kalshi_message"] = kalshi_check.get("message")
+                    step["kalshi_http_status"] = kalshi_check.get("http_status")
+                    step["kalshi_failure_kind"] = _classify_balance_smoke_failure(
+                        message=kalshi_check.get("message"),
+                        http_status=kalshi_check.get("http_status"),
+                    )
         elif name == "execution_frontier_refresh":
             trusted = parsed.get("trusted_break_even_edge_by_bucket")
             trust_map = parsed.get("bucket_markout_trust_by_bucket")
@@ -525,6 +570,7 @@ def _run_preflight(
     required_commands = [
         "kalshi-micro-status",
         "kalshi-nonsports-capture",
+        "live-smoke",
         "kalshi-weather-priors",
         "kalshi-weather-prewarm",
         "kalshi-execution-frontier",
@@ -1211,13 +1257,59 @@ def main() -> int:
     steps.append(frontier_refresh_step)
 
     micro_status_step = next((step for step in steps if step.get("name") == "micro_status"), None)
-    steps.append(
-        _build_balance_heartbeat(
-            micro_status_step=micro_status_step if isinstance(micro_status_step, dict) else None,
-            output_dir=output_dir,
-            max_age_seconds=max(0.0, float(os.environ.get("BETBOT_BALANCE_MAX_AGE_SECONDS", "900"))),
-        )
+    balance_step_initial = _build_balance_heartbeat(
+        micro_status_step=micro_status_step if isinstance(micro_status_step, dict) else None,
+        output_dir=output_dir,
+        max_age_seconds=max(0.0, float(os.environ.get("BETBOT_BALANCE_MAX_AGE_SECONDS", "900"))),
     )
+    steps.append(balance_step_initial)
+
+    balance_smoke_enabled = str(os.environ.get("BETBOT_BALANCE_SMOKE_ON_FAILURE", "1")).strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
+    if balance_smoke_enabled and not bool(balance_step_initial.get("balance_live_ready")):
+        balance_smoke_step = _run_step(
+            name="balance_smoke",
+            launcher=launcher,
+            args=[
+                "live-smoke",
+                "--env-file",
+                str(env_file),
+                "--skip-odds-provider-check",
+                "--timeout-seconds",
+                str(float(os.environ.get("BETBOT_TIMEOUT_SECONDS", "15"))),
+                "--output-dir",
+                str(output_dir),
+            ],
+            cwd=repo_root,
+            run_dir=run_logs,
+        )
+        # Balance smoke is diagnostic: a failing smoke should enrich blockers,
+        # not mark the whole orchestration step as failed.
+        balance_smoke_step["ok"] = True
+        balance_smoke_step["diagnostic_only"] = True
+        steps.append(balance_smoke_step)
+    elif balance_smoke_enabled:
+        steps.append(
+            _synthetic_step(
+                name="balance_smoke",
+                status="skipped_balance_ready",
+                ok=True,
+                reason="balance_live_ready",
+            )
+        )
+    else:
+        steps.append(
+            _synthetic_step(
+                name="balance_smoke",
+                status="skipped_disabled",
+                ok=True,
+                reason="balance_smoke_disabled",
+            )
+        )
 
     prior_trader_args = [
         "kalshi-micro-prior-trader",
@@ -1270,6 +1362,7 @@ def main() -> int:
         overall_status = "degraded"
 
     balance_step = next((step for step in steps if step.get("name") == "balance_heartbeat"), None)
+    balance_smoke_step = next((step for step in steps if step.get("name") == "balance_smoke"), None)
     frontier_step = next((step for step in steps if step.get("name") == "execution_frontier_refresh"), None)
     weather_prior_step = next((step for step in steps if step.get("name") == "weather_prior_refresh"), None)
     weather_prior_state_after = _weather_prior_state(
@@ -1281,6 +1374,10 @@ def main() -> int:
     live_blockers: list[str] = []
     if isinstance(balance_step, dict) and not bool(balance_step.get("balance_live_ready")):
         live_blockers.extend(list(balance_step.get("balance_blockers") or []))
+    if isinstance(balance_smoke_step, dict) and not bool(balance_smoke_step.get("kalshi_ok")):
+        failure_kind = str(balance_smoke_step.get("kalshi_failure_kind") or "").strip()
+        if failure_kind:
+            live_blockers.append(f"balance_smoke_{failure_kind}")
     if isinstance(frontier_step, dict):
         frontier_status = str(frontier_step.get("status") or "").strip().lower()
         if frontier_status and frontier_status != "ready":
@@ -1330,6 +1427,26 @@ def main() -> int:
         "live_ready": live_ready,
         "live_blockers": live_blockers,
         "balance_heartbeat": top_level_balance,
+        "balance_smoke_status": (
+            balance_smoke_step.get("smoke_status")
+            if isinstance(balance_smoke_step, dict)
+            else None
+        ),
+        "balance_smoke_failure_kind": (
+            balance_smoke_step.get("kalshi_failure_kind")
+            if isinstance(balance_smoke_step, dict)
+            else None
+        ),
+        "balance_smoke_http_status": (
+            balance_smoke_step.get("kalshi_http_status")
+            if isinstance(balance_smoke_step, dict)
+            else None
+        ),
+        "balance_smoke_message": (
+            balance_smoke_step.get("kalshi_message")
+            if isinstance(balance_smoke_step, dict)
+            else None
+        ),
         "execution_frontier": top_level_frontier,
         "decision_identity": decision_identity,
         "top_market_ticker": decision_identity.get("top_market_ticker"),
