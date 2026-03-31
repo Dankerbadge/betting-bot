@@ -25,12 +25,20 @@ FRONTIER_BUCKET_FIELDNAMES = [
     "markout_10s_side_adjusted",
     "markout_60s_side_adjusted",
     "markout_300s_side_adjusted",
+    "markout_10s_samples",
+    "markout_60s_samples",
+    "markout_300s_samples",
+    "markout_horizons_trusted",
+    "markout_horizons_untrusted_reason",
     "fee_spread_cancel_leakage_dollars_per_order",
     "expected_net_edge_after_costs_per_contract",
     "break_even_edge_per_contract",
 ]
 
 _DECIMAL_ZERO = Decimal("0")
+_DEFAULT_MIN_MARKOUT_SAMPLES_10S = 3
+_DEFAULT_MIN_MARKOUT_SAMPLES_60S = 3
+_DEFAULT_MIN_MARKOUT_SAMPLES_300S = 2
 
 
 def _parse_float(value: Any) -> float | None:
@@ -197,6 +205,9 @@ def run_kalshi_execution_frontier(
     journal_db_path: str | None = None,
     history_csv: str | None = None,
     recent_events: int = 20000,
+    min_markout_samples_10s: int = _DEFAULT_MIN_MARKOUT_SAMPLES_10S,
+    min_markout_samples_60s: int = _DEFAULT_MIN_MARKOUT_SAMPLES_60S,
+    min_markout_samples_300s: int = _DEFAULT_MIN_MARKOUT_SAMPLES_300S,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     captured_at = now or datetime.now(timezone.utc)
@@ -204,6 +215,9 @@ def run_kalshi_execution_frontier(
     out_dir.mkdir(parents=True, exist_ok=True)
     journal_path = Path(journal_db_path) if journal_db_path else default_execution_journal_db_path(output_dir)
     history_path = Path(history_csv) if history_csv else (out_dir / "kalshi_nonsports_history.csv")
+    safe_min_markout_samples_10s = max(1, int(min_markout_samples_10s))
+    safe_min_markout_samples_60s = max(1, int(min_markout_samples_60s))
+    safe_min_markout_samples_300s = max(1, int(min_markout_samples_300s))
 
     events = load_execution_events(
         journal_db_path=journal_path,
@@ -248,6 +262,12 @@ def run_kalshi_execution_frontier(
                 "markout_10s_weighted": 0.0,
                 "markout_60s_weighted": 0.0,
                 "markout_300s_weighted": 0.0,
+                "markout_10s_contracts": 0.0,
+                "markout_60s_contracts": 0.0,
+                "markout_300s_contracts": 0.0,
+                "markout_10s_samples": 0,
+                "markout_60s_samples": 0,
+                "markout_300s_samples": 0,
                 "markout_contracts": 0.0,
             },
         )
@@ -307,10 +327,16 @@ def run_kalshi_execution_frontier(
                     )
                 if 10 in markouts:
                     order["markout_10s_weighted"] += markouts[10] * fill_contracts
+                    order["markout_10s_contracts"] += fill_contracts
+                    order["markout_10s_samples"] += 1
                 if 60 in markouts:
                     order["markout_60s_weighted"] += markouts[60] * fill_contracts
+                    order["markout_60s_contracts"] += fill_contracts
+                    order["markout_60s_samples"] += 1
                 if 300 in markouts:
                     order["markout_300s_weighted"] += markouts[300] * fill_contracts
+                    order["markout_300s_contracts"] += fill_contracts
+                    order["markout_300s_samples"] += 1
                 if markouts:
                     order["markout_contracts"] += fill_contracts
                     fill_samples.append(
@@ -360,6 +386,9 @@ def run_kalshi_execution_frontier(
                 "markout_10s": [],
                 "markout_60s": [],
                 "markout_300s": [],
+                "markout_10s_samples": 0,
+                "markout_60s_samples": 0,
+                "markout_300s_samples": 0,
                 "leakage_dollars": [],
                 "expected_net_edge_after_costs_per_contract": [],
                 "break_even_edge_per_contract": [],
@@ -377,12 +406,23 @@ def run_kalshi_execution_frontier(
             if delta >= 0:
                 aggregate["time_to_fill_seconds"].append(delta)
         markout_contracts = _parse_float(order.get("markout_contracts")) or 0.0
-        if markout_contracts > 0:
-            markout_10 = (_parse_float(order.get("markout_10s_weighted")) or 0.0) / markout_contracts
-            markout_60 = (_parse_float(order.get("markout_60s_weighted")) or 0.0) / markout_contracts
-            markout_300 = (_parse_float(order.get("markout_300s_weighted")) or 0.0) / markout_contracts
+        markout_10_contracts = _parse_float(order.get("markout_10s_contracts")) or 0.0
+        markout_60_contracts = _parse_float(order.get("markout_60s_contracts")) or 0.0
+        markout_300_contracts = _parse_float(order.get("markout_300s_contracts")) or 0.0
+        markout_10_samples = max(0, int(order.get("markout_10s_samples") or 0))
+        markout_60_samples = max(0, int(order.get("markout_60s_samples") or 0))
+        markout_300_samples = max(0, int(order.get("markout_300s_samples") or 0))
+        aggregate["markout_10s_samples"] += markout_10_samples
+        aggregate["markout_60s_samples"] += markout_60_samples
+        aggregate["markout_300s_samples"] += markout_300_samples
+        if markout_10_contracts > 0:
+            markout_10 = (_parse_float(order.get("markout_10s_weighted")) or 0.0) / markout_10_contracts
             aggregate["markout_10s"].append(markout_10)
+        if markout_60_contracts > 0:
+            markout_60 = (_parse_float(order.get("markout_60s_weighted")) or 0.0) / markout_60_contracts
             aggregate["markout_60s"].append(markout_60)
+        if markout_300_contracts > 0:
+            markout_300 = (_parse_float(order.get("markout_300s_weighted")) or 0.0) / markout_300_contracts
             aggregate["markout_300s"].append(markout_300)
 
         spread = max(_DECIMAL_ZERO, _parse_decimal(order.get("spread_dollars")) or _DECIMAL_ZERO)
@@ -399,8 +439,8 @@ def run_kalshi_execution_frontier(
         )
         spread_leakage = Decimal(str(filled_contracts)) * spread * Decimal("0.5")
         markout_60_per_contract = (
-            ((_parse_float(order.get("markout_60s_weighted")) or 0.0) / markout_contracts)
-            if markout_contracts > 0
+            ((_parse_float(order.get("markout_60s_weighted")) or 0.0) / markout_60_contracts)
+            if markout_60_contracts > 0
             else 0.0
         )
         adverse_selection_cost = max(
@@ -423,6 +463,9 @@ def run_kalshi_execution_frontier(
 
     bucket_rows: list[dict[str, Any]] = []
     break_even_edge_by_bucket: dict[str, float] = {}
+    trusted_break_even_edge_by_bucket: dict[str, float] = {}
+    bucket_markout_sample_counts_by_horizon: dict[str, dict[str, int]] = {}
+    bucket_markout_trust_by_bucket: dict[str, dict[str, Any]] = {}
     for bucket_name in sorted(bucket_map):
         aggregate = bucket_map[bucket_name]
         orders_submitted_count = int(aggregate["orders_submitted"])
@@ -435,6 +478,37 @@ def run_kalshi_execution_frontier(
         break_even_mean = _safe_mean(aggregate["break_even_edge_per_contract"])
         if isinstance(break_even_mean, float):
             break_even_edge_by_bucket[bucket_name] = round(break_even_mean, 6)
+        markout_10s_samples = int(aggregate.get("markout_10s_samples") or 0)
+        markout_60s_samples = int(aggregate.get("markout_60s_samples") or 0)
+        markout_300s_samples = int(aggregate.get("markout_300s_samples") or 0)
+        bucket_markout_sample_counts_by_horizon[bucket_name] = {
+            "10s": markout_10s_samples,
+            "60s": markout_60s_samples,
+            "300s": markout_300s_samples,
+        }
+        untrusted_reasons: list[str] = []
+        if markout_10s_samples < safe_min_markout_samples_10s:
+            untrusted_reasons.append(
+                f"markout_10s_samples_below_min:{markout_10s_samples}<{safe_min_markout_samples_10s}"
+            )
+        if markout_60s_samples < safe_min_markout_samples_60s:
+            untrusted_reasons.append(
+                f"markout_60s_samples_below_min:{markout_60s_samples}<{safe_min_markout_samples_60s}"
+            )
+        if markout_300s_samples < safe_min_markout_samples_300s:
+            untrusted_reasons.append(
+                f"markout_300s_samples_below_min:{markout_300s_samples}<{safe_min_markout_samples_300s}"
+            )
+        markout_horizons_trusted = not untrusted_reasons
+        bucket_markout_trust_by_bucket[bucket_name] = {
+            "trusted": markout_horizons_trusted,
+            "reason": "ready" if markout_horizons_trusted else ";".join(untrusted_reasons),
+            "markout_10s_samples": markout_10s_samples,
+            "markout_60s_samples": markout_60s_samples,
+            "markout_300s_samples": markout_300s_samples,
+        }
+        if isinstance(break_even_mean, float) and markout_horizons_trusted:
+            trusted_break_even_edge_by_bucket[bucket_name] = round(break_even_mean, 6)
         bucket_rows.append(
             {
                 "bucket": bucket_name,
@@ -458,6 +532,13 @@ def run_kalshi_execution_frontier(
                     if _safe_mean(aggregate["markout_300s"]) is not None
                     else ""
                 ),
+                "markout_10s_samples": markout_10s_samples,
+                "markout_60s_samples": markout_60s_samples,
+                "markout_300s_samples": markout_300s_samples,
+                "markout_horizons_trusted": markout_horizons_trusted,
+                "markout_horizons_untrusted_reason": (
+                    "ready" if markout_horizons_trusted else ";".join(untrusted_reasons)
+                ),
                 "fee_spread_cancel_leakage_dollars_per_order": (
                     round(_safe_mean(aggregate["leakage_dollars"]), 6)
                     if _safe_mean(aggregate["leakage_dollars"]) is not None
@@ -474,10 +555,19 @@ def run_kalshi_execution_frontier(
             }
         )
 
-    status = "ready" if submitted_orders and fill_samples else "insufficient_data"
+    status = (
+        "ready"
+        if submitted_orders and fill_samples and trusted_break_even_edge_by_bucket
+        else "insufficient_data"
+    )
     recommendations: list[str] = []
     if status == "insufficient_data":
-        recommendations.append("Need real probe fills before gating live orders by execution frontier.")
+        if not submitted_orders or not fill_samples:
+            recommendations.append("Need real probe fills before gating live orders by execution frontier.")
+        elif not trusted_break_even_edge_by_bucket:
+            recommendations.append(
+                "Execution frontier has fills but not enough per-horizon markout samples; continue probe fills before bucket gating."
+            )
     else:
         overall_fill_rate = len(filled_orders) / max(1, len(submitted_orders))
         overall_full_fill_rate = len(full_filled_orders) / max(1, len(submitted_orders))
@@ -514,6 +604,12 @@ def run_kalshi_execution_frontier(
         "full_filled_orders": len(full_filled_orders),
         "fill_samples_with_markout": len(fill_samples),
         "break_even_edge_by_bucket": break_even_edge_by_bucket,
+        "trusted_break_even_edge_by_bucket": trusted_break_even_edge_by_bucket,
+        "bucket_markout_sample_counts_by_horizon": bucket_markout_sample_counts_by_horizon,
+        "bucket_markout_trust_by_bucket": bucket_markout_trust_by_bucket,
+        "min_markout_samples_10s": safe_min_markout_samples_10s,
+        "min_markout_samples_60s": safe_min_markout_samples_60s,
+        "min_markout_samples_300s": safe_min_markout_samples_300s,
         "bucket_rows": bucket_rows,
         "bucket_csv": str(bucket_csv_path),
         "recommendations": recommendations,

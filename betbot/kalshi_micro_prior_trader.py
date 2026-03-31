@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from contextlib import nullcontext
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 import time
@@ -378,6 +378,34 @@ def _ready_for_auto_live_order(
     return True, "Manual live readiness is clear and the capital-efficiency thresholds pass for unattended auto-live."
 
 
+def _build_post_live_markout_capture_offsets_seconds(
+    *,
+    delay_seconds: float,
+    window_seconds: float,
+    interval_seconds: float,
+    max_runs: int,
+) -> list[float]:
+    safe_max_runs = max(1, int(max_runs))
+    safe_delay = max(0.0, float(delay_seconds))
+    safe_window = max(0.0, float(window_seconds))
+    safe_interval = max(0.0, float(interval_seconds))
+
+    offsets: list[float] = [safe_delay]
+    if safe_window <= 1e-9 or safe_interval <= 1e-9:
+        return offsets[:safe_max_runs]
+
+    window_end = safe_delay + safe_window
+    next_offset = safe_delay + safe_interval
+    while next_offset <= window_end + 1e-9 and len(offsets) < safe_max_runs:
+        offsets.append(next_offset)
+        next_offset += safe_interval
+
+    if len(offsets) < safe_max_runs and offsets[-1] < window_end - 1e-9:
+        offsets.append(window_end)
+
+    return offsets[:safe_max_runs]
+
+
 def run_kalshi_micro_prior_trader(
     *,
     env_file: str,
@@ -438,6 +466,9 @@ def run_kalshi_micro_prior_trader(
     auto_prior_disallowed_categories: tuple[str, ...] | None = ("Sports",),
     post_live_markout_capture_enabled: bool = True,
     post_live_markout_capture_delay_seconds: float = 10.0,
+    post_live_markout_capture_window_seconds: float = 300.0,
+    post_live_markout_capture_interval_seconds: float = 30.0,
+    post_live_markout_capture_max_runs: int = 20,
     post_live_markout_capture_page_limit: int = 100,
     post_live_markout_capture_max_pages: int = 3,
     capture_before_execute: bool = True,
@@ -487,7 +518,7 @@ def run_kalshi_micro_prior_trader(
 
     weather_prior_summary: dict[str, Any] | None = None
     weather_prewarm_summary: dict[str, Any] | None = None
-    post_live_markout_capture_summary: dict[str, Any] | None = None
+    post_live_markout_capture_summaries: list[dict[str, Any]] = []
     weather_prior_refresh_attempts = 0
     weather_prewarm_fallback_triggered = False
     weather_prewarm_fallback_reason: str | None = None
@@ -766,6 +797,9 @@ def run_kalshi_micro_prior_trader(
         "capture_max_pages": max(1, capture_max_pages),
         "post_live_markout_capture_enabled": bool(post_live_markout_capture_enabled),
         "post_live_markout_capture_delay_seconds": max(0.0, float(post_live_markout_capture_delay_seconds)),
+        "post_live_markout_capture_window_seconds": max(0.0, float(post_live_markout_capture_window_seconds)),
+        "post_live_markout_capture_interval_seconds": max(0.0, float(post_live_markout_capture_interval_seconds)),
+        "post_live_markout_capture_max_runs": max(1, int(post_live_markout_capture_max_runs)),
         "post_live_markout_capture_page_limit": max(1, int(post_live_markout_capture_page_limit)),
         "post_live_markout_capture_max_pages": max(1, int(post_live_markout_capture_max_pages)),
         "enforce_daily_weather_live_only": bool(enforce_daily_weather_live_only),
@@ -803,10 +837,15 @@ def run_kalshi_micro_prior_trader(
         "post_live_markout_capture_attempted": False,
         "post_live_markout_capture_status": "skipped",
         "post_live_markout_capture_error": None,
+        "post_live_markout_capture_runs_total": 0,
+        "post_live_markout_capture_successful_runs": 0,
+        "post_live_markout_capture_failed_runs": 0,
         "post_live_markout_capture_rows_appended": 0,
+        "post_live_markout_capture_rows_appended_total": 0,
         "post_live_markout_capture_scan_page_requests": None,
         "post_live_markout_capture_scan_search_health_status": None,
         "post_live_markout_capture_summary_file": None,
+        "post_live_markout_capture_summary_files": [],
         "book_db_path": book_db_path,
         "execution_event_log_csv": execution_event_log_csv,
         "execution_journal_db_path": execution_journal_db_path,
@@ -1069,28 +1108,38 @@ def run_kalshi_micro_prior_trader(
                     and bool(post_live_markout_capture_enabled)
                     and execute_status in {"live_submitted", "live_submitted_and_canceled"}
                 ):
-                    delay_seconds = max(0.0, float(post_live_markout_capture_delay_seconds))
-                    if delay_seconds > 0.0:
-                        sleep_fn(delay_seconds)
-                    capture_timestamp = datetime.now(timezone.utc)
-                    try:
-                        post_live_markout_capture_summary = capture_runner(
-                            env_file=execute_env_file,
-                            output_dir=output_dir,
-                            history_csv=effective_history_csv,
-                            timeout_seconds=timeout_seconds,
-                            excluded_categories=("Sports",),
-                            max_hours_to_close=capture_max_hours_to_close,
-                            page_limit=max(1, int(post_live_markout_capture_page_limit)),
-                            max_pages=max(1, int(post_live_markout_capture_max_pages)),
-                            now=capture_timestamp,
-                        )
-                    except Exception as exc:
-                        post_live_markout_capture_summary = {
-                            "status": "error",
-                            "scan_error": str(exc),
-                            "history_csv": effective_history_csv,
-                        }
+                    capture_offsets = _build_post_live_markout_capture_offsets_seconds(
+                        delay_seconds=post_live_markout_capture_delay_seconds,
+                        window_seconds=post_live_markout_capture_window_seconds,
+                        interval_seconds=post_live_markout_capture_interval_seconds,
+                        max_runs=post_live_markout_capture_max_runs,
+                    )
+                    slept_seconds = 0.0
+                    for capture_offset in capture_offsets:
+                        sleep_interval = max(0.0, capture_offset - slept_seconds)
+                        if sleep_interval > 0.0:
+                            sleep_fn(sleep_interval)
+                            slept_seconds = capture_offset
+                        capture_timestamp = captured_at + timedelta(seconds=capture_offset)
+                        try:
+                            capture_summary_entry = capture_runner(
+                                env_file=execute_env_file,
+                                output_dir=output_dir,
+                                history_csv=effective_history_csv,
+                                timeout_seconds=timeout_seconds,
+                                excluded_categories=("Sports",),
+                                max_hours_to_close=capture_max_hours_to_close,
+                                page_limit=max(1, int(post_live_markout_capture_page_limit)),
+                                max_pages=max(1, int(post_live_markout_capture_max_pages)),
+                                now=capture_timestamp,
+                            )
+                        except Exception as exc:
+                            capture_summary_entry = {
+                                "status": "error",
+                                "scan_error": str(exc),
+                                "history_csv": effective_history_csv,
+                            }
+                        post_live_markout_capture_summaries.append(capture_summary_entry)
 
                 reconcile_summary = reconcile_runner(
                     env_file=execute_env_file,
@@ -1100,41 +1149,74 @@ def run_kalshi_micro_prior_trader(
                     timeout_seconds=timeout_seconds,
                     now=captured_at,
                 )
+                capture_runs_total = len(post_live_markout_capture_summaries)
+                capture_successful_runs = sum(
+                    1
+                    for item in post_live_markout_capture_summaries
+                    if str(item.get("status") or "").strip().lower() == "ready"
+                )
+                capture_failed_runs = max(0, capture_runs_total - capture_successful_runs)
+                capture_rows_appended_total = sum(
+                    int(item.get("rows_appended") or 0) for item in post_live_markout_capture_summaries
+                )
+                capture_last_summary = (
+                    post_live_markout_capture_summaries[-1] if post_live_markout_capture_summaries else None
+                )
+                capture_summary_files = [
+                    str(item.get("scan_summary_file") or "").strip()
+                    for item in post_live_markout_capture_summaries
+                    if str(item.get("scan_summary_file") or "").strip()
+                ]
+                if capture_runs_total <= 0:
+                    post_live_capture_status = "skipped"
+                elif capture_failed_runs <= 0:
+                    post_live_capture_status = "ready"
+                elif capture_successful_runs > 0:
+                    post_live_capture_status = "degraded"
+                else:
+                    post_live_capture_status = "error"
+                post_live_capture_error = None
+                if capture_failed_runs > 0:
+                    for item in post_live_markout_capture_summaries:
+                        error_text = str(item.get("scan_error") or "").strip()
+                        if error_text:
+                            post_live_capture_error = error_text
+                            break
+                    if post_live_capture_error is None:
+                        post_live_capture_error = "post_live_capture_failed"
+
                 summary.update(
                     {
                         "reconcile_status": reconcile_summary.get("status"),
                         "reconcile_summary_file": reconcile_summary.get("output_file"),
-                        "post_live_markout_capture_attempted": isinstance(post_live_markout_capture_summary, dict),
-                        "post_live_markout_capture_status": (
-                            post_live_markout_capture_summary.get("status")
-                            if isinstance(post_live_markout_capture_summary, dict)
-                            else "skipped"
-                        ),
-                        "post_live_markout_capture_error": (
-                            post_live_markout_capture_summary.get("scan_error")
-                            if isinstance(post_live_markout_capture_summary, dict)
-                            else None
-                        ),
+                        "post_live_markout_capture_attempted": capture_runs_total > 0,
+                        "post_live_markout_capture_status": post_live_capture_status,
+                        "post_live_markout_capture_error": post_live_capture_error,
+                        "post_live_markout_capture_runs_total": capture_runs_total,
+                        "post_live_markout_capture_successful_runs": capture_successful_runs,
+                        "post_live_markout_capture_failed_runs": capture_failed_runs,
                         "post_live_markout_capture_rows_appended": (
-                            post_live_markout_capture_summary.get("rows_appended")
-                            if isinstance(post_live_markout_capture_summary, dict)
+                            capture_last_summary.get("rows_appended")
+                            if isinstance(capture_last_summary, dict)
                             else 0
                         ),
+                        "post_live_markout_capture_rows_appended_total": capture_rows_appended_total,
                         "post_live_markout_capture_scan_page_requests": (
-                            post_live_markout_capture_summary.get("scan_page_requests")
-                            if isinstance(post_live_markout_capture_summary, dict)
+                            capture_last_summary.get("scan_page_requests")
+                            if isinstance(capture_last_summary, dict)
                             else None
                         ),
                         "post_live_markout_capture_scan_search_health_status": (
-                            post_live_markout_capture_summary.get("scan_search_health_status")
-                            if isinstance(post_live_markout_capture_summary, dict)
+                            capture_last_summary.get("scan_search_health_status")
+                            if isinstance(capture_last_summary, dict)
                             else None
                         ),
                         "post_live_markout_capture_summary_file": (
-                            post_live_markout_capture_summary.get("scan_summary_file")
-                            if isinstance(post_live_markout_capture_summary, dict)
+                            capture_last_summary.get("scan_summary_file")
+                            if isinstance(capture_last_summary, dict)
                             else None
                         ),
+                        "post_live_markout_capture_summary_files": capture_summary_files,
                     }
                 )
                 execute_status = str(execute_summary.get("status") or "")

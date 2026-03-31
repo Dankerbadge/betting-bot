@@ -1152,6 +1152,67 @@ class KalshiMicroPriorTraderTests(unittest.TestCase):
             self.assertFalse(summary["weather_prewarm_fallback_triggered"])
             self.assertEqual(summary["weather_prior_refresh_attempts"], 1)
 
+    def test_run_kalshi_micro_prior_trader_runs_continuous_post_live_markout_capture_loop(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            env_file = base / "env.txt"
+            env_file.write_text("KALSHI_ENV=prod\n", encoding="utf-8")
+            capture_calls: list[dict[str, object]] = []
+            sleep_calls: list[float] = []
+
+            def fake_capture_runner(**kwargs):
+                capture_calls.append(kwargs)
+                return {
+                    "status": "ready",
+                    "history_csv": str(base / "history.csv"),
+                    "scan_summary_file": str(base / f"capture_{len(capture_calls)}.json"),
+                    "rows_appended": 1,
+                    "scan_page_requests": 2,
+                    "scan_search_health_status": "ready",
+                }
+
+            summary = run_kalshi_micro_prior_trader(
+                env_file=str(env_file),
+                output_dir=str(base),
+                allow_live_orders=True,
+                auto_refresh_weather_priors=False,
+                capture_before_execute=True,
+                capture_runner=fake_capture_runner,
+                prior_execute_runner=lambda **kwargs: {
+                    "status": "live_submitted",
+                    "prior_trade_gate_summary": {
+                        "gate_pass": True,
+                        "gate_status": "pass",
+                        "gate_score": 90.0,
+                        "gate_blockers": [],
+                    },
+                    "output_file": str(base / "prior_execute.json"),
+                    "execute_summary_file": str(base / "execute_summary.json"),
+                    "execute_output_csv": str(base / "execute.csv"),
+                    "plan_summary_file": str(base / "plan.json"),
+                },
+                reconcile_runner=lambda **kwargs: {
+                    "status": "ready",
+                    "output_file": str(base / "reconcile.json"),
+                },
+                post_live_markout_capture_delay_seconds=10.0,
+                post_live_markout_capture_window_seconds=120.0,
+                post_live_markout_capture_interval_seconds=50.0,
+                post_live_markout_capture_max_runs=10,
+                sleep_fn=lambda seconds: sleep_calls.append(round(float(seconds), 3)),
+                now=datetime(2026, 3, 27, 21, 0, tzinfo=timezone.utc),
+            )
+
+            # One pre-execute capture + 4 post-live capture runs.
+            self.assertEqual(len(capture_calls), 5)
+            self.assertEqual(sleep_calls, [10.0, 50.0, 50.0, 20.0])
+            self.assertTrue(summary["post_live_markout_capture_attempted"])
+            self.assertEqual(summary["post_live_markout_capture_status"], "ready")
+            self.assertEqual(summary["post_live_markout_capture_runs_total"], 4)
+            self.assertEqual(summary["post_live_markout_capture_successful_runs"], 4)
+            self.assertEqual(summary["post_live_markout_capture_failed_runs"], 0)
+            self.assertEqual(summary["post_live_markout_capture_rows_appended_total"], 4)
+
 
 if __name__ == "__main__":
     unittest.main()

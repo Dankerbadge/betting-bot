@@ -423,24 +423,28 @@ def _execution_frontier_bucket_for_attempt(attempt: dict[str, Any]) -> str:
     return f"{aggr_bucket}|{spread_bucket}|{ttc_bucket}"
 
 
-def _load_latest_break_even_edges_by_bucket(output_dir: str) -> tuple[dict[str, float], str | None]:
+def _load_latest_break_even_edges_by_bucket(
+    output_dir: str,
+) -> tuple[dict[str, float], str | None, dict[str, dict[str, Any]]]:
     out_dir = Path(output_dir)
     candidates = sorted(
         out_dir.glob("execution_frontier_report_*.json"),
         key=lambda path: path.stat().st_mtime,
     )
     if not candidates:
-        return {}, None
+        return {}, None, {}
     latest_path = candidates[-1]
     try:
         payload = json.loads(latest_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return {}, str(latest_path)
+        return {}, str(latest_path), {}
     if not isinstance(payload, dict):
-        return {}, str(latest_path)
-    raw = payload.get("break_even_edge_by_bucket")
+        return {}, str(latest_path), {}
+    raw = payload.get("trusted_break_even_edge_by_bucket")
     if not isinstance(raw, dict):
-        return {}, str(latest_path)
+        raw = payload.get("break_even_edge_by_bucket")
+    if not isinstance(raw, dict):
+        return {}, str(latest_path), {}
     edges: dict[str, float] = {}
     for bucket, value in raw.items():
         if not isinstance(bucket, str):
@@ -448,7 +452,20 @@ def _load_latest_break_even_edges_by_bucket(output_dir: str) -> tuple[dict[str, 
         parsed = _parse_float(value)
         if isinstance(parsed, float):
             edges[bucket] = float(parsed)
-    return edges, str(latest_path)
+    bucket_trust_raw = payload.get("bucket_markout_trust_by_bucket")
+    bucket_trust_by_bucket: dict[str, dict[str, Any]] = {}
+    if isinstance(bucket_trust_raw, dict):
+        for bucket, trust_payload in bucket_trust_raw.items():
+            if not isinstance(bucket, str) or not isinstance(trust_payload, dict):
+                continue
+            bucket_trust_by_bucket[bucket] = {
+                "trusted": bool(trust_payload.get("trusted")),
+                "reason": str(trust_payload.get("reason") or "").strip(),
+                "markout_10s_samples": int(trust_payload.get("markout_10s_samples") or 0),
+                "markout_60s_samples": int(trust_payload.get("markout_60s_samples") or 0),
+                "markout_300s_samples": int(trust_payload.get("markout_300s_samples") or 0),
+            }
+    return edges, str(latest_path), bucket_trust_by_bucket
 
 
 def _signed_kalshi_request(
@@ -777,6 +794,11 @@ def _write_attempts_csv(path: Path, attempts: list[dict[str, Any]]) -> None:
         "execution_policy_reason",
         "execution_frontier_bucket",
         "execution_frontier_break_even_edge_per_contract_dollars",
+        "execution_frontier_bucket_markout_trusted",
+        "execution_frontier_bucket_markout_trust_reason",
+        "execution_frontier_bucket_markout_10s_samples",
+        "execution_frontier_bucket_markout_60s_samples",
+        "execution_frontier_bucket_markout_300s_samples",
         "planned_yes_bid_dollars",
         "planned_yes_ask_dollars",
         "current_best_yes_bid_dollars",
@@ -1100,7 +1122,11 @@ def run_kalshi_micro_execute(
         journal_path = default_execution_journal_db_path(output_dir)
         execution_journal_legacy_alias_used = False
     journal_events: list[dict[str, Any]] = []
-    execution_frontier_break_even_by_bucket, execution_frontier_break_even_reference_file = (
+    (
+        execution_frontier_break_even_by_bucket,
+        execution_frontier_break_even_reference_file,
+        execution_frontier_bucket_trust_by_bucket,
+    ) = (
         _load_latest_break_even_edges_by_bucket(output_dir)
     )
 
@@ -1293,6 +1319,11 @@ def run_kalshi_micro_execute(
                 "execution_policy_reason": "",
                 "execution_frontier_bucket": "",
                 "execution_frontier_break_even_edge_per_contract_dollars": "",
+                "execution_frontier_bucket_markout_trusted": "",
+                "execution_frontier_bucket_markout_trust_reason": "",
+                "execution_frontier_bucket_markout_10s_samples": "",
+                "execution_frontier_bucket_markout_60s_samples": "",
+                "execution_frontier_bucket_markout_300s_samples": "",
                 "planned_yes_bid_dollars": plan.get("maker_yes_price_dollars"),
                 "planned_yes_ask_dollars": plan.get("yes_ask_dollars"),
                 "current_best_yes_bid_dollars": orderbook.get("best_yes_bid_dollars", ""),
@@ -1344,6 +1375,13 @@ def run_kalshi_micro_execute(
             )
             frontier_bucket = _execution_frontier_bucket_for_attempt(attempt)
             attempt["execution_frontier_bucket"] = frontier_bucket
+            bucket_trust = execution_frontier_bucket_trust_by_bucket.get(frontier_bucket, {})
+            if bucket_trust:
+                attempt["execution_frontier_bucket_markout_trusted"] = bool(bucket_trust.get("trusted"))
+                attempt["execution_frontier_bucket_markout_trust_reason"] = str(bucket_trust.get("reason") or "").strip()
+                attempt["execution_frontier_bucket_markout_10s_samples"] = int(bucket_trust.get("markout_10s_samples") or 0)
+                attempt["execution_frontier_bucket_markout_60s_samples"] = int(bucket_trust.get("markout_60s_samples") or 0)
+                attempt["execution_frontier_bucket_markout_300s_samples"] = int(bucket_trust.get("markout_300s_samples") or 0)
             empirical_break_even = execution_frontier_break_even_by_bucket.get(frontier_bucket)
             if isinstance(empirical_break_even, float):
                 empirical_break_even = round(empirical_break_even, 6)
@@ -1370,7 +1408,10 @@ def run_kalshi_micro_execute(
                     attempt["execution_policy_reason"] = "execution_frontier_insufficient_data"
                 elif empirical_break_even is None:
                     attempt["execution_policy_decision"] = "skip"
-                    attempt["execution_policy_reason"] = "missing_empirical_break_even_bucket"
+                    if bucket_trust and not bool(bucket_trust.get("trusted")):
+                        attempt["execution_policy_reason"] = "insufficient_empirical_markout_samples_bucket"
+                    else:
+                        attempt["execution_policy_reason"] = "missing_empirical_break_even_bucket"
             _append_journal_event("candidate_seen", attempt)
             _append_book_snapshot_event(
                 attempt,
