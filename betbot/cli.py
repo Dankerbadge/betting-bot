@@ -1586,9 +1586,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     kalshi_micro_prior_execute.add_argument(
         "--enforce-ws-state-authority",
+        dest="enforce_ws_state_authority",
         action="store_true",
-        help="Fail closed for live orders unless websocket state is ready (not missing/stale/desynced)",
+        help="Fail closed for live orders unless websocket state is ready (not missing/stale/desynced). Default: enabled.",
     )
+    kalshi_micro_prior_execute.add_argument(
+        "--disable-enforce-ws-state-authority",
+        dest="enforce_ws_state_authority",
+        action="store_false",
+        help="Disable websocket-state authority gating (not recommended for unattended live mode)",
+    )
+    kalshi_micro_prior_execute.set_defaults(enforce_ws_state_authority=True)
     kalshi_micro_prior_execute.add_argument(
         "--ws-state-json",
         default=None,
@@ -1604,6 +1612,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--include-incentives",
         action="store_true",
         help="Include incentive-program bonus estimates in prior net-edge calculations",
+    )
+    kalshi_micro_prior_execute.add_argument(
+        "--daily-weather-board-max-age-seconds",
+        type=float,
+        default=900.0,
+        help="Maximum allowed age for daily-weather board snapshot before live daily-weather gating blocks",
     )
     kalshi_micro_prior_execute.add_argument("--output-dir", default="outputs", help="Output directory")
 
@@ -1702,6 +1716,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--disable-daily-weather-board-coverage",
         action="store_true",
         help="Allow live mode even when captured history is missing daily weather board coverage",
+    )
+    kalshi_micro_prior_trader.add_argument(
+        "--daily-weather-board-max-age-seconds",
+        type=float,
+        default=900.0,
+        help="Maximum allowed age for daily-weather board snapshot before live daily-weather gating blocks",
     )
     kalshi_micro_prior_trader.add_argument(
         "--allow-live-orders",
@@ -1839,6 +1859,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Skip weather-specific prior refresh before news auto-prior refresh",
     )
     kalshi_micro_prior_trader.add_argument(
+        "--disable-auto-prewarm-weather-station-history",
+        action="store_true",
+        help="Skip station-day climatology prewarm before weather-prior refresh",
+    )
+    kalshi_micro_prior_trader.add_argument(
         "--auto-weather-prior-max-markets",
         type=int,
         default=30,
@@ -1848,6 +1873,24 @@ def build_parser() -> argparse.ArgumentParser:
         "--auto-weather-allowed-contract-families",
         default="daily_rain,daily_temperature",
         help="Comma-separated weather contract families for weather-prior refresh",
+    )
+    kalshi_micro_prior_trader.add_argument(
+        "--auto-weather-prewarm-max-station-day-keys",
+        type=int,
+        default=500,
+        help="Maximum unique station/day keys to prewarm each unattended trader cycle",
+    )
+    kalshi_micro_prior_trader.add_argument(
+        "--auto-weather-historical-lookback-years",
+        type=int,
+        default=15,
+        help="Station-history lookback years used by weather prewarm and weather priors",
+    )
+    kalshi_micro_prior_trader.add_argument(
+        "--auto-weather-station-history-cache-max-age-hours",
+        type=float,
+        default=24.0,
+        help="Maximum cache age for station-history snapshots before refresh",
     )
     kalshi_micro_prior_trader.add_argument(
         "--disable-auto-refresh-priors",
@@ -4311,6 +4354,7 @@ def main() -> None:
             ws_state_max_age_seconds=args.ws_state_max_age_seconds,
             enforce_daily_weather_live_only=not args.disable_daily_weather_live_only,
             require_daily_weather_board_coverage_for_live=not args.disable_daily_weather_board_coverage,
+            daily_weather_board_max_age_seconds=args.daily_weather_board_max_age_seconds,
             include_incentives=args.include_incentives,
         )
     elif args.command == "kalshi-micro-prior-trader":
@@ -4361,14 +4405,19 @@ def main() -> None:
             ws_state_max_age_seconds=args.ws_state_max_age_seconds,
             enforce_daily_weather_live_only=not args.disable_daily_weather_live_only,
             require_daily_weather_board_coverage_for_live=not args.disable_daily_weather_board_coverage,
+            daily_weather_board_max_age_seconds=args.daily_weather_board_max_age_seconds,
             capture_before_execute=not args.skip_capture,
             capture_max_hours_to_close=args.max_hours_to_close,
             capture_page_limit=args.page_limit,
             capture_max_pages=args.max_pages,
             use_temporary_live_env=args.use_temp_live_env,
             auto_refresh_weather_priors=not args.disable_auto_refresh_weather_priors,
+            auto_prewarm_weather_station_history=not args.disable_auto_prewarm_weather_station_history,
             auto_weather_prior_max_markets=args.auto_weather_prior_max_markets,
             auto_weather_allowed_contract_families=auto_weather_allowed_contract_families,
+            auto_weather_prewarm_max_station_day_keys=args.auto_weather_prewarm_max_station_day_keys,
+            auto_weather_historical_lookback_years=args.auto_weather_historical_lookback_years,
+            auto_weather_station_history_cache_max_age_hours=args.auto_weather_station_history_cache_max_age_hours,
         )
     elif args.command == "kalshi-micro-prior-watch":
         summary = run_kalshi_micro_prior_watch(

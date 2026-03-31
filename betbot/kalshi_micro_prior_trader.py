@@ -12,7 +12,7 @@ from betbot.kalshi_micro_reconcile import run_kalshi_micro_reconcile
 from betbot.kalshi_micro_watch_history import default_watch_history_path, summarize_watch_history
 from betbot.kalshi_nonsports_auto_priors import run_kalshi_nonsports_auto_priors
 from betbot.kalshi_nonsports_capture import run_kalshi_nonsports_capture
-from betbot.kalshi_weather_priors import run_kalshi_weather_priors
+from betbot.kalshi_weather_priors import run_kalshi_weather_priors, run_kalshi_weather_station_history_prewarm
 from betbot.live_smoke import HttpGetter, KalshiSigner, _http_get_json, _kalshi_sign_request
 from betbot.kalshi_micro_execute import _http_request_json
 from betbot.temporary_live_env import temporary_live_env_file
@@ -23,6 +23,7 @@ PriorExecuteRunner = Callable[..., dict[str, Any]]
 ReconcileRunner = Callable[..., dict[str, Any]]
 AutoPriorRunner = Callable[..., dict[str, Any]]
 WeatherPriorRunner = Callable[..., dict[str, Any]]
+WeatherPrewarmRunner = Callable[..., dict[str, Any]]
 
 _FAILURE_ATTEMPT_RESULTS = {
     "orderbook_unavailable",
@@ -413,8 +414,13 @@ def run_kalshi_micro_prior_trader(
     ws_state_max_age_seconds: float = 30.0,
     enforce_daily_weather_live_only: bool = True,
     require_daily_weather_board_coverage_for_live: bool = True,
+    daily_weather_board_max_age_seconds: float = 900.0,
     auto_refresh_weather_priors: bool = True,
+    auto_prewarm_weather_station_history: bool = True,
     auto_weather_prior_max_markets: int = 30,
+    auto_weather_prewarm_max_station_day_keys: int = 500,
+    auto_weather_historical_lookback_years: int = 15,
+    auto_weather_station_history_cache_max_age_hours: float = 24.0,
     auto_weather_allowed_contract_families: tuple[str, ...] = (
         "daily_rain",
         "daily_temperature",
@@ -437,6 +443,7 @@ def run_kalshi_micro_prior_trader(
     http_get_json: HttpGetter = _http_get_json,
     sign_request: KalshiSigner = _kalshi_sign_request,
     capture_runner: CaptureRunner = run_kalshi_nonsports_capture,
+    weather_prewarm_runner: WeatherPrewarmRunner = run_kalshi_weather_station_history_prewarm,
     weather_prior_runner: WeatherPriorRunner = run_kalshi_weather_priors,
     auto_prior_runner: AutoPriorRunner = run_kalshi_nonsports_auto_priors,
     prior_execute_runner: PriorExecuteRunner = run_kalshi_micro_prior_execute,
@@ -472,10 +479,24 @@ def run_kalshi_micro_prior_trader(
         )
 
     weather_prior_summary: dict[str, Any] | None = None
+    weather_prewarm_summary: dict[str, Any] | None = None
     if auto_refresh_weather_priors:
         history_path = Path(effective_history_csv)
         if history_path.exists():
             try:
+                if auto_prewarm_weather_station_history:
+                    weather_prewarm_summary = weather_prewarm_runner(
+                        history_csv=effective_history_csv,
+                        output_dir=output_dir,
+                        historical_lookback_years=max(1, int(auto_weather_historical_lookback_years)),
+                        station_history_cache_max_age_hours=max(
+                            0.0,
+                            float(auto_weather_station_history_cache_max_age_hours),
+                        ),
+                        timeout_seconds=timeout_seconds,
+                        max_station_day_keys=max(1, int(auto_weather_prewarm_max_station_day_keys)),
+                        now=captured_at,
+                    )
                 weather_prior_summary = weather_prior_runner(
                     priors_csv=priors_csv,
                     history_csv=effective_history_csv,
@@ -483,6 +504,8 @@ def run_kalshi_micro_prior_trader(
                     allowed_contract_families=auto_weather_allowed_contract_families,
                     max_markets=max(1, auto_weather_prior_max_markets),
                     timeout_seconds=timeout_seconds,
+                    historical_lookback_years=max(1, int(auto_weather_historical_lookback_years)),
+                    station_history_cache_max_age_hours=max(0.0, float(auto_weather_station_history_cache_max_age_hours)),
                     protect_manual=True,
                     write_back_to_priors=True,
                     now=captured_at,
@@ -552,7 +575,14 @@ def run_kalshi_micro_prior_trader(
         "require_canonical_mapping_for_live": require_canonical_mapping_for_live,
         "include_incentives": include_incentives,
         "auto_refresh_weather_priors": auto_refresh_weather_priors,
+        "auto_prewarm_weather_station_history": auto_prewarm_weather_station_history,
         "auto_weather_prior_max_markets": max(1, auto_weather_prior_max_markets),
+        "auto_weather_prewarm_max_station_day_keys": max(1, int(auto_weather_prewarm_max_station_day_keys)),
+        "auto_weather_historical_lookback_years": max(1, int(auto_weather_historical_lookback_years)),
+        "auto_weather_station_history_cache_max_age_hours": max(
+            0.0,
+            float(auto_weather_station_history_cache_max_age_hours),
+        ),
         "auto_weather_allowed_contract_families": sorted(
             {value.strip().lower() for value in auto_weather_allowed_contract_families if value.strip()}
         )
@@ -598,6 +628,21 @@ def run_kalshi_micro_prior_trader(
         "weather_priors_skipped_output_csv": (
             weather_prior_summary.get("skipped_output_csv") if isinstance(weather_prior_summary, dict) else None
         ),
+        "weather_prewarm_status": (
+            weather_prewarm_summary.get("status") if isinstance(weather_prewarm_summary, dict) else "skipped"
+        ),
+        "weather_prewarm_keys_attempted": (
+            weather_prewarm_summary.get("prewarm_keys_attempted") if isinstance(weather_prewarm_summary, dict) else 0
+        ),
+        "weather_prewarm_live_ready_counts": (
+            weather_prewarm_summary.get("live_ready_counts") if isinstance(weather_prewarm_summary, dict) else {}
+        ),
+        "weather_prewarm_status_counts": (
+            weather_prewarm_summary.get("status_counts") if isinstance(weather_prewarm_summary, dict) else {}
+        ),
+        "weather_prewarm_summary_file": (
+            weather_prewarm_summary.get("output_file") if isinstance(weather_prewarm_summary, dict) else None
+        ),
         "auto_refresh_priors": auto_refresh_priors,
         "auto_prior_restrict_to_mapped_live_tickers": auto_prior_restrict_to_mapped_live_tickers,
         "auto_prior_allowed_canonical_niches": sorted(
@@ -631,6 +676,7 @@ def run_kalshi_micro_prior_trader(
         "capture_max_pages": max(1, capture_max_pages),
         "enforce_daily_weather_live_only": bool(enforce_daily_weather_live_only),
         "require_daily_weather_board_coverage_for_live": bool(require_daily_weather_board_coverage_for_live),
+        "daily_weather_board_max_age_seconds": max(0.0, float(daily_weather_board_max_age_seconds)),
         "live_env_mode": "temporary_copy" if allow_live_orders and use_temporary_live_env else "source_env",
         "auto_cancel_duplicate_open_orders": auto_cancel_duplicate_open_orders,
         "capture_status": capture_summary.get("status") if isinstance(capture_summary, dict) else None,
@@ -750,6 +796,7 @@ def run_kalshi_micro_prior_trader(
                 ws_state_max_age_seconds=ws_state_max_age_seconds,
                 enforce_daily_weather_live_only=enforce_daily_weather_live_only,
                 require_daily_weather_board_coverage_for_live=require_daily_weather_board_coverage_for_live,
+                daily_weather_board_max_age_seconds=max(0.0, float(daily_weather_board_max_age_seconds)),
                 http_request_json=http_request_json,
                 http_get_json=http_get_json,
                 sign_request=sign_request,
@@ -810,6 +857,29 @@ def run_kalshi_micro_prior_trader(
                     "prior_trade_gate_status": prior_gate.get("gate_status") if isinstance(prior_gate, dict) else None,
                     "prior_trade_gate_score": prior_gate.get("gate_score") if isinstance(prior_gate, dict) else None,
                     "prior_trade_gate_blockers": prior_gate.get("gate_blockers") if isinstance(prior_gate, dict) else None,
+                    "prior_trade_gate_weather_history_unhealthy_filtered": (
+                        prior_gate.get("weather_history_unhealthy_filtered") if isinstance(prior_gate, dict) else None
+                    ),
+                    "daily_weather_board_capture_fresh": (
+                        prior_gate.get("daily_weather_board_capture_fresh") if isinstance(prior_gate, dict) else None
+                    ),
+                    "daily_weather_board_latest_capture_age_seconds": (
+                        prior_gate.get("daily_weather_board_latest_capture_age_seconds")
+                        if isinstance(prior_gate, dict) else None
+                    ),
+                    "daily_weather_board_latest_captured_at": (
+                        prior_gate.get("daily_weather_board_latest_captured_at")
+                        if isinstance(prior_gate, dict) else None
+                    ),
+                    "daily_weather_board_max_capture_age_seconds": (
+                        prior_gate.get("daily_weather_board_max_capture_age_seconds")
+                        if isinstance(prior_gate, dict) else None
+                    ),
+                    "plan_weather_history_unhealthy_filtered": (
+                        execute_summary.get("plan_weather_history_unhealthy_filtered")
+                        if isinstance(execute_summary, dict)
+                        else None
+                    ),
                     "top_market_ticker": prior_gate.get("top_market_ticker") if isinstance(prior_gate, dict) else None,
                     "top_market_title": prior_gate.get("top_market_title") if isinstance(prior_gate, dict) else None,
                     "top_market_close_time": (

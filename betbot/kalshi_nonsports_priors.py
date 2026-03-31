@@ -32,6 +32,8 @@ _WEATHER_HISTORY_PASSTHROUGH_FIELDS = (
     "weather_station_history_cache_fallback_used",
     "weather_station_history_cache_fresh",
     "weather_station_history_cache_age_seconds",
+    "weather_station_history_sample_years",
+    "weather_station_history_min_sample_years_required",
     "weather_station_history_live_ready",
     "weather_station_history_live_ready_reason",
 )

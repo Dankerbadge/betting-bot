@@ -711,6 +711,10 @@ def build_micro_prior_plans(
             skip_counts["missing_maker_side"] += 1
             continue
         contract_family = str(row.get("contract_family") or "").strip().lower()
+        weather_station_history_sample_years = _as_int(row.get("weather_station_history_sample_years"))
+        weather_station_history_min_sample_years_required = _as_int(
+            row.get("weather_station_history_min_sample_years_required")
+        )
         weather_history_live_ready = _as_bool(row.get("weather_station_history_live_ready"))
         if (
             require_weather_history_live_ready_for_daily_weather
@@ -952,6 +956,16 @@ def build_micro_prior_plans(
                 "hours_to_close": hours_to_close,
                 "contract_family": contract_family,
                 "weather_station_history_status": str(row.get("weather_station_history_status") or "").strip(),
+                "weather_station_history_sample_years": (
+                    weather_station_history_sample_years
+                    if isinstance(weather_station_history_sample_years, int)
+                    else ""
+                ),
+                "weather_station_history_min_sample_years_required": (
+                    weather_station_history_min_sample_years_required
+                    if isinstance(weather_station_history_min_sample_years_required, int)
+                    else ""
+                ),
                 "weather_station_history_live_ready": weather_history_live_ready,
                 "weather_station_history_live_ready_reason": (
                     str(row.get("weather_station_history_live_ready_reason") or "").strip()
@@ -1062,6 +1076,8 @@ def _write_plan_csv(path: Path, plans: list[dict[str, Any]]) -> None:
         "hours_to_close",
         "contract_family",
         "weather_station_history_status",
+        "weather_station_history_sample_years",
+        "weather_station_history_min_sample_years_required",
         "weather_station_history_live_ready",
         "weather_station_history_live_ready_reason",
         "side",
@@ -1379,6 +1395,16 @@ def run_kalshi_micro_prior_plan(
     top_weather_station_history_cache_age_seconds = _as_float(
         top_enriched_row.get("weather_station_history_cache_age_seconds")
     )
+    top_weather_station_history_sample_years = _as_int(
+        top_plan.get("weather_station_history_sample_years")
+        if top_plan
+        else top_enriched_row.get("weather_station_history_sample_years")
+    )
+    top_weather_station_history_min_sample_years_required = _as_int(
+        top_plan.get("weather_station_history_min_sample_years_required")
+        if top_plan
+        else top_enriched_row.get("weather_station_history_min_sample_years_required")
+    )
     top_weather_station_history_live_ready = (
         _as_bool(top_plan.get("weather_station_history_live_ready"))
         if top_plan
@@ -1390,6 +1416,30 @@ def run_kalshi_micro_prior_plan(
         str(top_plan.get("weather_station_history_live_ready_reason") or "").strip()
         or str(top_enriched_row.get("weather_station_history_live_ready_reason") or "").strip()
     )
+    live_ready_daily_weather_rows = [
+        row
+        for row in enriched_rows
+        if str(row.get("contract_family") or "").strip().lower() in _DAILY_WEATHER_CONTRACT_FAMILIES
+        and bool(row.get("matched_live_market"))
+        and _as_bool(row.get("weather_station_history_live_ready")) is True
+    ]
+    live_ready_daily_weather_rows.sort(
+        key=lambda row: (
+            float(row.get("best_maker_entry_edge_net_fees"))
+            if isinstance(row.get("best_maker_entry_edge_net_fees"), (int, float))
+            else -999.0,
+            float(row.get("best_maker_entry_edge"))
+            if isinstance(row.get("best_maker_entry_edge"), (int, float))
+            else -999.0,
+        ),
+        reverse=True,
+    )
+    next_live_ready_daily_weather_candidate = {}
+    for row in live_ready_daily_weather_rows:
+        ticker = str(row.get("market_ticker") or "").strip()
+        if ticker and ticker != top_market_ticker:
+            next_live_ready_daily_weather_candidate = row
+            break
 
     summary = {
         "captured_at": captured_at.isoformat(),
@@ -1465,6 +1515,14 @@ def run_kalshi_micro_prior_plan(
         "weather_history_daily_candidates_live_ready": daily_weather_candidates_live_ready,
         "weather_history_daily_candidates_unhealthy": daily_weather_candidates_unhealthy,
         "weather_history_unhealthy_filtered": int(skip_counts.get("weather_history_unhealthy", 0)),
+        "weather_history_next_live_ready_candidate_ticker": (
+            str(next_live_ready_daily_weather_candidate.get("market_ticker") or "").strip() or None
+        ),
+        "weather_history_next_live_ready_candidate_edge_net_fees": (
+            next_live_ready_daily_weather_candidate.get("best_maker_entry_edge_net_fees")
+            if isinstance(next_live_ready_daily_weather_candidate.get("best_maker_entry_edge_net_fees"), (int, float))
+            else None
+        ),
         "planned_orders": len(plans),
         "top_market_ticker": top_plan.get("market_ticker") if plans else None,
         "top_market_title": top_plan.get("market_title") if plans else None,
@@ -1487,6 +1545,16 @@ def run_kalshi_micro_prior_plan(
         "top_market_weather_station_history_cache_age_seconds": (
             top_weather_station_history_cache_age_seconds
             if isinstance(top_weather_station_history_cache_age_seconds, float)
+            else None
+        ),
+        "top_market_weather_station_history_sample_years": (
+            top_weather_station_history_sample_years
+            if isinstance(top_weather_station_history_sample_years, int)
+            else None
+        ),
+        "top_market_weather_station_history_min_sample_years_required": (
+            top_weather_station_history_min_sample_years_required
+            if isinstance(top_weather_station_history_min_sample_years_required, int)
             else None
         ),
         "top_market_weather_station_history_live_ready": top_weather_station_history_live_ready,

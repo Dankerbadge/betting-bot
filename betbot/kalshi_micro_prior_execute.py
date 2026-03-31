@@ -53,7 +53,18 @@ def _latest_history_rows(history_rows: list[dict[str, str]]) -> dict[str, dict[s
     return latest
 
 
-def _daily_weather_board_summary(history_csv: str) -> dict[str, Any]:
+def _daily_weather_board_summary(
+    history_csv: str,
+    *,
+    now: datetime | None = None,
+    max_capture_age_seconds: float | None = None,
+) -> dict[str, Any]:
+    captured_at = now or datetime.now(timezone.utc)
+    capture_age_limit_seconds = (
+        max(0.0, float(max_capture_age_seconds))
+        if isinstance(max_capture_age_seconds, (int, float))
+        else None
+    )
     path = Path(history_csv)
     if not path.exists():
         return {
@@ -66,6 +77,10 @@ def _daily_weather_board_summary(history_csv: str) -> dict[str, Any]:
             "daily_weather_family_counts": {},
             "daily_weather_tickers": [],
             "contract_family_by_ticker": {},
+            "latest_captured_at": None,
+            "latest_capture_age_seconds": None,
+            "max_capture_age_seconds": capture_age_limit_seconds,
+            "capture_fresh": None,
         }
 
     history_rows = load_history_rows(path)
@@ -74,8 +89,13 @@ def _daily_weather_board_summary(history_csv: str) -> dict[str, Any]:
     daily_weather_family_counts: dict[str, int] = {}
     daily_weather_tickers: list[str] = []
     contract_family_by_ticker: dict[str, str] = {}
+    latest_captured_at_dt: datetime | None = None
 
     for ticker, row in latest_rows.items():
+        captured_value = _parse_timestamp(str(row.get("captured_at") or ""))
+        if isinstance(captured_value, datetime):
+            if latest_captured_at_dt is None or captured_value > latest_captured_at_dt:
+                latest_captured_at_dt = captured_value
         settlement = build_weather_settlement_spec(row)
         contract_family = str(settlement.get("contract_family") or "").strip().lower()
         if contract_family:
@@ -87,8 +107,24 @@ def _daily_weather_board_summary(history_csv: str) -> dict[str, Any]:
             daily_weather_family_counts[contract_family] = daily_weather_family_counts.get(contract_family, 0) + 1
             daily_weather_tickers.append(ticker)
 
+    latest_capture_age_seconds = (
+        round(max(0.0, (captured_at - latest_captured_at_dt).total_seconds()), 3)
+        if isinstance(latest_captured_at_dt, datetime)
+        else None
+    )
+    capture_fresh = (
+        latest_capture_age_seconds <= capture_age_limit_seconds
+        if isinstance(latest_capture_age_seconds, float) and isinstance(capture_age_limit_seconds, float)
+        else None
+    )
+    board_status = "ready"
+    if latest_captured_at_dt is None:
+        board_status = "missing_capture_timestamp"
+    elif capture_fresh is False:
+        board_status = "stale"
+
     return {
-        "status": "ready",
+        "status": board_status,
         "history_csv": str(path),
         "latest_markets": len(latest_rows),
         "weather_markets_total": sum(weather_family_counts.values()),
@@ -99,6 +135,10 @@ def _daily_weather_board_summary(history_csv: str) -> dict[str, Any]:
         ),
         "daily_weather_tickers": sorted(daily_weather_tickers)[:25],
         "contract_family_by_ticker": contract_family_by_ticker,
+        "latest_captured_at": latest_captured_at_dt.isoformat() if isinstance(latest_captured_at_dt, datetime) else None,
+        "latest_capture_age_seconds": latest_capture_age_seconds,
+        "max_capture_age_seconds": capture_age_limit_seconds,
+        "capture_fresh": capture_fresh,
     }
 
 
@@ -121,6 +161,7 @@ def build_prior_trade_gate_decision(
     daily_weather_board_summary: dict[str, Any] | None = None,
     enforce_daily_weather_live_only: bool = False,
     require_daily_weather_board_coverage: bool = False,
+    require_daily_weather_board_freshness: bool = False,
 ) -> dict[str, Any]:
     live_submissions_today = int(ledger_summary.get("live_submissions_today") or 0)
     live_submitted_cost_today = float(ledger_summary.get("live_submitted_cost_today") or 0.0)
@@ -169,6 +210,20 @@ def build_prior_trade_gate_decision(
     actual_live_balance_dollars = plan_summary.get("actual_live_balance_dollars")
     daily_weather_markets_total = int((daily_weather_board_summary or {}).get("daily_weather_markets_total") or 0)
     daily_weather_family_counts = dict((daily_weather_board_summary or {}).get("daily_weather_family_counts") or {})
+    daily_weather_board_capture_fresh = _as_bool((daily_weather_board_summary or {}).get("capture_fresh"))
+    daily_weather_board_latest_captured_at = str((daily_weather_board_summary or {}).get("latest_captured_at") or "").strip()
+    daily_weather_board_latest_capture_age_seconds_raw = (daily_weather_board_summary or {}).get("latest_capture_age_seconds")
+    daily_weather_board_latest_capture_age_seconds = (
+        round(float(daily_weather_board_latest_capture_age_seconds_raw), 3)
+        if isinstance(daily_weather_board_latest_capture_age_seconds_raw, (int, float))
+        else None
+    )
+    daily_weather_board_max_capture_age_seconds_raw = (daily_weather_board_summary or {}).get("max_capture_age_seconds")
+    daily_weather_board_max_capture_age_seconds = (
+        round(float(daily_weather_board_max_capture_age_seconds_raw), 3)
+        if isinstance(daily_weather_board_max_capture_age_seconds_raw, (int, float))
+        else None
+    )
 
     blockers: list[str] = []
     if actual_live_balance_dollars is None:
@@ -210,6 +265,26 @@ def build_prior_trade_gate_decision(
     if require_daily_weather_board_coverage and daily_weather_markets_total <= 0:
         blockers.append(
             "No daily weather markets are present in the captured board snapshot; refusing live mode until board coverage is restored."
+        )
+    if (
+        require_daily_weather_board_freshness
+        and planned_orders > 0
+        and top_market_contract_family_normalized in _DAILY_WEATHER_CONTRACT_FAMILIES
+        and daily_weather_board_capture_fresh is not True
+    ):
+        freshness_label = (
+            f"age={daily_weather_board_latest_capture_age_seconds:.1f}s"
+            if isinstance(daily_weather_board_latest_capture_age_seconds, float)
+            else "age=unknown"
+        )
+        max_age_label = (
+            f"max={daily_weather_board_max_capture_age_seconds:.1f}s"
+            if isinstance(daily_weather_board_max_capture_age_seconds, float)
+            else "max=unknown"
+        )
+        blockers.append(
+            "Daily weather board snapshot is stale for live gating "
+            f"({freshness_label}, {max_age_label})."
         )
     if (
         enforce_daily_weather_live_only
@@ -259,6 +334,13 @@ def build_prior_trade_gate_decision(
             gate_status = "cap_reached"
         elif require_daily_weather_board_coverage and daily_weather_markets_total <= 0:
             gate_status = "daily_weather_board_missing"
+        elif (
+            require_daily_weather_board_freshness
+            and planned_orders > 0
+            and top_market_contract_family_normalized in _DAILY_WEATHER_CONTRACT_FAMILIES
+            and daily_weather_board_capture_fresh is not True
+        ):
+            gate_status = "daily_weather_board_stale"
         elif (
             enforce_daily_weather_live_only
             and planned_orders > 0
@@ -325,8 +407,13 @@ def build_prior_trade_gate_decision(
         "weather_history_live_gate_enforced": bool(enforce_weather_history_live_ready),
         "weather_history_unhealthy_filtered": weather_history_unhealthy_filtered_count,
         "daily_weather_board_coverage_required": bool(require_daily_weather_board_coverage),
+        "daily_weather_board_freshness_required": bool(require_daily_weather_board_freshness),
         "daily_weather_markets_total": daily_weather_markets_total,
         "daily_weather_family_counts": daily_weather_family_counts,
+        "daily_weather_board_latest_captured_at": daily_weather_board_latest_captured_at or None,
+        "daily_weather_board_latest_capture_age_seconds": daily_weather_board_latest_capture_age_seconds,
+        "daily_weather_board_max_capture_age_seconds": daily_weather_board_max_capture_age_seconds,
+        "daily_weather_board_capture_fresh": daily_weather_board_capture_fresh,
         "top_market_weather_history_status": top_market_weather_history_status_normalized or None,
         "top_market_weather_history_live_ready": top_market_weather_history_live_ready_effective,
         "top_market_weather_history_live_ready_reason": top_market_weather_history_live_ready_reason_text or None,
@@ -395,6 +482,7 @@ def run_kalshi_micro_prior_execute(
     ws_state_max_age_seconds: float = 30.0,
     enforce_daily_weather_live_only: bool = False,
     require_daily_weather_board_coverage_for_live: bool = False,
+    daily_weather_board_max_age_seconds: float = 900.0,
     http_request_json: AuthenticatedRequester = _http_request_json,
     http_get_json: HttpGetter = _http_get_json,
     sign_request: KalshiSigner = _kalshi_sign_request,
@@ -456,7 +544,15 @@ def run_kalshi_micro_prior_execute(
     require_canonical_mapping_for_live_effective = (
         True if (allow_live_orders or enforce_canonical_dataset_effective) else False
     )
-    weather_board_summary_raw = _daily_weather_board_summary(history_csv)
+    weather_board_summary_raw = _daily_weather_board_summary(
+        history_csv,
+        now=captured_at,
+        max_capture_age_seconds=(
+            daily_weather_board_max_age_seconds
+            if enforce_live_quality_filters
+            else None
+        ),
+    )
 
     plan_summary = run_kalshi_micro_prior_plan(
         env_file=env_file,
@@ -533,6 +629,7 @@ def run_kalshi_micro_prior_execute(
         daily_weather_board_summary=weather_board_summary,
         enforce_daily_weather_live_only=daily_weather_live_only_effective,
         require_daily_weather_board_coverage=require_daily_weather_board_coverage_effective,
+        require_daily_weather_board_freshness=enforce_live_quality_filters,
     )
 
     def prior_plan_adapter(**kwargs: Any) -> dict[str, Any]:
@@ -605,6 +702,7 @@ def run_kalshi_micro_prior_execute(
         "daily_weather_live_only_effective": daily_weather_live_only_effective,
         "require_daily_weather_board_coverage_for_live": bool(require_daily_weather_board_coverage_for_live),
         "require_daily_weather_board_coverage_effective": require_daily_weather_board_coverage_effective,
+        "daily_weather_board_max_age_seconds": max(0.0, float(daily_weather_board_max_age_seconds)),
         "allowed_live_canonical_niches": list(allowed_live_canonical_niches) if allowed_live_canonical_niches else None,
         "weather_board_summary": weather_board_summary,
         "weather_history_live_gate_effective": weather_history_live_gate_effective,
@@ -617,6 +715,12 @@ def run_kalshi_micro_prior_execute(
             "weather_history_daily_candidates_unhealthy"
         ),
         "plan_weather_history_unhealthy_filtered": plan_summary.get("weather_history_unhealthy_filtered"),
+        "plan_weather_history_next_live_ready_candidate_ticker": plan_summary.get(
+            "weather_history_next_live_ready_candidate_ticker"
+        ),
+        "plan_weather_history_next_live_ready_candidate_edge_net_fees": plan_summary.get(
+            "weather_history_next_live_ready_candidate_edge_net_fees"
+        ),
         "plan_canonical_policy_enabled": plan_summary.get("canonical_policy_enabled"),
         "plan_canonical_policy_reason": plan_summary.get("canonical_policy_reason"),
         "plan_matched_live_markets_with_canonical_policy": plan_summary.get(
