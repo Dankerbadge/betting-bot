@@ -42,6 +42,27 @@ payload = {
     "pipeline_ready": False,
     "live_ready": False,
     "live_blockers": ["scheduler_lock_held"],
+    "balance_heartbeat": {
+        "status": "not_run",
+        "live_ready": False,
+        "source": "unknown",
+        "balance_dollars": None,
+        "cache_age_seconds": None,
+        "freshness_threshold_seconds": None,
+        "blockers": [],
+        "check_error": None,
+        "cache_file": None,
+    },
+    "execution_frontier": {
+        "status": "not_run",
+        "trusted_bucket_count": 0,
+        "untrusted_bucket_count": 0,
+        "submitted_orders": 0,
+        "filled_orders": 0,
+        "fill_samples_with_markout": 0,
+        "bucket_markout_sample_counts_by_horizon": {},
+        "output_file": None,
+    },
     "skip_reason": "skipped_locked",
     "steps": [],
     "failed_steps": [],
@@ -524,6 +545,56 @@ def _dedupe(values: list[str]) -> list[str]:
     return result
 
 
+def _top_level_balance_heartbeat(step: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(step, dict):
+        return {
+            "status": "not_run",
+            "live_ready": False,
+            "source": "unknown",
+            "balance_dollars": None,
+            "cache_age_seconds": None,
+            "freshness_threshold_seconds": None,
+            "blockers": [],
+            "check_error": None,
+            "cache_file": None,
+        }
+    return {
+        "status": str(step.get("status") or "").strip() or "unknown",
+        "live_ready": bool(step.get("balance_live_ready")),
+        "source": str(step.get("balance_source") or "unknown"),
+        "balance_dollars": _parse_float(step.get("balance_dollars")),
+        "cache_age_seconds": _parse_float(step.get("balance_cache_age_seconds")),
+        "freshness_threshold_seconds": _parse_float(step.get("balance_freshness_threshold_seconds")),
+        "blockers": list(step.get("balance_blockers") or []),
+        "check_error": step.get("balance_check_error"),
+        "cache_file": step.get("balance_cache_file"),
+    }
+
+
+def _top_level_execution_frontier(step: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(step, dict):
+        return {
+            "status": "not_run",
+            "trusted_bucket_count": 0,
+            "untrusted_bucket_count": 0,
+            "submitted_orders": 0,
+            "filled_orders": 0,
+            "fill_samples_with_markout": 0,
+            "bucket_markout_sample_counts_by_horizon": {},
+            "output_file": None,
+        }
+    return {
+        "status": str(step.get("status") or "").strip() or "unknown",
+        "trusted_bucket_count": int(step.get("trusted_bucket_count") or 0),
+        "untrusted_bucket_count": int(step.get("untrusted_bucket_count") or 0),
+        "submitted_orders": int(step.get("submitted_orders") or 0),
+        "filled_orders": int(step.get("filled_orders") or 0),
+        "fill_samples_with_markout": int(step.get("fill_samples_with_markout") or 0),
+        "bucket_markout_sample_counts_by_horizon": dict(step.get("bucket_markout_sample_counts_by_horizon") or {}),
+        "output_file": step.get("output_file"),
+    }
+
+
 def _write_report(
     *,
     run_report_path: Path,
@@ -587,6 +658,8 @@ def main() -> int:
                     "pipeline_ready": False,
                     "live_ready": False,
                     "live_blockers": ["run_skipped_recent_run"],
+                    "balance_heartbeat": _top_level_balance_heartbeat(None),
+                    "execution_frontier": _top_level_execution_frontier(None),
                     "skip_reason": "skipped_recent_run",
                     "freshness": {
                         "history_csv": _file_meta(history_csv),
@@ -637,6 +710,8 @@ def main() -> int:
             "pipeline_ready": False,
             "live_ready": False,
             "live_blockers": ["preflight_failed"],
+            "balance_heartbeat": _top_level_balance_heartbeat(None),
+            "execution_frontier": _top_level_execution_frontier(None),
             "freshness": {
                 "history_csv": _file_meta(history_csv),
                 "priors_csv": _file_meta(priors_csv),
@@ -836,6 +911,8 @@ def main() -> int:
     live_blockers = _dedupe(live_blockers)
     pipeline_ready = overall_status == "ok"
     live_ready = pipeline_ready and not live_blockers
+    top_level_balance = _top_level_balance_heartbeat(balance_step if isinstance(balance_step, dict) else None)
+    top_level_frontier = _top_level_execution_frontier(frontier_step if isinstance(frontier_step, dict) else None)
 
     latest_prior_summary_file = ""
     if isinstance(prior_trader_step, dict):
@@ -856,6 +933,8 @@ def main() -> int:
         "pipeline_ready": pipeline_ready,
         "live_ready": live_ready,
         "live_blockers": live_blockers,
+        "balance_heartbeat": top_level_balance,
+        "execution_frontier": top_level_frontier,
         "freshness": {
             "history_csv": _file_meta(history_csv),
             "priors_csv": _file_meta(priors_csv),
