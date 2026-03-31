@@ -17,10 +17,19 @@ export BETBOT_WEATHER_PRIOR_MAX_MARKETS="${BETBOT_WEATHER_PRIOR_MAX_MARKETS:-30}
 export BETBOT_WEATHER_ALLOWED_CONTRACT_FAMILIES="${BETBOT_WEATHER_ALLOWED_CONTRACT_FAMILIES:-daily_rain,daily_temperature}"
 export BETBOT_WEATHER_CDO_TOKEN_FILE="${BETBOT_WEATHER_CDO_TOKEN_FILE:-$REPO_ROOT/.secrets/noaa_cdo_token.txt}"
 export BETBOT_TIMEOUT_SECONDS="${BETBOT_TIMEOUT_SECONDS:-15}"
+export BETBOT_CAPTURE_MAX_HOURS_TO_CLOSE="${BETBOT_CAPTURE_MAX_HOURS_TO_CLOSE:-4000}"
+export BETBOT_CAPTURE_PAGE_LIMIT="${BETBOT_CAPTURE_PAGE_LIMIT:-200}"
+export BETBOT_CAPTURE_MAX_PAGES="${BETBOT_CAPTURE_MAX_PAGES:-12}"
+export BETBOT_DAILY_WEATHER_RECOVERY_MAX_HOURS_TO_CLOSE="${BETBOT_DAILY_WEATHER_RECOVERY_MAX_HOURS_TO_CLOSE:-6000}"
+export BETBOT_DAILY_WEATHER_RECOVERY_PAGE_LIMIT="${BETBOT_DAILY_WEATHER_RECOVERY_PAGE_LIMIT:-300}"
+export BETBOT_DAILY_WEATHER_RECOVERY_MAX_PAGES="${BETBOT_DAILY_WEATHER_RECOVERY_MAX_PAGES:-24}"
 export BETBOT_FRONTIER_RECENT_ROWS="${BETBOT_FRONTIER_RECENT_ROWS:-20000}"
 export BETBOT_FRONTIER_MAX_AGE_SECONDS="${BETBOT_FRONTIER_MAX_AGE_SECONDS:-10800}"
 export BETBOT_BALANCE_MAX_AGE_SECONDS="${BETBOT_BALANCE_MAX_AGE_SECONDS:-900}"
 export BETBOT_BALANCE_SMOKE_ON_FAILURE="${BETBOT_BALANCE_SMOKE_ON_FAILURE:-1}"
+export BETBOT_DAILY_WEATHER_STALE_RECOVERY_ENABLED="${BETBOT_DAILY_WEATHER_STALE_RECOVERY_ENABLED:-1}"
+export BETBOT_DAILY_WEATHER_STALE_RECOVERY_MAX_RETRIES="${BETBOT_DAILY_WEATHER_STALE_RECOVERY_MAX_RETRIES:-1}"
+export BETBOT_DAILY_WEATHER_STALE_RECOVERY_SLEEP_SECONDS="${BETBOT_DAILY_WEATHER_STALE_RECOVERY_SLEEP_SECONDS:-2}"
 export BETBOT_MIN_SECONDS_BETWEEN_RUNS="${BETBOT_MIN_SECONDS_BETWEEN_RUNS:-2700}"
 
 RUN_ROOT="$BETBOT_OUTPUT_DIR/overnight_alpha"
@@ -323,6 +332,29 @@ def _synthetic_step(
     if payload:
         step.update(payload)
     return step
+
+
+def _is_enabled(value: Any, *, default: bool) -> bool:
+    if value is None:
+        return default
+    text = str(value).strip().lower()
+    if not text:
+        return default
+    return text not in {"0", "false", "no", "off"}
+
+
+def _latest_step_with_prefix(steps: list[dict[str, Any]], prefix: str) -> dict[str, Any] | None:
+    for step in reversed(steps):
+        if str(step.get("name") or "").startswith(prefix):
+            return step
+    return None
+
+
+def _is_daily_weather_board_stale_gate(step: dict[str, Any] | None) -> bool:
+    if not isinstance(step, dict):
+        return False
+    gate_status = str(step.get("prior_trade_gate_status") or "").strip().lower()
+    return gate_status == "daily_weather_board_stale"
 
 
 def _weather_cache_state(*, output_dir: Path, max_age_hours: float) -> dict[str, Any]:
@@ -660,7 +692,7 @@ def _run_step(
             step["balance_cache_age_seconds"] = parsed.get("balance_cache_age_seconds")
             step["balance_cache_file"] = parsed.get("balance_cache_file")
             step["balance_check_error"] = parsed.get("balance_check_error")
-        elif name == "capture":
+        elif name.startswith("capture"):
             step["scan_status"] = parsed.get("scan_status")
             step["rows_appended"] = parsed.get("rows_appended")
             step["scan_summary_file"] = parsed.get("scan_summary_file")
@@ -727,7 +759,7 @@ def _run_step(
             step["frontier_artifact_as_of_utc"] = parsed.get("frontier_artifact_as_of_utc")
             step["frontier_artifact_age_seconds"] = parsed.get("frontier_artifact_age_seconds")
             step["frontier_selection_mode"] = parsed.get("frontier_selection_mode")
-        elif name == "prior_trader_dry_run":
+        elif name.startswith("prior_trader_dry_run"):
             step["allow_live_orders_effective"] = parsed.get("allow_live_orders_effective")
             step["prior_execute_status"] = parsed.get("prior_execute_status")
             step["execution_frontier_status"] = parsed.get("execution_frontier_status")
@@ -1398,6 +1430,18 @@ def main() -> int:
         )
     )
 
+    capture_max_hours_to_close = max(
+        1.0,
+        float(os.environ.get("BETBOT_CAPTURE_MAX_HOURS_TO_CLOSE", "4000")),
+    )
+    capture_page_limit = max(
+        1,
+        int(os.environ.get("BETBOT_CAPTURE_PAGE_LIMIT", "200")),
+    )
+    capture_max_pages = max(
+        1,
+        int(os.environ.get("BETBOT_CAPTURE_MAX_PAGES", "12")),
+    )
     steps.append(
         _run_step(
             name="capture",
@@ -1413,11 +1457,11 @@ def main() -> int:
                 "--timeout-seconds",
                 str(float(os.environ.get("BETBOT_TIMEOUT_SECONDS", "15"))),
                 "--max-hours-to-close",
-                "4000",
+                str(capture_max_hours_to_close),
                 "--page-limit",
-                "200",
+                str(capture_page_limit),
                 "--max-pages",
-                "12",
+                str(capture_max_pages),
             ],
             cwd=repo_root,
             run_dir=run_logs,
@@ -1616,21 +1660,103 @@ def main() -> int:
             ]
         )
 
-    steps.append(
-        _run_step(
-            name="prior_trader_dry_run",
+    stale_recovery_enabled = _is_enabled(
+        os.environ.get("BETBOT_DAILY_WEATHER_STALE_RECOVERY_ENABLED"),
+        default=True,
+    )
+    stale_recovery_max_retries = max(
+        0,
+        int(os.environ.get("BETBOT_DAILY_WEATHER_STALE_RECOVERY_MAX_RETRIES", "1")),
+    )
+    stale_recovery_sleep_seconds = max(
+        0.0,
+        float(os.environ.get("BETBOT_DAILY_WEATHER_STALE_RECOVERY_SLEEP_SECONDS", "2")),
+    )
+    stale_recovery_attempts = 0
+    stale_recovery_triggered = False
+    stale_recovery_resolved = False
+    stale_recovery_capture_max_hours_to_close = max(
+        capture_max_hours_to_close,
+        float(os.environ.get("BETBOT_DAILY_WEATHER_RECOVERY_MAX_HOURS_TO_CLOSE", "6000")),
+    )
+    stale_recovery_capture_page_limit = max(
+        capture_page_limit,
+        int(os.environ.get("BETBOT_DAILY_WEATHER_RECOVERY_PAGE_LIMIT", "300")),
+    )
+    stale_recovery_capture_max_pages = max(
+        capture_max_pages,
+        int(os.environ.get("BETBOT_DAILY_WEATHER_RECOVERY_MAX_PAGES", "24")),
+    )
+
+    prior_trader_step = _run_step(
+        name="prior_trader_dry_run",
+        launcher=launcher,
+        args=prior_trader_args,
+        cwd=repo_root,
+        run_dir=run_logs,
+        env_overrides=env_file_values,
+    )
+    steps.append(prior_trader_step)
+
+    while (
+        stale_recovery_enabled
+        and stale_recovery_attempts < stale_recovery_max_retries
+        and _is_daily_weather_board_stale_gate(prior_trader_step)
+    ):
+        stale_recovery_triggered = True
+        stale_recovery_attempts += 1
+        if stale_recovery_sleep_seconds > 0:
+            time.sleep(stale_recovery_sleep_seconds)
+        capture_retry_step = _run_step(
+            name=f"capture_recovery_daily_weather_{stale_recovery_attempts}",
+            launcher=launcher,
+            args=[
+                "kalshi-nonsports-capture",
+                "--env-file",
+                str(env_file),
+                "--history-csv",
+                str(history_csv),
+                "--output-dir",
+                str(output_dir),
+                "--timeout-seconds",
+                str(float(os.environ.get("BETBOT_TIMEOUT_SECONDS", "15"))),
+                "--max-hours-to-close",
+                str(stale_recovery_capture_max_hours_to_close),
+                "--page-limit",
+                str(stale_recovery_capture_page_limit),
+                "--max-pages",
+                str(stale_recovery_capture_max_pages),
+            ],
+            cwd=repo_root,
+            run_dir=run_logs,
+            env_overrides=env_file_values,
+        )
+        capture_retry_step["stale_recovery_attempt"] = stale_recovery_attempts
+        capture_retry_step["stale_recovery_trigger_gate_status"] = "daily_weather_board_stale"
+        capture_retry_step["stale_recovery_capture_max_hours_to_close"] = stale_recovery_capture_max_hours_to_close
+        capture_retry_step["stale_recovery_capture_page_limit"] = stale_recovery_capture_page_limit
+        capture_retry_step["stale_recovery_capture_max_pages"] = stale_recovery_capture_max_pages
+        steps.append(capture_retry_step)
+
+        prior_trader_step = _run_step(
+            name=f"prior_trader_dry_run_retry_{stale_recovery_attempts}",
             launcher=launcher,
             args=prior_trader_args,
             cwd=repo_root,
             run_dir=run_logs,
             env_overrides=env_file_values,
         )
-    )
+        prior_trader_step["stale_recovery_attempt"] = stale_recovery_attempts
+        prior_trader_step["stale_recovery_trigger_gate_status"] = "daily_weather_board_stale"
+        steps.append(prior_trader_step)
+
+    if stale_recovery_triggered and not _is_daily_weather_board_stale_gate(prior_trader_step):
+        stale_recovery_resolved = True
 
     failed_steps = [step["name"] for step in steps if not bool(step.get("ok"))]
     degraded_reasons: list[str] = []
 
-    prior_trader_step = next((step for step in steps if step.get("name") == "prior_trader_dry_run"), None)
+    prior_trader_step = _latest_step_with_prefix(steps, "prior_trader_dry_run")
     if isinstance(prior_trader_step, dict) and bool(prior_trader_step.get("allow_live_orders_effective")):
         degraded_reasons.append("prior_trader_reported_allow_live_orders_effective=true_in_dry_run_setup")
 
@@ -1801,6 +1927,18 @@ def main() -> int:
             if isinstance(weather_prior_step, dict)
             else None
         ),
+        "daily_weather_stale_recovery_enabled": stale_recovery_enabled,
+        "daily_weather_stale_recovery_max_retries": stale_recovery_max_retries,
+        "daily_weather_stale_recovery_sleep_seconds": stale_recovery_sleep_seconds,
+        "daily_weather_stale_recovery_triggered": stale_recovery_triggered,
+        "daily_weather_stale_recovery_attempts": stale_recovery_attempts,
+        "daily_weather_stale_recovery_resolved": stale_recovery_resolved,
+        "capture_max_hours_to_close": capture_max_hours_to_close,
+        "capture_page_limit": capture_page_limit,
+        "capture_max_pages": capture_max_pages,
+        "daily_weather_recovery_capture_max_hours_to_close": stale_recovery_capture_max_hours_to_close,
+        "daily_weather_recovery_capture_page_limit": stale_recovery_capture_page_limit,
+        "daily_weather_recovery_capture_max_pages": stale_recovery_capture_max_pages,
         "weather_prior_allowed_contract_families": list(allowed_weather_contract_families),
         "weather_prior_allowed_family_counts": weather_prior_state_after.get("allowed_family_counts"),
         "weather_prior_allowed_rows_total": weather_prior_state_after.get("allowed_rows_total"),
