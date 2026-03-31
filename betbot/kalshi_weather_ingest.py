@@ -89,6 +89,125 @@ def _normalize_cdo_precip_in(value: Any) -> float | None:
     return round(raw, 4)
 
 
+def _extract_station_daily_samples_from_rows(
+    *,
+    rows: list[Any],
+    month: int,
+    day: int,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    samples_by_year: dict[int, dict[str, Any]] = {}
+    parse_errors: list[dict[str, Any]] = []
+
+    for index, row in enumerate(rows):
+        if not isinstance(row, dict):
+            continue
+        date_text = str(row.get("DATE") or row.get("date") or "").strip()
+        if not date_text:
+            continue
+        date_value = _parse_iso_datetime(date_text)
+        if date_value is None:
+            try:
+                date_value = datetime.fromisoformat(date_text[:10]).replace(tzinfo=timezone.utc)
+            except ValueError:
+                parse_errors.append({"index": index, "error": f"invalid_date:{date_text}"})
+                continue
+        if date_value.month != int(month) or date_value.day != int(day):
+            continue
+        year = int(date_value.year)
+        sample = samples_by_year.setdefault(
+            year,
+            {
+                "year": year,
+                "date": f"{year:04d}-{int(month):02d}-{int(day):02d}",
+            },
+        )
+
+        tmax_value = row.get("TMAX") if "TMAX" in row else row.get("tmax")
+        tmin_value = row.get("TMIN") if "TMIN" in row else row.get("tmin")
+        prcp_value = row.get("PRCP") if "PRCP" in row else row.get("prcp")
+        tmax_normalized = _normalize_cdo_temperature_f(tmax_value)
+        tmin_normalized = _normalize_cdo_temperature_f(tmin_value)
+        prcp_normalized = _normalize_cdo_precip_in(prcp_value)
+        if tmax_normalized is not None:
+            sample["tmax_f"] = tmax_normalized
+        if tmin_normalized is not None:
+            sample["tmin_f"] = tmin_normalized
+        if prcp_normalized is not None:
+            sample["prcp_in"] = prcp_normalized
+
+    daily_samples = [
+        sample
+        for _, sample in sorted(samples_by_year.items(), key=lambda item: item[0])
+        if len(sample) > 2
+    ]
+    return daily_samples, parse_errors
+
+
+def _build_station_daily_history_result(
+    *,
+    status: str,
+    station_id: str,
+    cdo_station_id: str,
+    month: int,
+    day: int,
+    lookback_years: int,
+    request_count: int,
+    source_url: str,
+    errors: list[dict[str, Any]],
+    daily_samples: list[dict[str, Any]],
+    cache_hit: bool,
+    cache_fallback_used: bool,
+    error_message: str | None = None,
+    data_source: str | None = None,
+) -> dict[str, Any]:
+    tmax_values = [float(sample["tmax_f"]) for sample in daily_samples if isinstance(sample.get("tmax_f"), (int, float))]
+    tmin_values = [float(sample["tmin_f"]) for sample in daily_samples if isinstance(sample.get("tmin_f"), (int, float))]
+    prcp_values = [float(sample["prcp_in"]) for sample in daily_samples if isinstance(sample.get("prcp_in"), (int, float))]
+    daily_mean_values: list[float] = []
+    for sample in daily_samples:
+        tmax = sample.get("tmax_f")
+        tmin = sample.get("tmin_f")
+        if isinstance(tmax, (int, float)) and isinstance(tmin, (int, float)):
+            daily_mean_values.append(round((float(tmax) + float(tmin)) / 2.0, 3))
+
+    rain_day_frequency = None
+    if prcp_values:
+        rain_day_frequency = round(
+            sum(1 for value in prcp_values if value >= 0.01) / float(len(prcp_values)),
+            6,
+        )
+
+    payload = {
+        "status": status,
+        "station_id": station_id,
+        "cdo_station_id": cdo_station_id,
+        "month": int(month),
+        "day": int(day),
+        "lookback_years": int(lookback_years),
+        "sample_years": len(daily_samples),
+        "sample_years_precip": len(prcp_values),
+        "sample_years_tmax": len(tmax_values),
+        "sample_years_tmin": len(tmin_values),
+        "sample_years_mean": len(daily_mean_values),
+        "daily_samples": daily_samples,
+        "tmax_values_f": tmax_values,
+        "tmin_values_f": tmin_values,
+        "daily_mean_values_f": daily_mean_values,
+        "prcp_values_in": prcp_values,
+        "rain_day_frequency": rain_day_frequency,
+        "request_count": int(request_count),
+        "source_url": source_url,
+        "errors": errors,
+        "cache_hit": bool(cache_hit),
+        "cache_fallback_used": bool(cache_fallback_used),
+    }
+    if data_source:
+        payload["data_source"] = str(data_source)
+    if error_message:
+        payload["error"] = error_message
+    return payload
+
+
 def _parse_iso_datetime(value: Any) -> datetime | None:
     text = str(value or "").strip()
     if not text:
@@ -364,6 +483,7 @@ def fetch_ncei_cdo_station_daily_history(
     cdo_token: str | None = None,
     cache_dir: str | None = None,
     cache_max_age_hours: float = 24.0,
+    enable_access_data_service_fallback: bool = True,
     now: datetime | None = None,
     http_get_json_with_headers: JsonGetterWithHeaders = _http_get_json_with_headers,
 ) -> dict[str, Any]:
@@ -418,6 +538,16 @@ def fetch_ncei_cdo_station_daily_history(
                 cached_result["cache_age_seconds"] = round(cache_age_seconds, 3)
                 return cached_result
 
+    cdo_station_id = _resolve_cdo_station_id(clean_station_id)
+    if not cdo_station_id:
+        return {
+            "status": "station_mapping_missing",
+            "station_id": clean_station_id,
+            "error": "No CDO station mapping is configured for this settlement station.",
+            "cache_hit": False,
+            "cache_fallback_used": False,
+        }
+
     token = str(
         cdo_token
         or os.getenv("BETBOT_NOAA_CDO_TOKEN")
@@ -425,6 +555,91 @@ def fetch_ncei_cdo_station_daily_history(
         or os.getenv("NCEI_CDO_TOKEN")
         or ""
     ).strip()
+    if not token and enable_access_data_service_fallback:
+        ads_source_url = "https://www.ncei.noaa.gov/access/services/data/v1"
+        station_for_ads = cdo_station_id.split(":", 1)[-1].strip() or cdo_station_id
+        ads_params = [
+            ("dataset", "daily-summaries"),
+            ("stations", station_for_ads),
+            ("startDate", f"{start_year:04d}-{month_value:02d}-{day_value:02d}"),
+            ("endDate", f"{end_year:04d}-{month_value:02d}-{day_value:02d}"),
+            ("dataTypes", "TMAX,TMIN,PRCP"),
+            ("format", "json"),
+            ("units", "standard"),
+            ("includeAttributes", "false"),
+            ("includeStationName", "false"),
+            ("includeStationLocation", "false"),
+        ]
+        ads_url = f"{ads_source_url}?{urlencode(ads_params, doseq=True)}"
+        ads_status, ads_payload = http_get_json_with_headers(ads_url, timeout_seconds, None)
+        if ads_status == 200:
+            ads_rows: list[Any] | None = None
+            if isinstance(ads_payload, list):
+                ads_rows = ads_payload
+            elif isinstance(ads_payload, dict):
+                results = ads_payload.get("results")
+                if isinstance(results, list):
+                    ads_rows = results
+                else:
+                    data_field = ads_payload.get("data")
+                    if isinstance(data_field, list):
+                        ads_rows = data_field
+            if isinstance(ads_rows, list):
+                daily_samples, parse_errors = _extract_station_daily_samples_from_rows(
+                    rows=ads_rows,
+                    month=month_value,
+                    day=day_value,
+                )
+                result = _build_station_daily_history_result(
+                    status="ready" if not parse_errors else "ready_partial",
+                    station_id=clean_station_id,
+                    cdo_station_id=cdo_station_id,
+                    month=month_value,
+                    day=day_value,
+                    lookback_years=lookback_years_clamped,
+                    request_count=1,
+                    source_url=ads_source_url,
+                    errors=parse_errors,
+                    daily_samples=daily_samples,
+                    cache_hit=False,
+                    cache_fallback_used=False,
+                    error_message=(
+                        "No historical station samples were returned for this month/day target."
+                        if not daily_samples
+                        else None
+                    ),
+                    data_source="access_data_service_v1",
+                )
+                if not daily_samples:
+                    result["status"] = "no_history"
+                if cache_file is not None:
+                    try:
+                        _write_cdo_cache_entry(cache_file, result, current_time)
+                    except OSError:
+                        pass
+                return result
+
+        if cache_payload is not None:
+            cached_status = str(cache_payload.get("status") or "").strip().lower()
+            if _status_is_cacheable(cached_status):
+                stale_result = dict(cache_payload)
+                stale_result["cache_hit"] = True
+                stale_result["cache_fallback_used"] = True
+                stale_result["cache_fresh"] = False
+                stale_result["cache_age_seconds"] = round(float(cache_age_seconds or 0.0), 3)
+                stale_result["cache_warning"] = "Using cached station history because NOAA ADS fallback is unavailable."
+                stale_result["fallback_failure_status"] = ads_status
+                return stale_result
+        return {
+            "status": "disabled_missing_token",
+            "station_id": clean_station_id,
+            "cdo_station_id": cdo_station_id,
+            "error": "Missing NOAA/NCEI CDO API token and NOAA Access Data Service fallback unavailable.",
+            "fallback_source_url": ads_source_url,
+            "fallback_http_status": ads_status,
+            "cache_hit": False,
+            "cache_fallback_used": False,
+        }
     if not token:
         if cache_payload is not None:
             cached_status = str(cache_payload.get("status") or "").strip().lower()
@@ -439,17 +654,8 @@ def fetch_ncei_cdo_station_daily_history(
         return {
             "status": "disabled_missing_token",
             "station_id": clean_station_id,
+            "cdo_station_id": cdo_station_id,
             "error": "Missing NOAA/NCEI CDO API token.",
-            "cache_hit": False,
-            "cache_fallback_used": False,
-        }
-
-    cdo_station_id = _resolve_cdo_station_id(clean_station_id)
-    if not cdo_station_id:
-        return {
-            "status": "station_mapping_missing",
-            "station_id": clean_station_id,
-            "error": "No CDO station mapping is configured for this settlement station.",
             "cache_hit": False,
             "cache_fallback_used": False,
         }
@@ -537,36 +743,23 @@ def fetch_ncei_cdo_station_daily_history(
         if len(sample) > 2:
             daily_samples.append(sample)
 
-    tmax_values = [float(sample["tmax_f"]) for sample in daily_samples if isinstance(sample.get("tmax_f"), (int, float))]
-    tmin_values = [float(sample["tmin_f"]) for sample in daily_samples if isinstance(sample.get("tmin_f"), (int, float))]
-    prcp_values = [float(sample["prcp_in"]) for sample in daily_samples if isinstance(sample.get("prcp_in"), (int, float))]
-    daily_mean_values: list[float] = []
-    for sample in daily_samples:
-        tmax = sample.get("tmax_f")
-        tmin = sample.get("tmin_f")
-        if isinstance(tmax, (int, float)) and isinstance(tmin, (int, float)):
-            daily_mean_values.append(round((float(tmax) + float(tmin)) / 2.0, 3))
-
     if not daily_samples:
-        result = {
-            "status": "no_history",
-            "station_id": clean_station_id,
-            "cdo_station_id": cdo_station_id,
-            "month": month_value,
-            "day": day_value,
-            "lookback_years": lookback_years_clamped,
-            "request_count": request_count,
-            "source_url": source_url,
-            "errors": errors,
-            "error": "No historical station samples were returned for this month/day target.",
-            "sample_years": 0,
-            "sample_years_precip": 0,
-            "sample_years_tmax": 0,
-            "sample_years_tmin": 0,
-            "sample_years_mean": 0,
-            "cache_hit": False,
-            "cache_fallback_used": False,
-        }
+        result = _build_station_daily_history_result(
+            status="no_history",
+            station_id=clean_station_id,
+            cdo_station_id=cdo_station_id,
+            month=month_value,
+            day=day_value,
+            lookback_years=lookback_years_clamped,
+            request_count=request_count,
+            source_url=source_url,
+            errors=errors,
+            daily_samples=daily_samples,
+            cache_hit=False,
+            cache_fallback_used=False,
+            error_message="No historical station samples were returned for this month/day target.",
+            data_source="cdo_api_v2",
+        )
         if cache_file is not None:
             try:
                 _write_cdo_cache_entry(cache_file, result, current_time)
@@ -574,37 +767,21 @@ def fetch_ncei_cdo_station_daily_history(
                 pass
         return result
 
-    rain_day_frequency = None
-    if prcp_values:
-        rain_day_frequency = round(
-            sum(1 for value in prcp_values if value >= 0.01) / float(len(prcp_values)),
-            6,
-        )
-
-    result = {
-        "status": "ready" if not errors else "ready_partial",
-        "station_id": clean_station_id,
-        "cdo_station_id": cdo_station_id,
-        "month": month_value,
-        "day": day_value,
-        "lookback_years": lookback_years_clamped,
-        "sample_years": len(daily_samples),
-        "sample_years_precip": len(prcp_values),
-        "sample_years_tmax": len(tmax_values),
-        "sample_years_tmin": len(tmin_values),
-        "sample_years_mean": len(daily_mean_values),
-        "daily_samples": daily_samples,
-        "tmax_values_f": tmax_values,
-        "tmin_values_f": tmin_values,
-        "daily_mean_values_f": daily_mean_values,
-        "prcp_values_in": prcp_values,
-        "rain_day_frequency": rain_day_frequency,
-        "request_count": request_count,
-        "source_url": source_url,
-        "errors": errors,
-        "cache_hit": False,
-        "cache_fallback_used": False,
-    }
+    result = _build_station_daily_history_result(
+        status="ready" if not errors else "ready_partial",
+        station_id=clean_station_id,
+        cdo_station_id=cdo_station_id,
+        month=month_value,
+        day=day_value,
+        lookback_years=lookback_years_clamped,
+        request_count=request_count,
+        source_url=source_url,
+        errors=errors,
+        daily_samples=daily_samples,
+        cache_hit=False,
+        cache_fallback_used=False,
+        data_source="cdo_api_v2",
+    )
     if cache_file is not None:
         try:
             _write_cdo_cache_entry(cache_file, result, current_time)

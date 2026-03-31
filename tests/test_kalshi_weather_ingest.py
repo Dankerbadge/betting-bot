@@ -119,6 +119,10 @@ class KalshiWeatherIngestTests(unittest.TestCase):
         self.assertAlmostEqual(payload["rain_day_frequency"], 0.5)
 
     def test_fetch_ncei_cdo_station_daily_history_missing_token(self) -> None:
+        def fake_http_get_json_with_headers(url: str, timeout_seconds: float, headers: dict[str, str] | None):
+            self.assertIsNone(headers)
+            return (503, {"errorMessage": "Service unavailable"})
+
         with patch.dict(
             "os.environ",
             {
@@ -133,8 +137,47 @@ class KalshiWeatherIngestTests(unittest.TestCase):
                 month=3,
                 day=29,
                 cdo_token="",
+                http_get_json_with_headers=fake_http_get_json_with_headers,
             )
         self.assertEqual(payload["status"], "disabled_missing_token")
+
+    def test_fetch_ncei_cdo_station_daily_history_missing_token_uses_ads_fallback(self) -> None:
+        def fake_http_get_json_with_headers(url: str, timeout_seconds: float, headers: dict[str, str] | None):
+            self.assertIsNone(headers)
+            parsed = urlparse(url)
+            self.assertIn("/access/services/data/v1", parsed.path)
+            return (
+                200,
+                [
+                    {"DATE": "2024-03-29", "TMAX": "68", "TMIN": "53", "PRCP": "0.12"},
+                    {"DATE": "2025-03-29", "TMAX": "71", "TMIN": "49", "PRCP": "0.00"},
+                ],
+            )
+
+        with patch.dict(
+            "os.environ",
+            {
+                "BETBOT_NOAA_CDO_TOKEN": "",
+                "NOAA_CDO_TOKEN": "",
+                "NCEI_CDO_TOKEN": "",
+            },
+            clear=False,
+        ):
+            payload = fetch_ncei_cdo_station_daily_history(
+                station_id="KJFK",
+                month=3,
+                day=29,
+                cdo_token="",
+                lookback_years=2,
+                now=datetime(2026, 3, 30, 0, 0, tzinfo=timezone.utc),
+                http_get_json_with_headers=fake_http_get_json_with_headers,
+            )
+
+        self.assertEqual(payload["status"], "ready")
+        self.assertEqual(payload["sample_years"], 2)
+        self.assertEqual(payload["sample_years_precip"], 2)
+        self.assertEqual(payload["data_source"], "access_data_service_v1")
+        self.assertAlmostEqual(payload["rain_day_frequency"], 0.5)
 
     def test_fetch_ncei_cdo_station_daily_history_uses_cache_when_fresh(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
