@@ -273,9 +273,25 @@ def _markout_max_allowed_lag_seconds(
     horizon_seconds: int,
     observation_cadence_seconds: float | None,
 ) -> float:
-    base_limit = max(float(horizon_seconds) * 1.5, 15.0)
-    if isinstance(observation_cadence_seconds, float) and observation_cadence_seconds > 0.0:
-        base_limit = max(base_limit, observation_cadence_seconds * 1.35)
+    horizon = max(1.0, float(horizon_seconds))
+    cadence = (
+        float(observation_cadence_seconds)
+        if isinstance(observation_cadence_seconds, float) and observation_cadence_seconds > 0.0
+        else None
+    )
+    if horizon <= 10.0:
+        base_limit = max(4.0, horizon * 0.8)
+        if isinstance(cadence, float):
+            base_limit = max(base_limit, min(10.0, cadence * 0.75))
+        return min(12.0, base_limit)
+    if horizon <= 60.0:
+        base_limit = max(20.0, horizon * 1.1)
+        if isinstance(cadence, float):
+            base_limit = max(base_limit, min(90.0, cadence * 1.2))
+        return min(90.0, base_limit)
+    base_limit = max(45.0, horizon * 1.4)
+    if isinstance(cadence, float):
+        base_limit = max(base_limit, min(180.0, cadence * 1.35))
     return min(180.0, base_limit)
 
 

@@ -803,6 +803,7 @@ class KalshiMicroPriorTraderTests(unittest.TestCase):
                 },
                 prior_execute_runner=fake_prior_execute_runner,
                 reconcile_runner=fake_reconcile_runner,
+                sleep_fn=lambda *_: None,
                 now=datetime(2026, 3, 27, 21, 0, tzinfo=timezone.utc),
             )
 
@@ -812,6 +813,8 @@ class KalshiMicroPriorTraderTests(unittest.TestCase):
             self.assertEqual(summary["top_market_estimated_entry_cost_dollars"], 0.97)
             self.assertEqual(summary["top_market_expected_value_dollars"], 0.03)
             self.assertEqual(summary["reconcile_status"], "ready")
+            self.assertTrue(summary["post_live_markout_capture_attempted"])
+            self.assertEqual(summary["post_live_markout_capture_status"], "ready")
             self.assertFalse(summary["ready_for_live_order"])
             self.assertFalse(summary["ready_for_auto_live_order"])
             self.assertFalse(Path(seen_env_files[0]).exists())

@@ -4,6 +4,7 @@ from contextlib import nullcontext
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import time
 from typing import Any, Callable
 
 from betbot.kalshi_micro_prior_execute import run_kalshi_micro_prior_execute
@@ -24,6 +25,7 @@ ReconcileRunner = Callable[..., dict[str, Any]]
 AutoPriorRunner = Callable[..., dict[str, Any]]
 WeatherPriorRunner = Callable[..., dict[str, Any]]
 WeatherPrewarmRunner = Callable[..., dict[str, Any]]
+SleepFn = Callable[[float], None]
 
 _FAILURE_ATTEMPT_RESULTS = {
     "orderbook_unavailable",
@@ -434,6 +436,10 @@ def run_kalshi_micro_prior_trader(
     auto_prior_allowed_canonical_niches: tuple[str, ...] = LIVE_ALLOWED_CANONICAL_NICHES,
     auto_prior_allowed_categories: tuple[str, ...] | None = None,
     auto_prior_disallowed_categories: tuple[str, ...] | None = ("Sports",),
+    post_live_markout_capture_enabled: bool = True,
+    post_live_markout_capture_delay_seconds: float = 10.0,
+    post_live_markout_capture_page_limit: int = 100,
+    post_live_markout_capture_max_pages: int = 3,
     capture_before_execute: bool = True,
     capture_max_hours_to_close: float | None = 4000.0,
     capture_page_limit: int = 200,
@@ -448,6 +454,7 @@ def run_kalshi_micro_prior_trader(
     auto_prior_runner: AutoPriorRunner = run_kalshi_nonsports_auto_priors,
     prior_execute_runner: PriorExecuteRunner = run_kalshi_micro_prior_execute,
     reconcile_runner: ReconcileRunner = run_kalshi_micro_reconcile,
+    sleep_fn: SleepFn = time.sleep,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     captured_at = now or datetime.now(timezone.utc)
@@ -480,6 +487,7 @@ def run_kalshi_micro_prior_trader(
 
     weather_prior_summary: dict[str, Any] | None = None
     weather_prewarm_summary: dict[str, Any] | None = None
+    post_live_markout_capture_summary: dict[str, Any] | None = None
     weather_prior_refresh_attempts = 0
     weather_prewarm_fallback_triggered = False
     weather_prewarm_fallback_reason: str | None = None
@@ -756,6 +764,10 @@ def run_kalshi_micro_prior_trader(
         "capture_max_hours_to_close": capture_max_hours_to_close,
         "capture_page_limit": max(1, capture_page_limit),
         "capture_max_pages": max(1, capture_max_pages),
+        "post_live_markout_capture_enabled": bool(post_live_markout_capture_enabled),
+        "post_live_markout_capture_delay_seconds": max(0.0, float(post_live_markout_capture_delay_seconds)),
+        "post_live_markout_capture_page_limit": max(1, int(post_live_markout_capture_page_limit)),
+        "post_live_markout_capture_max_pages": max(1, int(post_live_markout_capture_max_pages)),
         "enforce_daily_weather_live_only": bool(enforce_daily_weather_live_only),
         "require_daily_weather_board_coverage_for_live": bool(require_daily_weather_board_coverage_for_live),
         "daily_weather_board_max_age_seconds": max(0.0, float(daily_weather_board_max_age_seconds)),
@@ -788,6 +800,13 @@ def run_kalshi_micro_prior_trader(
             capture_summary.get("scan_markets_ranked") if isinstance(capture_summary, dict) else None
         ),
         "capture_history_csv": capture_summary.get("history_csv") if isinstance(capture_summary, dict) else effective_history_csv,
+        "post_live_markout_capture_attempted": False,
+        "post_live_markout_capture_status": "skipped",
+        "post_live_markout_capture_error": None,
+        "post_live_markout_capture_rows_appended": 0,
+        "post_live_markout_capture_scan_page_requests": None,
+        "post_live_markout_capture_scan_search_health_status": None,
+        "post_live_markout_capture_summary_file": None,
         "book_db_path": book_db_path,
         "execution_event_log_csv": execution_event_log_csv,
         "execution_journal_db_path": execution_journal_db_path,
@@ -1044,6 +1063,35 @@ def run_kalshi_micro_prior_trader(
                 summary["status"] = "hold"
                 summary["action_taken"] = "hold"
             else:
+                execute_status = str(execute_summary.get("status") or "").strip().lower()
+                if (
+                    allow_live_orders
+                    and bool(post_live_markout_capture_enabled)
+                    and execute_status in {"live_submitted", "live_submitted_and_canceled"}
+                ):
+                    delay_seconds = max(0.0, float(post_live_markout_capture_delay_seconds))
+                    if delay_seconds > 0.0:
+                        sleep_fn(delay_seconds)
+                    capture_timestamp = datetime.now(timezone.utc)
+                    try:
+                        post_live_markout_capture_summary = capture_runner(
+                            env_file=execute_env_file,
+                            output_dir=output_dir,
+                            history_csv=effective_history_csv,
+                            timeout_seconds=timeout_seconds,
+                            excluded_categories=("Sports",),
+                            max_hours_to_close=capture_max_hours_to_close,
+                            page_limit=max(1, int(post_live_markout_capture_page_limit)),
+                            max_pages=max(1, int(post_live_markout_capture_max_pages)),
+                            now=capture_timestamp,
+                        )
+                    except Exception as exc:
+                        post_live_markout_capture_summary = {
+                            "status": "error",
+                            "scan_error": str(exc),
+                            "history_csv": effective_history_csv,
+                        }
+
                 reconcile_summary = reconcile_runner(
                     env_file=execute_env_file,
                     execute_summary_file=execute_summary.get("execute_summary_file"),
@@ -1056,6 +1104,37 @@ def run_kalshi_micro_prior_trader(
                     {
                         "reconcile_status": reconcile_summary.get("status"),
                         "reconcile_summary_file": reconcile_summary.get("output_file"),
+                        "post_live_markout_capture_attempted": isinstance(post_live_markout_capture_summary, dict),
+                        "post_live_markout_capture_status": (
+                            post_live_markout_capture_summary.get("status")
+                            if isinstance(post_live_markout_capture_summary, dict)
+                            else "skipped"
+                        ),
+                        "post_live_markout_capture_error": (
+                            post_live_markout_capture_summary.get("scan_error")
+                            if isinstance(post_live_markout_capture_summary, dict)
+                            else None
+                        ),
+                        "post_live_markout_capture_rows_appended": (
+                            post_live_markout_capture_summary.get("rows_appended")
+                            if isinstance(post_live_markout_capture_summary, dict)
+                            else 0
+                        ),
+                        "post_live_markout_capture_scan_page_requests": (
+                            post_live_markout_capture_summary.get("scan_page_requests")
+                            if isinstance(post_live_markout_capture_summary, dict)
+                            else None
+                        ),
+                        "post_live_markout_capture_scan_search_health_status": (
+                            post_live_markout_capture_summary.get("scan_search_health_status")
+                            if isinstance(post_live_markout_capture_summary, dict)
+                            else None
+                        ),
+                        "post_live_markout_capture_summary_file": (
+                            post_live_markout_capture_summary.get("scan_summary_file")
+                            if isinstance(post_live_markout_capture_summary, dict)
+                            else None
+                        ),
                     }
                 )
                 execute_status = str(execute_summary.get("status") or "")
