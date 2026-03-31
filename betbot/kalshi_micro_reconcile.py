@@ -251,15 +251,47 @@ def _history_midpoint_index(history_csv: Path) -> dict[str, list[tuple[datetime,
     return index
 
 
+def _median_observation_interval_seconds(observations: list[tuple[datetime, float]]) -> float | None:
+    if len(observations) < 2:
+        return None
+    deltas: list[float] = []
+    for (prev_ts, _), (next_ts, _) in zip(observations[:-1], observations[1:], strict=False):
+        delta_seconds = (next_ts - prev_ts).total_seconds()
+        if delta_seconds > 0:
+            deltas.append(delta_seconds)
+    if not deltas:
+        return None
+    deltas.sort()
+    midpoint = len(deltas) // 2
+    if len(deltas) % 2 == 1:
+        return float(deltas[midpoint])
+    return float((deltas[midpoint - 1] + deltas[midpoint]) / 2.0)
+
+
+def _markout_max_allowed_lag_seconds(
+    *,
+    horizon_seconds: int,
+    observation_cadence_seconds: float | None,
+) -> float:
+    base_limit = max(float(horizon_seconds) * 1.5, 15.0)
+    if isinstance(observation_cadence_seconds, float) and observation_cadence_seconds > 0.0:
+        base_limit = max(base_limit, observation_cadence_seconds * 1.35)
+    return min(180.0, base_limit)
+
+
 def _future_midpoint(
     *,
     observations: list[tuple[datetime, float]],
     target_ts: datetime,
-) -> float | None:
+    max_lag_seconds: float | None = None,
+) -> tuple[float | None, float | None, bool]:
     for observed_ts, midpoint in observations:
         if observed_ts >= target_ts:
-            return midpoint
-    return None
+            lag_seconds = max(0.0, (observed_ts - target_ts).total_seconds())
+            if isinstance(max_lag_seconds, float) and max_lag_seconds >= 0.0 and lag_seconds > max_lag_seconds:
+                return (None, lag_seconds, True)
+            return (midpoint, lag_seconds, False)
+    return (None, None, False)
 
 
 def _side_adjusted_markout(
@@ -477,6 +509,10 @@ def run_kalshi_micro_reconcile(
     total_resting_orders_count = 0
     journal_events: list[dict[str, Any]] = []
     execute_run_id = str(execute_summary.get("execution_journal_run_id") or "").strip()
+    markout_samples_scored = 0
+    markout_samples_missing_future_observation = 0
+    markout_samples_skipped_due_to_lag = 0
+    markout_observation_lags_seconds: list[float] = []
 
     for order, source in details:
         order_id = str(order.get("order_id") or "")
@@ -735,11 +771,17 @@ def run_kalshi_micro_reconcile(
             if ticker and ticker in history_midpoint_index:
                 fill_events_for_markout = [*existing_fill_events, *new_fill_events_for_markout]
                 observations = history_midpoint_index.get(ticker, [])
+                observation_cadence_seconds = _median_observation_interval_seconds(observations)
                 for horizon_seconds in (10, 60, 300):
                     if horizon_seconds in markout_horizons_logged:
                         continue
+                    max_allowed_lag_seconds = _markout_max_allowed_lag_seconds(
+                        horizon_seconds=horizon_seconds,
+                        observation_cadence_seconds=observation_cadence_seconds,
+                    )
                     weighted_markout = 0.0
                     weighted_contracts = 0.0
+                    weighted_observation_lag_seconds = 0.0
                     for fill_event in fill_events_for_markout:
                         fill_ts = fill_event.get("captured_at_utc")
                         fill_price = _parse_float(fill_event.get("limit_price_dollars"))
@@ -747,11 +789,16 @@ def run_kalshi_micro_reconcile(
                         fill_contracts = max(0.0, _parse_float(fill_event.get("contracts_fp")) or 0.0)
                         if not isinstance(fill_ts, datetime) or not isinstance(fill_price, float) or fill_contracts <= 0.0:
                             continue
-                        future_mid_yes = _future_midpoint(
+                        future_mid_yes, observation_lag_seconds, lag_exceeded = _future_midpoint(
                             observations=observations,
                             target_ts=fill_ts + timedelta(seconds=horizon_seconds),
+                            max_lag_seconds=max_allowed_lag_seconds,
                         )
+                        if lag_exceeded:
+                            markout_samples_skipped_due_to_lag += 1
+                            continue
                         if not isinstance(future_mid_yes, float):
+                            markout_samples_missing_future_observation += 1
                             continue
                         side_adjusted_markout = _side_adjusted_markout(
                             side=fill_side,
@@ -760,9 +807,14 @@ def run_kalshi_micro_reconcile(
                         )
                         weighted_markout += side_adjusted_markout * fill_contracts
                         weighted_contracts += fill_contracts
+                        if isinstance(observation_lag_seconds, float):
+                            weighted_observation_lag_seconds += observation_lag_seconds * fill_contracts
                     if weighted_contracts <= 0.0:
                         continue
                     markout_per_contract = weighted_markout / weighted_contracts
+                    markout_observation_lag_seconds = weighted_observation_lag_seconds / weighted_contracts
+                    markout_samples_scored += 1
+                    markout_observation_lags_seconds.append(markout_observation_lag_seconds)
                     journal_events.append(
                         {
                             **event_base,
@@ -783,6 +835,9 @@ def run_kalshi_micro_reconcile(
                             "horizon_seconds": horizon_seconds,
                             "markout_per_contract_dollars": markout_per_contract,
                             "markout_contracts": weighted_contracts,
+                            "markout_observation_lag_seconds": markout_observation_lag_seconds,
+                            "markout_max_allowed_lag_seconds": max_allowed_lag_seconds,
+                            "history_observation_cadence_seconds": observation_cadence_seconds,
                             "source": "reconcile",
                             "reconcile_fetch_source": source,
                             "execute_run_id": execute_run_id,
@@ -809,6 +864,16 @@ def run_kalshi_micro_reconcile(
     markout_snapshot_events_generated = sum(
         1 for event in journal_events if str(event.get("event_type") or "").strip() == "markout_snapshot"
     )
+    markout_observation_lag_seconds_avg = (
+        round(sum(markout_observation_lags_seconds) / len(markout_observation_lags_seconds), 6)
+        if markout_observation_lags_seconds
+        else None
+    )
+    markout_observation_lag_seconds_max = (
+        round(max(markout_observation_lags_seconds), 6)
+        if markout_observation_lags_seconds
+        else None
+    )
 
     summary = {
         "env_file": str(env_path),
@@ -822,6 +887,11 @@ def run_kalshi_micro_reconcile(
         "execution_journal_run_id": journal_run_id,
         "execution_journal_rows_written": execution_journal_rows_written,
         "markout_snapshot_events_generated": markout_snapshot_events_generated,
+        "markout_samples_scored": markout_samples_scored,
+        "markout_samples_missing_future_observation": markout_samples_missing_future_observation,
+        "markout_samples_skipped_due_to_lag": markout_samples_skipped_due_to_lag,
+        "markout_observation_lag_seconds_avg": markout_observation_lag_seconds_avg,
+        "markout_observation_lag_seconds_max": markout_observation_lag_seconds_max,
         "history_csv": str(history_path),
         "book_db_path": str(effective_book_db_path),
         "status_counts": status_counts,

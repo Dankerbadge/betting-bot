@@ -757,6 +757,80 @@ def _blend_temperature_model(
     return (blended_expected, blended_sigma)
 
 
+def _lag1_autocorrelation(values: list[float]) -> float:
+    if len(values) < 3:
+        return 0.0
+    x_values = values[:-1]
+    y_values = values[1:]
+    x_mean = mean(x_values)
+    y_mean = mean(y_values)
+    cov = 0.0
+    x_var = 0.0
+    y_var = 0.0
+    for x_value, y_value in zip(x_values, y_values, strict=False):
+        x_delta = x_value - x_mean
+        y_delta = y_value - y_mean
+        cov += x_delta * y_delta
+        x_var += x_delta * x_delta
+        y_var += y_delta * y_delta
+    if x_var <= 1e-12 or y_var <= 1e-12:
+        return 0.0
+    correlation = cov / math.sqrt(x_var * y_var)
+    return max(-0.95, min(0.95, correlation))
+
+
+def _rain_probability_regime_adjusted(pop_values: list[float]) -> dict[str, float]:
+    no_rain_probability = 1.0
+    for value in pop_values:
+        no_rain_probability *= (1.0 - value)
+    independent_probability = max(0.0, min(1.0, 1.0 - no_rain_probability))
+    if len(pop_values) < 3:
+        return {
+            "independent_probability": independent_probability,
+            "lag1_autocorrelation": 0.0,
+            "effective_independence_ratio": 1.0,
+            "persistence_adjusted_probability": independent_probability,
+            "concentration_ratio": 1.0,
+            "burst_blend_weight": 0.0,
+            "max_hourly_probability": max(pop_values) if pop_values else 0.0,
+            "regime_adjusted_probability": independent_probability,
+        }
+
+    lag1_autocorrelation = _lag1_autocorrelation(pop_values)
+    effective_independence_ratio = 1.0
+    if lag1_autocorrelation > 0.0:
+        effective_independence_ratio = max(
+            0.35,
+            min(1.0, (1.0 - lag1_autocorrelation) / (1.0 + lag1_autocorrelation)),
+        )
+    no_rain_persistence_adjusted = no_rain_probability**effective_independence_ratio
+    persistence_adjusted_probability = max(0.0, min(1.0, 1.0 - no_rain_persistence_adjusted))
+
+    total_pop = sum(pop_values)
+    top_hours = max(1, min(3, len(pop_values)))
+    top_pop_sum = sum(sorted(pop_values, reverse=True)[:top_hours])
+    concentration_ratio = max(0.0, min(1.0, (top_pop_sum / total_pop) if total_pop > 1e-9 else 1.0))
+    max_hourly_probability = max(pop_values)
+    burst_blend_weight = 0.12 + (0.40 * concentration_ratio) + (0.08 * max(0.0, lag1_autocorrelation))
+    burst_blend_weight = max(0.10, min(0.60, burst_blend_weight))
+
+    regime_adjusted_probability = (
+        ((1.0 - burst_blend_weight) * persistence_adjusted_probability)
+        + (burst_blend_weight * max_hourly_probability)
+    )
+    regime_adjusted_probability = max(0.0, min(1.0, regime_adjusted_probability))
+    return {
+        "independent_probability": independent_probability,
+        "lag1_autocorrelation": lag1_autocorrelation,
+        "effective_independence_ratio": effective_independence_ratio,
+        "persistence_adjusted_probability": persistence_adjusted_probability,
+        "concentration_ratio": concentration_ratio,
+        "burst_blend_weight": burst_blend_weight,
+        "max_hourly_probability": max_hourly_probability,
+        "regime_adjusted_probability": regime_adjusted_probability,
+    }
+
+
 def _build_daily_rain_prior(
     *,
     row: dict[str, str],
@@ -801,21 +875,9 @@ def _build_daily_rain_prior(
     if not pop_values:
         return None, "station_forecast_missing_precip_probability"
 
-    no_rain_probability = 1.0
-    for value in pop_values:
-        no_rain_probability *= (1.0 - value)
-    model_probability_raw_independent = 1.0 - no_rain_probability
-    model_probability_raw_unclamped = model_probability_raw_independent
-    rain_corr_weight = 0.0
-    if len(pop_values) >= 4:
-        pop_variability = pstdev(pop_values) if len(pop_values) > 1 else 0.0
-        pop_variability_normalized = min(1.0, max(0.0, pop_variability / 0.25))
-        rain_corr_weight = 0.35 + (0.45 * (1.0 - pop_variability_normalized))
-        max_hourly_pop = max(pop_values)
-        model_probability_raw_unclamped = (
-            (1.0 - rain_corr_weight) * model_probability_raw_independent
-            + rain_corr_weight * max_hourly_pop
-        )
+    rain_regime = _rain_probability_regime_adjusted(pop_values)
+    model_probability_raw_independent = float(rain_regime.get("independent_probability") or 0.0)
+    model_probability_raw_unclamped = float(rain_regime.get("regime_adjusted_probability") or 0.0)
     climatology_frequency = None
     if isinstance(history_payload, dict):
         rain_frequency = history_payload.get("rain_day_frequency")
@@ -838,9 +900,12 @@ def _build_daily_rain_prior(
     if isinstance(updated_dt, datetime):
         age_hours = max(0.0, (now - updated_dt).total_seconds() / 3600.0)
         age_penalty = min(0.2, age_hours / 48.0)
-    climatology_count = 0
-    if isinstance(history_payload, dict):
-        climatology_count = int(history_payload.get("sample_years") or 0)
+    history_health = _history_live_health(
+        history_payload,
+        contract_family="daily_rain",
+        sample_metric="precip",
+    )
+    climatology_count = int(_history_sample_years_for_metric(history_payload, sample_metric="precip") or 0)
     confidence = round(
         min(
             0.92,
@@ -865,12 +930,13 @@ def _build_daily_rain_prior(
         f"periods_used={len(pop_values)}",
         f"forecast_updated_at={updated_at or 'unknown'}",
         f"raw_pop_independent={model_probability_raw_independent:.4f}",
+        f"raw_pop_persistence_adjusted={float(rain_regime.get('persistence_adjusted_probability') or 0.0):.4f}",
+        f"raw_pop_regime_adjusted={float(rain_regime.get('regime_adjusted_probability') or 0.0):.4f}",
+        f"rain_lag1_autocorrelation={float(rain_regime.get('lag1_autocorrelation') or 0.0):.3f}",
+        f"rain_effective_independence_ratio={float(rain_regime.get('effective_independence_ratio') or 1.0):.3f}",
+        f"rain_hourly_concentration_ratio={float(rain_regime.get('concentration_ratio') or 1.0):.3f}",
+        f"rain_burst_blend_weight={float(rain_regime.get('burst_blend_weight') or 0.0):.3f}",
     ]
-    history_health = _history_live_health(
-        history_payload,
-        contract_family="daily_rain",
-        sample_metric="precip",
-    )
     window_start = str(settlement.get("observation_window_local_start") or "").strip()
     window_end = str(settlement.get("observation_window_local_end") or "").strip()
     if window_start and window_end:
@@ -886,8 +952,6 @@ def _build_daily_rain_prior(
         source_parts.append(f"station_history_live_ready={history_health.get('live_ready')}")
         source_parts.append(f"station_history_live_ready_reason={history_health.get('live_ready_reason')}")
     source_parts.append(f"execution_guarded_probability={execution_probability:.4f}")
-    if rain_corr_weight > 0.0:
-        source_parts.append(f"rain_corr_weight={rain_corr_weight:.3f}")
 
     return (
         {
@@ -917,7 +981,7 @@ def _build_daily_rain_prior(
             "last_evidence_at": updated_at,
             "contract_family": "daily_rain",
             "resolution_source_type": "weather_forecast",
-            "model_name": "weather_rain_pop_historical_v2",
+            "model_name": "weather_rain_pop_regime_historical_v3",
             "model_probability_raw": round(float(model_probability_raw_unclamped), 6),
             "execution_probability_guarded": execution_probability,
             "market_midpoint_probability": market_midpoint if market_midpoint is not None else "",

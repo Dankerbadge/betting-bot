@@ -773,6 +773,9 @@ class KalshiWeatherPriorsTests(unittest.TestCase):
             self.assertEqual(row["weather_station_history_sample_metric"], "precip")
             self.assertEqual(row["weather_station_history_sample_years"], "5")
             self.assertEqual(row["weather_station_history_sample_years_total"], "20")
+            self.assertEqual(row["evidence_count"], "6")
+            self.assertGreater(float(row["confidence"]), 0.43)
+            self.assertLess(float(row["confidence"]), 0.50)
             self.assertEqual(row["weather_station_history_live_ready"], "False")
             self.assertEqual(row["weather_station_history_live_ready_reason"], "insufficient_sample_years")
 
