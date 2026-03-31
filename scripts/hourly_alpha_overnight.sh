@@ -12,6 +12,9 @@ export BETBOT_PRIORS_CSV="${BETBOT_PRIORS_CSV:-$REPO_ROOT/data/research/kalshi_n
 export BETBOT_WEATHER_LOOKBACK_YEARS="${BETBOT_WEATHER_LOOKBACK_YEARS:-15}"
 export BETBOT_WEATHER_PREWARM_MAX_KEYS="${BETBOT_WEATHER_PREWARM_MAX_KEYS:-500}"
 export BETBOT_WEATHER_CACHE_MAX_AGE_HOURS="${BETBOT_WEATHER_CACHE_MAX_AGE_HOURS:-24}"
+export BETBOT_WEATHER_PRIOR_MAX_AGE_HOURS="${BETBOT_WEATHER_PRIOR_MAX_AGE_HOURS:-6}"
+export BETBOT_WEATHER_PRIOR_MAX_MARKETS="${BETBOT_WEATHER_PRIOR_MAX_MARKETS:-30}"
+export BETBOT_WEATHER_ALLOWED_CONTRACT_FAMILIES="${BETBOT_WEATHER_ALLOWED_CONTRACT_FAMILIES:-daily_rain,daily_temperature}"
 export BETBOT_TIMEOUT_SECONDS="${BETBOT_TIMEOUT_SECONDS:-15}"
 export BETBOT_FRONTIER_RECENT_ROWS="${BETBOT_FRONTIER_RECENT_ROWS:-20000}"
 export BETBOT_FRONTIER_MAX_AGE_SECONDS="${BETBOT_FRONTIER_MAX_AGE_SECONDS:-10800}"
@@ -26,6 +29,7 @@ if ! mkdir "$LOCK_DIR" 2>/dev/null; then
   python3 - <<'PY'
 from __future__ import annotations
 
+import csv
 from datetime import datetime, timezone
 import json
 import os
@@ -119,6 +123,7 @@ cd "$REPO_ROOT"
 python3 - <<'PY'
 from __future__ import annotations
 
+import csv
 from datetime import datetime, timezone
 import json
 import os
@@ -266,6 +271,75 @@ def _weather_cache_state(*, output_dir: Path, max_age_hours: float) -> dict[str,
     return state
 
 
+def _parse_csv_list(value: str | None) -> list[str]:
+    text = str(value or "").strip()
+    if not text:
+        return []
+    items = [part.strip() for part in text.split(",")]
+    return [item for item in items if item]
+
+
+def _weather_prior_state(
+    *,
+    priors_csv: Path,
+    max_age_hours: float,
+    allowed_contract_families: list[str],
+) -> dict[str, Any]:
+    threshold_seconds = max(0.0, float(max_age_hours)) * 3600.0
+    meta = _file_meta(priors_csv)
+    state: dict[str, Any] = {
+        "priors_csv": str(priors_csv),
+        "priors_exists": bool(meta.get("exists")),
+        "priors_mtime_utc": meta.get("mtime_utc"),
+        "priors_age_seconds": meta.get("age_seconds"),
+        "priors_freshness_threshold_seconds": round(threshold_seconds, 3),
+        "allowed_contract_families": list(allowed_contract_families),
+        "contract_family_counts": {},
+        "allowed_family_counts": {},
+        "allowed_rows_total": 0,
+        "stale": True,
+        "reason": "priors_missing",
+        "parse_error": None,
+    }
+    if not bool(meta.get("exists")):
+        return state
+    age_seconds = _parse_float(meta.get("age_seconds"))
+    if age_seconds is not None and age_seconds > threshold_seconds:
+        state["reason"] = "priors_stale"
+    else:
+        state["reason"] = "no_allowed_weather_priors"
+
+    counts: dict[str, int] = {}
+    try:
+        with priors_csv.open("r", newline="", encoding="utf-8") as handle:
+            reader = csv.DictReader(handle)
+            for row in reader:
+                family = str((row or {}).get("contract_family") or "").strip()
+                if not family:
+                    continue
+                counts[family] = counts.get(family, 0) + 1
+    except Exception as exc:  # pragma: no cover - best effort diagnostics
+        state["parse_error"] = str(exc)
+        state["reason"] = "priors_parse_error"
+        return state
+
+    state["contract_family_counts"] = counts
+    allowed_counts = {family: int(counts.get(family, 0)) for family in allowed_contract_families}
+    state["allowed_family_counts"] = allowed_counts
+    allowed_rows_total = sum(allowed_counts.values())
+    state["allowed_rows_total"] = int(allowed_rows_total)
+
+    if state["reason"] == "priors_stale":
+        state["stale"] = True
+    elif allowed_rows_total <= 0:
+        state["stale"] = True
+        state["reason"] = "no_allowed_weather_priors"
+    else:
+        state["stale"] = False
+        state["reason"] = "weather_priors_fresh"
+    return state
+
+
 def _run_step(
     *,
     name: str,
@@ -342,6 +416,16 @@ def _run_step(
             step["failed_station_day_keys"] = parsed.get("failed_station_day_keys")
             step["status_counts"] = parsed.get("status_counts")
             step["station_history_cache_dir"] = parsed.get("station_history_cache_dir")
+        elif name == "weather_prior_refresh":
+            step["generated_priors"] = parsed.get("generated_priors")
+            step["candidate_markets"] = parsed.get("candidate_markets")
+            step["inserted_rows"] = parsed.get("inserted_rows")
+            step["updated_rows"] = parsed.get("updated_rows")
+            step["manual_rows_protected"] = parsed.get("manual_rows_protected")
+            step["contract_family_generated_counts"] = parsed.get("contract_family_generated_counts")
+            step["station_history_status_counts"] = parsed.get("station_history_status_counts")
+            step["top_market_ticker"] = parsed.get("top_market_ticker")
+            step["top_market_confidence"] = parsed.get("top_market_confidence")
         elif name == "execution_frontier_refresh":
             trusted = parsed.get("trusted_break_even_edge_by_bucket")
             trust_map = parsed.get("bucket_markout_trust_by_bucket")
@@ -441,6 +525,7 @@ def _run_preflight(
     required_commands = [
         "kalshi-micro-status",
         "kalshi-nonsports-capture",
+        "kalshi-weather-priors",
         "kalshi-weather-prewarm",
         "kalshi-execution-frontier",
         "kalshi-micro-prior-trader",
@@ -1059,6 +1144,55 @@ def main() -> int:
             )
         )
 
+    allowed_weather_contract_families = _parse_csv_list(
+        os.environ.get("BETBOT_WEATHER_ALLOWED_CONTRACT_FAMILIES")
+    )
+    if not allowed_weather_contract_families:
+        allowed_weather_contract_families = ["daily_rain", "daily_temperature"]
+    weather_prior_state_before = _weather_prior_state(
+        priors_csv=priors_csv,
+        max_age_hours=float(os.environ.get("BETBOT_WEATHER_PRIOR_MAX_AGE_HOURS", "6")),
+        allowed_contract_families=allowed_weather_contract_families,
+    )
+    if bool(weather_prior_state_before.get("stale")):
+        weather_prior_step = _run_step(
+            name="weather_prior_refresh",
+            launcher=launcher,
+            args=[
+                "kalshi-weather-priors",
+                "--priors-csv",
+                str(priors_csv),
+                "--history-csv",
+                str(history_csv),
+                "--allowed-contract-families",
+                ",".join(allowed_weather_contract_families),
+                "--max-markets",
+                str(max(1, int(os.environ.get("BETBOT_WEATHER_PRIOR_MAX_MARKETS", "30")))),
+                "--timeout-seconds",
+                str(float(os.environ.get("BETBOT_TIMEOUT_SECONDS", "15"))),
+                "--historical-lookback-years",
+                str(int(os.environ.get("BETBOT_WEATHER_LOOKBACK_YEARS", "15"))),
+                "--station-history-cache-max-age-hours",
+                str(float(os.environ.get("BETBOT_WEATHER_CACHE_MAX_AGE_HOURS", "24"))),
+                "--output-dir",
+                str(output_dir),
+            ],
+            cwd=repo_root,
+            run_dir=run_logs,
+        )
+        weather_prior_step["prior_state_before"] = weather_prior_state_before
+        steps.append(weather_prior_step)
+    else:
+        steps.append(
+            _synthetic_step(
+                name="weather_prior_refresh",
+                status="skipped_fresh_weather_priors",
+                ok=True,
+                reason=str(weather_prior_state_before.get("reason") or "weather_priors_fresh"),
+                payload={"prior_state_before": weather_prior_state_before},
+            )
+        )
+
     frontier_refresh_step = _run_step(
         name="execution_frontier_refresh",
         launcher=launcher,
@@ -1137,6 +1271,12 @@ def main() -> int:
 
     balance_step = next((step for step in steps if step.get("name") == "balance_heartbeat"), None)
     frontier_step = next((step for step in steps if step.get("name") == "execution_frontier_refresh"), None)
+    weather_prior_step = next((step for step in steps if step.get("name") == "weather_prior_refresh"), None)
+    weather_prior_state_after = _weather_prior_state(
+        priors_csv=priors_csv,
+        max_age_hours=float(os.environ.get("BETBOT_WEATHER_PRIOR_MAX_AGE_HOURS", "6")),
+        allowed_contract_families=allowed_weather_contract_families,
+    )
 
     live_blockers: list[str] = []
     if isinstance(balance_step, dict) and not bool(balance_step.get("balance_live_ready")):
@@ -1152,6 +1292,8 @@ def main() -> int:
         capture_status = str(prior_trader_step.get("capture_status") or "").strip().lower()
         if capture_status and capture_status not in {"ready", "ok"}:
             live_blockers.append(f"capture_{capture_status}")
+    if bool(weather_prior_state_after.get("stale")):
+        live_blockers.append("weather_priors_stale_or_empty")
     live_blockers = _dedupe(live_blockers)
     pipeline_ready = overall_status == "ok"
     live_ready = pipeline_ready and not live_blockers
@@ -1214,6 +1356,22 @@ def main() -> int:
             if isinstance(prior_trader_step, dict)
             else None
         ),
+        "weather_prior_refresh_status": (
+            weather_prior_step.get("status")
+            if isinstance(weather_prior_step, dict)
+            else None
+        ),
+        "weather_prior_refresh_reason": (
+            weather_prior_step.get("reason")
+            if isinstance(weather_prior_step, dict)
+            else None
+        ),
+        "weather_prior_allowed_contract_families": list(allowed_weather_contract_families),
+        "weather_prior_allowed_family_counts": weather_prior_state_after.get("allowed_family_counts"),
+        "weather_prior_allowed_rows_total": weather_prior_state_after.get("allowed_rows_total"),
+        "weather_prior_state_reason": weather_prior_state_after.get("reason"),
+        "weather_prior_stale": bool(weather_prior_state_after.get("stale")),
+        "weather_prior_age_seconds": weather_prior_state_after.get("priors_age_seconds"),
         "prefer_empirical_fill_model": (
             prior_trader_step.get("execution_empirical_fill_model_prefer_empirical")
             if isinstance(prior_trader_step, dict)
