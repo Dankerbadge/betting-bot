@@ -12,6 +12,7 @@ from urllib.error import URLError
 from betbot.kalshi_book import ensure_book_schema
 from betbot.kalshi_micro_execute import (
     _http_request_json,
+    _estimate_empirical_fill_probabilities_from_rows,
     _load_latest_break_even_edges_by_bucket,
     _read_exchange_status,
     _should_allow_untrusted_bucket_probe,
@@ -442,6 +443,62 @@ class KalshiMicroExecuteTests(unittest.TestCase):
             self.assertEqual(reference_file, str(report_path))
             self.assertTrue(meta.get("stale"))
             self.assertTrue(str(meta.get("stale_reason") or "").startswith("frontier_report_stale:"))
+
+    def test_estimate_empirical_fill_probabilities_from_rows_returns_learned_profile(self) -> None:
+        training_rows = [
+            {
+                "frontier_bucket": "aggr_mid|spread_mid|ttc_short",
+                "age_seconds": 1200.0,
+                "quote_aggressiveness": 0.55,
+                "order_size_depth_ratio": 0.15,
+                "queue_ahead_estimate_contracts": 6.0,
+                "market_spread_dollars": 0.02,
+                "market_hours_to_close": 14.0,
+                "first_fill_seconds": 22.0,
+                "full_fill_seconds": 46.0,
+            },
+            {
+                "frontier_bucket": "aggr_mid|spread_mid|ttc_short",
+                "age_seconds": 2400.0,
+                "quote_aggressiveness": 0.53,
+                "order_size_depth_ratio": 0.18,
+                "queue_ahead_estimate_contracts": 8.0,
+                "market_spread_dollars": 0.018,
+                "market_hours_to_close": 13.0,
+                "first_fill_seconds": 80.0,
+                "full_fill_seconds": None,
+            },
+            {
+                "frontier_bucket": "aggr_mid|spread_mid|ttc_short",
+                "age_seconds": 3600.0,
+                "quote_aggressiveness": 0.56,
+                "order_size_depth_ratio": 0.2,
+                "queue_ahead_estimate_contracts": 5.0,
+                "market_spread_dollars": 0.019,
+                "market_hours_to_close": 11.0,
+                "first_fill_seconds": None,
+                "full_fill_seconds": None,
+            },
+        ]
+        profile = _estimate_empirical_fill_probabilities_from_rows(
+            training_rows=training_rows,
+            frontier_bucket="aggr_mid|spread_mid|ttc_short",
+            attempt={
+                "quote_aggressiveness": 0.54,
+                "order_size_depth_ratio": 0.17,
+                "queue_ahead_estimate_contracts": 7.0,
+                "market_spread_dollars": 0.019,
+                "market_hours_to_close": 12.0,
+            },
+            horizon_seconds=180.0,
+            min_effective_samples=2.0,
+        )
+        self.assertIsInstance(profile, dict)
+        assert isinstance(profile, dict)
+        self.assertEqual(profile.get("source"), "learned_hazard")
+        self.assertGreater(float(profile.get("effective_samples") or 0.0), 1.0)
+        self.assertGreater(float(profile.get("fill_prob_60s") or 0.0), 0.0)
+        self.assertGreaterEqual(float(profile.get("fill_prob_horizon") or 0.0), float(profile.get("full_fill_prob_horizon") or 0.0))
 
     def test_run_kalshi_micro_execute_allows_guarded_untrusted_bucket_probe_submission(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -17,6 +17,7 @@ from betbot.kalshi_execution_frontier import run_kalshi_execution_frontier
 from betbot.kalshi_execution_journal import (
     append_execution_events,
     default_execution_journal_db_path,
+    load_execution_events,
 )
 from betbot.kalshi_book import (
     count_open_positions,
@@ -249,6 +250,242 @@ def _should_allow_untrusted_bucket_probe(
     return True, "probe_submit_untrusted_bucket_sample_depth"
 
 
+def _execution_fill_horizon_seconds(
+    *,
+    hours_to_close: float | None,
+    resting_hold_seconds: float,
+) -> float:
+    if resting_hold_seconds > 0:
+        return max(10.0, min(300.0, resting_hold_seconds))
+    if isinstance(hours_to_close, float) and hours_to_close > 0:
+        return max(60.0, min(300.0, hours_to_close * 90.0))
+    return 180.0
+
+
+def _journal_order_key(event: dict[str, Any]) -> str:
+    exchange_order_id = str(event.get("exchange_order_id") or "").strip()
+    if exchange_order_id:
+        return f"exchange:{exchange_order_id}"
+    client_order_id = str(event.get("client_order_id") or "").strip()
+    if client_order_id:
+        return f"client:{client_order_id}"
+    market_ticker = str(event.get("market_ticker") or "").strip()
+    event_id = str(event.get("event_id") or "").strip()
+    return f"fallback:{market_ticker}:{event_id}"
+
+
+def _build_empirical_fill_training_rows(
+    *,
+    journal_db_path: str | Path,
+    as_of: datetime,
+    lookback_days: float,
+    recent_events: int,
+) -> list[dict[str, Any]]:
+    rows = load_execution_events(
+        journal_db_path=journal_db_path,
+        limit=max(1, int(recent_events)),
+    )
+    rows.sort(
+        key=lambda event: (
+            _parse_ts(event.get("captured_at_utc")) or datetime.min.replace(tzinfo=timezone.utc),
+            int(event.get("event_id") or 0),
+        )
+    )
+    lookback_seconds = max(0.0, float(lookback_days)) * 86400.0
+    orders: dict[str, dict[str, Any]] = {}
+    for event in rows:
+        event_type = str(event.get("event_type") or "").strip()
+        if not event_type:
+            continue
+        order_key = _journal_order_key(event)
+        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+        order = orders.setdefault(
+            order_key,
+            {
+                "submitted_at": None,
+                "first_fill_at": None,
+                "full_fill_at": None,
+                "frontier_bucket": str(payload.get("execution_frontier_bucket") or "").strip(),
+                "quote_aggressiveness": _parse_float(payload.get("quote_aggressiveness")),
+                "order_size_depth_ratio": _parse_float(payload.get("order_size_depth_ratio")),
+                "queue_ahead_estimate_contracts": _parse_float(payload.get("queue_ahead_estimate_contracts")),
+                "market_spread_dollars": _parse_float(event.get("spread_dollars")),
+                "market_hours_to_close": (
+                    (_parse_float(event.get("time_to_close_seconds")) or 0.0) / 3600.0
+                    if isinstance(_parse_float(event.get("time_to_close_seconds")), float)
+                    else None
+                ),
+            },
+        )
+        event_ts = _parse_ts(event.get("captured_at_utc"))
+        if isinstance(payload, dict):
+            if not order.get("frontier_bucket"):
+                order["frontier_bucket"] = str(payload.get("execution_frontier_bucket") or "").strip()
+            if _parse_float(payload.get("quote_aggressiveness")) is not None:
+                order["quote_aggressiveness"] = _parse_float(payload.get("quote_aggressiveness"))
+            if _parse_float(payload.get("order_size_depth_ratio")) is not None:
+                order["order_size_depth_ratio"] = _parse_float(payload.get("order_size_depth_ratio"))
+            if _parse_float(payload.get("queue_ahead_estimate_contracts")) is not None:
+                order["queue_ahead_estimate_contracts"] = _parse_float(payload.get("queue_ahead_estimate_contracts"))
+        spread_value = _parse_float(event.get("spread_dollars"))
+        if isinstance(spread_value, float):
+            order["market_spread_dollars"] = spread_value
+        ttc_seconds = _parse_float(event.get("time_to_close_seconds"))
+        if isinstance(ttc_seconds, float):
+            order["market_hours_to_close"] = max(0.0, ttc_seconds / 3600.0)
+
+        if event_type == "order_submitted":
+            if event_ts is not None:
+                order["submitted_at"] = event_ts
+        elif event_type in {"partial_fill", "full_fill"}:
+            if event_ts is not None and order.get("first_fill_at") is None:
+                order["first_fill_at"] = event_ts
+            if event_type == "full_fill" and event_ts is not None:
+                order["full_fill_at"] = event_ts
+
+    training_rows: list[dict[str, Any]] = []
+    for order in orders.values():
+        submitted_at = order.get("submitted_at")
+        if not isinstance(submitted_at, datetime):
+            continue
+        age_seconds = max(0.0, (as_of - submitted_at).total_seconds())
+        if lookback_seconds > 0 and age_seconds > lookback_seconds:
+            continue
+        if age_seconds < 10.0:
+            continue
+        first_fill_at = order.get("first_fill_at")
+        full_fill_at = order.get("full_fill_at")
+        first_fill_seconds = (
+            max(0.0, (first_fill_at - submitted_at).total_seconds())
+            if isinstance(first_fill_at, datetime)
+            else None
+        )
+        full_fill_seconds = (
+            max(0.0, (full_fill_at - submitted_at).total_seconds())
+            if isinstance(full_fill_at, datetime)
+            else None
+        )
+        frontier_bucket = str(order.get("frontier_bucket") or "").strip()
+        if not frontier_bucket:
+            tmp_attempt = {
+                "quote_aggressiveness": order.get("quote_aggressiveness"),
+                "market_spread_dollars": order.get("market_spread_dollars"),
+                "market_hours_to_close": order.get("market_hours_to_close"),
+            }
+            frontier_bucket = _execution_frontier_bucket_for_attempt(tmp_attempt)
+        training_rows.append(
+            {
+                "frontier_bucket": frontier_bucket,
+                "submitted_at": submitted_at,
+                "age_seconds": age_seconds,
+                "quote_aggressiveness": _parse_float(order.get("quote_aggressiveness")),
+                "order_size_depth_ratio": _parse_float(order.get("order_size_depth_ratio")),
+                "queue_ahead_estimate_contracts": _parse_float(order.get("queue_ahead_estimate_contracts")),
+                "market_spread_dollars": _parse_float(order.get("market_spread_dollars")),
+                "market_hours_to_close": _parse_float(order.get("market_hours_to_close")),
+                "first_fill_seconds": first_fill_seconds,
+                "full_fill_seconds": full_fill_seconds,
+            }
+        )
+    return training_rows
+
+
+def _estimate_empirical_fill_probabilities_from_rows(
+    *,
+    training_rows: list[dict[str, Any]],
+    frontier_bucket: str,
+    attempt: dict[str, Any],
+    horizon_seconds: float,
+    min_effective_samples: float,
+) -> dict[str, Any] | None:
+    bucket_rows = [row for row in training_rows if str(row.get("frontier_bucket") or "") == frontier_bucket]
+    if not bucket_rows:
+        return None
+    aggr_now = _parse_float(attempt.get("quote_aggressiveness"))
+    spread_now = _parse_float(attempt.get("market_spread_dollars"))
+    size_ratio_now = _parse_float(attempt.get("order_size_depth_ratio"))
+    queue_now = _parse_float(attempt.get("queue_ahead_estimate_contracts"))
+    ttc_now = _parse_float(attempt.get("market_hours_to_close"))
+
+    weighted_sum = 0.0
+    weighted_sum_sq = 0.0
+    weighted_fill_10s = 0.0
+    weighted_fill_60s = 0.0
+    weighted_fill_300s = 0.0
+    weighted_fill_h = 0.0
+    weighted_full_h = 0.0
+    for row in bucket_rows:
+        dist = 0.0
+        row_aggr = _parse_float(row.get("quote_aggressiveness"))
+        row_spread = _parse_float(row.get("market_spread_dollars"))
+        row_size_ratio = _parse_float(row.get("order_size_depth_ratio"))
+        row_queue = _parse_float(row.get("queue_ahead_estimate_contracts"))
+        row_ttc = _parse_float(row.get("market_hours_to_close"))
+        if isinstance(aggr_now, float) and isinstance(row_aggr, float):
+            dist += 1.8 * abs(aggr_now - row_aggr)
+        else:
+            dist += 0.35
+        if isinstance(spread_now, float) and isinstance(row_spread, float):
+            dist += 1.2 * _clamp(abs(spread_now - row_spread) / 0.03, 0.0, 4.0)
+        else:
+            dist += 0.2
+        if isinstance(size_ratio_now, float) and isinstance(row_size_ratio, float):
+            dist += 2.0 * abs(size_ratio_now - row_size_ratio)
+        else:
+            dist += 0.25
+        if isinstance(queue_now, float) and isinstance(row_queue, float):
+            queue_scale = max(abs(queue_now), abs(row_queue), 10.0)
+            dist += 0.7 * _clamp(abs(queue_now - row_queue) / queue_scale, 0.0, 2.0)
+        if isinstance(ttc_now, float) and isinstance(row_ttc, float):
+            dist += 0.35 * _clamp(abs(ttc_now - row_ttc) / 48.0, 0.0, 2.0)
+
+        age_seconds = max(0.0, _parse_float(row.get("age_seconds")) or 0.0)
+        recency_decay = 0.5 ** (age_seconds / (14.0 * 86400.0))
+        distance_decay = 1.0 / ((1.0 + dist) ** 2)
+        weight = recency_decay * distance_decay
+        if weight <= 1e-9:
+            continue
+        weighted_sum += weight
+        weighted_sum_sq += weight * weight
+
+        first_fill_seconds = _parse_float(row.get("first_fill_seconds"))
+        full_fill_seconds = _parse_float(row.get("full_fill_seconds"))
+        if isinstance(first_fill_seconds, float) and first_fill_seconds <= 10.0 + 1e-9:
+            weighted_fill_10s += weight
+        if isinstance(first_fill_seconds, float) and first_fill_seconds <= 60.0 + 1e-9:
+            weighted_fill_60s += weight
+        if isinstance(first_fill_seconds, float) and first_fill_seconds <= 300.0 + 1e-9:
+            weighted_fill_300s += weight
+        if isinstance(first_fill_seconds, float) and first_fill_seconds <= horizon_seconds + 1e-9:
+            weighted_fill_h += weight
+        if isinstance(full_fill_seconds, float) and full_fill_seconds <= horizon_seconds + 1e-9:
+            weighted_full_h += weight
+
+    if weighted_sum <= 1e-9:
+        return None
+    effective_samples = (weighted_sum * weighted_sum) / max(weighted_sum_sq, 1e-9)
+    if effective_samples < max(1.0, float(min_effective_samples) * 0.45):
+        return None
+
+    fill_prob_10s = _clamp(weighted_fill_10s / weighted_sum, 0.01, 0.99)
+    fill_prob_60s = _clamp(weighted_fill_60s / weighted_sum, 0.01, 0.99)
+    fill_prob_300s = _clamp(weighted_fill_300s / weighted_sum, 0.01, 0.99)
+    fill_prob_h = _clamp(weighted_fill_h / weighted_sum, 0.01, 0.99)
+    full_prob_h = _clamp(weighted_full_h / weighted_sum, 0.0, fill_prob_h)
+    partial_prob_h = max(0.0, fill_prob_h - full_prob_h)
+    return {
+        "source": "learned_hazard",
+        "effective_samples": round(float(effective_samples), 4),
+        "rows_used": int(len(bucket_rows)),
+        "fill_prob_10s": round(fill_prob_10s, 6),
+        "fill_prob_60s": round(fill_prob_60s, 6),
+        "fill_prob_300s": round(fill_prob_300s, 6),
+        "fill_prob_horizon": round(fill_prob_h, 6),
+        "full_fill_prob_horizon": round(full_prob_h, 6),
+        "partial_fill_prob_horizon": round(partial_prob_h, 6),
+    }
+
+
 def _execution_policy_metrics(
     *,
     plan: dict[str, Any],
@@ -256,6 +493,8 @@ def _execution_policy_metrics(
     orderbook: dict[str, Any],
     resting_hold_seconds: float,
     empirical_fill_profile: dict[str, Any] | None = None,
+    empirical_fill_min_effective_samples: float = 6.0,
+    prefer_empirical_fill_model: bool = True,
 ) -> dict[str, Any]:
     planned_contracts = _coalesce_float(
         plan.get("contracts_per_order"),
@@ -320,12 +559,10 @@ def _execution_policy_metrics(
     heuristic_fill_prob_60s = base_fill_60s
     heuristic_fill_prob_300s = 1.0 - ((1.0 - base_fill_60s) ** (300.0 / 60.0))
 
-    if resting_hold_seconds > 0:
-        horizon_seconds = max(10.0, min(300.0, resting_hold_seconds))
-    elif isinstance(hours_to_close, float) and hours_to_close > 0:
-        horizon_seconds = max(60.0, min(300.0, hours_to_close * 90.0))
-    else:
-        horizon_seconds = 180.0
+    horizon_seconds = _execution_fill_horizon_seconds(
+        hours_to_close=hours_to_close,
+        resting_hold_seconds=resting_hold_seconds,
+    )
     heuristic_fill_prob_horizon = 1.0 - ((1.0 - base_fill_60s) ** (horizon_seconds / 60.0))
     heuristic_full_share = _clamp(1.0 - (0.55 * order_size_depth_ratio), 0.05, 1.0)
 
@@ -335,6 +572,8 @@ def _execution_policy_metrics(
     empirical_orders_submitted_bucket = ""
     empirical_fill_rate_bucket = ""
     empirical_full_fill_rate_bucket = ""
+    empirical_effective_samples_bucket = ""
+    empirical_rows_used_bucket = ""
 
     fill_prob_10s = heuristic_fill_prob_10s
     fill_prob_60s = heuristic_fill_prob_60s
@@ -343,19 +582,75 @@ def _execution_policy_metrics(
     full_share = heuristic_full_share
 
     if isinstance(empirical_fill_profile, dict) and empirical_fill_profile:
-        empirical_probs = _derive_empirical_fill_probabilities(
-            bucket_profile=empirical_fill_profile,
-            horizon_seconds=horizon_seconds,
-        )
-        if isinstance(empirical_probs, dict):
-            orders_submitted_bucket = max(0, int(empirical_probs.get("orders_submitted") or 0))
-            empirical_fill_weight = _empirical_fill_weight(
-                orders_submitted=orders_submitted_bucket,
-                markout_trusted=bool(empirical_fill_profile.get("markout_trusted")),
+        empirical_probs: dict[str, Any] | None = None
+        empirical_profile_source = str(empirical_fill_profile.get("source") or "").strip().lower()
+        if empirical_profile_source == "learned_hazard":
+            if all(
+                key in empirical_fill_profile
+                for key in (
+                    "fill_prob_10s",
+                    "fill_prob_60s",
+                    "fill_prob_300s",
+                    "fill_prob_horizon",
+                    "full_fill_prob_horizon",
+                    "partial_fill_prob_horizon",
+                )
+            ):
+                empirical_probs = dict(empirical_fill_profile)
+        else:
+            empirical_probs = _derive_empirical_fill_probabilities(
+                bucket_profile=empirical_fill_profile,
+                horizon_seconds=horizon_seconds,
             )
+        if isinstance(empirical_probs, dict):
+            orders_submitted_bucket = max(
+                0,
+                int(
+                    empirical_probs.get("orders_submitted")
+                    or empirical_fill_profile.get("orders_submitted")
+                    or empirical_probs.get("rows_used")
+                    or 0
+                ),
+            )
+            effective_samples = _parse_float(empirical_probs.get("effective_samples"))
+            if effective_samples is None:
+                effective_samples = _parse_float(empirical_fill_profile.get("effective_samples"))
+            if effective_samples is None:
+                effective_samples = float(orders_submitted_bucket)
+            empirical_effective_samples_bucket = round(float(effective_samples), 4)
+            empirical_rows_used_bucket = max(
+                0,
+                int(
+                    empirical_probs.get("rows_used")
+                    or empirical_fill_profile.get("rows_used")
+                    or orders_submitted_bucket
+                ),
+            )
+            markout_trusted = bool(empirical_fill_profile.get("markout_trusted"))
+            if empirical_profile_source == "learned_hazard":
+                empirical_fill_weight = _clamp(
+                    (float(effective_samples) - 1.5)
+                    / max(1.0, float(empirical_fill_min_effective_samples) * 1.8),
+                    0.0,
+                    0.95,
+                )
+                if markout_trusted:
+                    empirical_fill_weight = min(0.98, empirical_fill_weight + 0.08)
+                if prefer_empirical_fill_model and float(effective_samples) >= float(empirical_fill_min_effective_samples):
+                    empirical_fill_weight = max(0.75, empirical_fill_weight)
+            else:
+                empirical_fill_weight = _empirical_fill_weight(
+                    orders_submitted=orders_submitted_bucket,
+                    markout_trusted=markout_trusted,
+                )
             if empirical_fill_weight > 0.0:
                 heuristic_fill_weight = _clamp(1.0 - empirical_fill_weight, 0.0, 1.0)
-                fill_probability_source = "blended_empirical"
+                if empirical_profile_source == "learned_hazard" and empirical_fill_weight >= 0.75:
+                    fill_probability_source = "empirical_primary_learned_hazard"
+                elif empirical_profile_source == "learned_hazard":
+                    fill_probability_source = "blended_learned_hazard"
+                else:
+                    fill_probability_source = "blended_empirical"
                 fill_probability_model_weight_empirical = empirical_fill_weight
                 fill_probability_model_weight_heuristic = heuristic_fill_weight
                 fill_prob_10s = (
@@ -374,15 +669,27 @@ def _execution_policy_metrics(
                     (heuristic_fill_weight * heuristic_fill_prob_horizon)
                     + (empirical_fill_weight * float(empirical_probs.get("fill_prob_horizon") or 0.0))
                 )
+                explicit_full_prob_h = _parse_float(empirical_probs.get("full_fill_prob_horizon"))
                 empirical_full_share = _clamp(float(empirical_probs.get("full_share") or 0.0), 0.05, 1.0)
+                if isinstance(explicit_full_prob_h, float) and isinstance(_parse_float(empirical_probs.get("fill_prob_horizon")), float):
+                    fill_h = max(1e-6, float(empirical_probs.get("fill_prob_horizon") or 0.0))
+                    empirical_full_share = _clamp(explicit_full_prob_h / fill_h, 0.05, 1.0)
                 full_share = _clamp(
                     (heuristic_fill_weight * heuristic_full_share) + (empirical_fill_weight * empirical_full_share),
                     0.05,
                     1.0,
                 )
                 empirical_orders_submitted_bucket = orders_submitted_bucket
-                empirical_fill_rate_bucket = round(float(empirical_probs.get("fill_rate") or 0.0), 6)
-                empirical_full_fill_rate_bucket = round(float(empirical_probs.get("full_fill_rate") or 0.0), 6)
+                fill_rate_bucket = _parse_float(empirical_probs.get("fill_rate"))
+                full_fill_rate_bucket = _parse_float(empirical_probs.get("full_fill_rate"))
+                if fill_rate_bucket is None:
+                    fill_rate_bucket = _parse_float(empirical_fill_profile.get("fill_rate"))
+                if full_fill_rate_bucket is None:
+                    full_fill_rate_bucket = _parse_float(empirical_fill_profile.get("full_fill_rate"))
+                if isinstance(fill_rate_bucket, float):
+                    empirical_fill_rate_bucket = round(fill_rate_bucket, 6)
+                if isinstance(full_fill_rate_bucket, float):
+                    empirical_full_fill_rate_bucket = round(full_fill_rate_bucket, 6)
 
     fill_prob_10s = round(_clamp(fill_prob_10s, 0.01, 0.99), 6)
     fill_prob_60s = round(_clamp(fill_prob_60s, 0.01, 0.99), 6)
@@ -422,6 +729,8 @@ def _execution_policy_metrics(
             "execution_empirical_orders_submitted_bucket": empirical_orders_submitted_bucket,
             "execution_empirical_fill_rate_bucket": empirical_fill_rate_bucket,
             "execution_empirical_full_fill_rate_bucket": empirical_full_fill_rate_bucket,
+            "execution_empirical_effective_samples_bucket": empirical_effective_samples_bucket,
+            "execution_empirical_rows_used_bucket": empirical_rows_used_bucket,
             "execution_expected_spread_capture_per_contract_dollars": "",
             "execution_expected_adverse_selection_per_contract_dollars": "",
             "execution_expected_partial_fill_drag_per_contract_dollars": "",
@@ -503,6 +812,8 @@ def _execution_policy_metrics(
         "execution_empirical_orders_submitted_bucket": empirical_orders_submitted_bucket,
         "execution_empirical_fill_rate_bucket": empirical_fill_rate_bucket,
         "execution_empirical_full_fill_rate_bucket": empirical_full_fill_rate_bucket,
+        "execution_empirical_effective_samples_bucket": empirical_effective_samples_bucket,
+        "execution_empirical_rows_used_bucket": empirical_rows_used_bucket,
         "execution_expected_spread_capture_per_contract_dollars": round(expected_spread_capture, 6),
         "execution_expected_adverse_selection_per_contract_dollars": round(expected_adverse_selection, 6),
         "execution_expected_partial_fill_drag_per_contract_dollars": round(expected_partial_fill_drag, 6),
@@ -1035,6 +1346,8 @@ def _write_attempts_csv(path: Path, attempts: list[dict[str, Any]]) -> None:
         "execution_empirical_orders_submitted_bucket",
         "execution_empirical_fill_rate_bucket",
         "execution_empirical_full_fill_rate_bucket",
+        "execution_empirical_effective_samples_bucket",
+        "execution_empirical_rows_used_bucket",
         "execution_expected_spread_capture_per_contract_dollars",
         "execution_expected_adverse_selection_per_contract_dollars",
         "execution_expected_partial_fill_drag_per_contract_dollars",
@@ -1174,6 +1487,11 @@ def run_kalshi_micro_execute(
     execution_frontier_recent_rows: int = 5000,
     execution_frontier_report_json: str | None = None,
     execution_frontier_max_report_age_seconds: float | None = 10800.0,
+    execution_empirical_fill_model_enabled: bool = True,
+    execution_empirical_fill_model_lookback_days: float = 21.0,
+    execution_empirical_fill_model_recent_events: int = 20000,
+    execution_empirical_fill_model_min_effective_samples: float = 6.0,
+    execution_empirical_fill_model_prefer_empirical: bool = True,
     enable_untrusted_bucket_probe_exploration: bool = True,
     untrusted_bucket_probe_max_orders_per_run: int = 1,
     untrusted_bucket_probe_required_edge_buffer_dollars: float = 0.01,
@@ -1415,6 +1733,27 @@ def run_kalshi_micro_execute(
         )
     )
     execution_frontier_report_stale = bool(execution_frontier_report_meta.get("stale"))
+    safe_execution_empirical_fill_model_lookback_days = max(0.0, float(execution_empirical_fill_model_lookback_days))
+    safe_execution_empirical_fill_model_recent_events = max(1, int(execution_empirical_fill_model_recent_events))
+    safe_execution_empirical_fill_model_min_effective_samples = max(
+        1.0, float(execution_empirical_fill_model_min_effective_samples)
+    )
+    execution_empirical_fill_training_rows: list[dict[str, Any]] = []
+    execution_empirical_fill_training_rows_by_bucket: dict[str, int] = {}
+    if execution_empirical_fill_model_enabled:
+        execution_empirical_fill_training_rows = _build_empirical_fill_training_rows(
+            journal_db_path=journal_path,
+            as_of=captured_at,
+            lookback_days=safe_execution_empirical_fill_model_lookback_days,
+            recent_events=safe_execution_empirical_fill_model_recent_events,
+        )
+        for row in execution_empirical_fill_training_rows:
+            bucket_name = str(row.get("frontier_bucket") or "").strip()
+            if not bucket_name:
+                continue
+            execution_empirical_fill_training_rows_by_bucket[bucket_name] = (
+                execution_empirical_fill_training_rows_by_bucket.get(bucket_name, 0) + 1
+            )
 
     def _append_journal_event(event_type: str, attempt: dict[str, Any], **extra: Any) -> None:
         side = str(attempt.get("planned_side") or "").strip().lower()
@@ -1450,6 +1789,10 @@ def run_kalshi_micro_execute(
             "execution_empirical_full_fill_rate_bucket": attempt.get(
                 "execution_empirical_full_fill_rate_bucket"
             ),
+            "execution_empirical_effective_samples_bucket": attempt.get(
+                "execution_empirical_effective_samples_bucket"
+            ),
+            "execution_empirical_rows_used_bucket": attempt.get("execution_empirical_rows_used_bucket"),
             "execution_frontier_bucket": attempt.get("execution_frontier_bucket"),
             "execution_frontier_break_even_edge_per_contract_dollars": attempt.get(
                 "execution_frontier_break_even_edge_per_contract_dollars"
@@ -1614,6 +1957,8 @@ def run_kalshi_micro_execute(
                 "execution_empirical_orders_submitted_bucket": "",
                 "execution_empirical_fill_rate_bucket": "",
                 "execution_empirical_full_fill_rate_bucket": "",
+                "execution_empirical_effective_samples_bucket": "",
+                "execution_empirical_rows_used_bucket": "",
                 "execution_expected_spread_capture_per_contract_dollars": "",
                 "execution_expected_adverse_selection_per_contract_dollars": "",
                 "execution_expected_partial_fill_drag_per_contract_dollars": "",
@@ -1689,10 +2034,25 @@ def run_kalshi_micro_execute(
             attempt["execution_frontier_bucket"] = frontier_bucket
             bucket_trust = execution_frontier_bucket_trust_by_bucket.get(frontier_bucket, {})
             bucket_fill_profile = execution_frontier_fill_profile_by_bucket.get(frontier_bucket, {})
+            empirical_fill_profile: dict[str, Any] = {}
             if bucket_fill_profile:
-                empirical_fill_profile = dict(bucket_fill_profile)
-                if bucket_trust:
-                    empirical_fill_profile["markout_trusted"] = bool(bucket_trust.get("trusted"))
+                empirical_fill_profile.update(dict(bucket_fill_profile))
+            if bucket_trust:
+                empirical_fill_profile["markout_trusted"] = bool(bucket_trust.get("trusted"))
+            if execution_empirical_fill_model_enabled and execution_empirical_fill_training_rows:
+                learned_fill_profile = _estimate_empirical_fill_probabilities_from_rows(
+                    training_rows=execution_empirical_fill_training_rows,
+                    frontier_bucket=frontier_bucket,
+                    attempt=attempt,
+                    horizon_seconds=_execution_fill_horizon_seconds(
+                        hours_to_close=_parse_float(attempt.get("market_hours_to_close")),
+                        resting_hold_seconds=resting_hold_seconds,
+                    ),
+                    min_effective_samples=safe_execution_empirical_fill_model_min_effective_samples,
+                )
+                if isinstance(learned_fill_profile, dict):
+                    empirical_fill_profile.update(learned_fill_profile)
+            if empirical_fill_profile:
                 attempt.update(
                     _execution_policy_metrics(
                         plan=plan,
@@ -1700,6 +2060,8 @@ def run_kalshi_micro_execute(
                         orderbook=orderbook,
                         resting_hold_seconds=resting_hold_seconds,
                         empirical_fill_profile=empirical_fill_profile,
+                        empirical_fill_min_effective_samples=safe_execution_empirical_fill_model_min_effective_samples,
+                        prefer_empirical_fill_model=bool(execution_empirical_fill_model_prefer_empirical),
                     )
                 )
                 frontier_bucket = _execution_frontier_bucket_for_attempt(attempt)
@@ -2332,6 +2694,13 @@ def run_kalshi_micro_execute(
         "execution_frontier_report_stale_reason": execution_frontier_report_meta.get("stale_reason"),
         "execution_frontier_max_report_age_seconds": execution_frontier_report_meta.get("max_age_seconds"),
         "execution_frontier_recommendations": execution_frontier_summary.get("recommendations"),
+        "execution_empirical_fill_model_enabled": bool(execution_empirical_fill_model_enabled),
+        "execution_empirical_fill_model_lookback_days": safe_execution_empirical_fill_model_lookback_days,
+        "execution_empirical_fill_model_recent_events": safe_execution_empirical_fill_model_recent_events,
+        "execution_empirical_fill_model_min_effective_samples": safe_execution_empirical_fill_model_min_effective_samples,
+        "execution_empirical_fill_model_prefer_empirical": bool(execution_empirical_fill_model_prefer_empirical),
+        "execution_empirical_fill_training_rows": len(execution_empirical_fill_training_rows),
+        "execution_empirical_fill_training_rows_by_bucket": execution_empirical_fill_training_rows_by_bucket,
         "untrusted_bucket_probe_exploration_enabled": untrusted_bucket_probe_enabled_effective,
         "untrusted_bucket_probe_max_orders_per_run": safe_untrusted_bucket_probe_max_orders_per_run,
         "untrusted_bucket_probe_required_edge_buffer_dollars": safe_untrusted_bucket_probe_required_edge_buffer_dollars,

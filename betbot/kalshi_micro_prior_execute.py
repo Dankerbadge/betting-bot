@@ -497,6 +497,11 @@ def run_kalshi_micro_prior_execute(
     execution_frontier_recent_rows: int = 5000,
     execution_frontier_report_json: str | None = None,
     execution_frontier_max_report_age_seconds: float | None = 10800.0,
+    execution_empirical_fill_model_enabled: bool = True,
+    execution_empirical_fill_model_lookback_days: float = 21.0,
+    execution_empirical_fill_model_recent_events: int = 20000,
+    execution_empirical_fill_model_min_effective_samples: float = 6.0,
+    execution_empirical_fill_model_prefer_empirical: bool = True,
     enable_untrusted_bucket_probe_exploration: bool = True,
     untrusted_bucket_probe_max_orders_per_run: int = 1,
     untrusted_bucket_probe_required_edge_buffer_dollars: float = 0.01,
@@ -680,6 +685,11 @@ def run_kalshi_micro_prior_execute(
         "execution_frontier_recent_rows": execution_frontier_recent_rows,
         "execution_frontier_report_json": execution_frontier_report_json,
         "execution_frontier_max_report_age_seconds": execution_frontier_max_report_age_seconds,
+        "execution_empirical_fill_model_enabled": execution_empirical_fill_model_enabled,
+        "execution_empirical_fill_model_lookback_days": execution_empirical_fill_model_lookback_days,
+        "execution_empirical_fill_model_recent_events": execution_empirical_fill_model_recent_events,
+        "execution_empirical_fill_model_min_effective_samples": execution_empirical_fill_model_min_effective_samples,
+        "execution_empirical_fill_model_prefer_empirical": execution_empirical_fill_model_prefer_empirical,
         "enable_untrusted_bucket_probe_exploration": enable_untrusted_bucket_probe_exploration,
         "untrusted_bucket_probe_max_orders_per_run": untrusted_bucket_probe_max_orders_per_run,
         "untrusted_bucket_probe_required_edge_buffer_dollars": untrusted_bucket_probe_required_edge_buffer_dollars,
@@ -841,6 +851,24 @@ def run_kalshi_micro_prior_execute(
             "execution_frontier_report_stale_reason"
         ),
         "execution_frontier_recommendations": execute_summary.get("execution_frontier_recommendations"),
+        "execution_empirical_fill_model_enabled": execute_summary.get(
+            "execution_empirical_fill_model_enabled"
+        ),
+        "execution_empirical_fill_model_lookback_days": execute_summary.get(
+            "execution_empirical_fill_model_lookback_days"
+        ),
+        "execution_empirical_fill_model_recent_events": execute_summary.get(
+            "execution_empirical_fill_model_recent_events"
+        ),
+        "execution_empirical_fill_model_min_effective_samples": execute_summary.get(
+            "execution_empirical_fill_model_min_effective_samples"
+        ),
+        "execution_empirical_fill_model_prefer_empirical": execute_summary.get(
+            "execution_empirical_fill_model_prefer_empirical"
+        ),
+        "execution_empirical_fill_training_rows": execute_summary.get(
+            "execution_empirical_fill_training_rows"
+        ),
         "untrusted_bucket_probe_exploration_enabled": execute_summary.get(
             "untrusted_bucket_probe_exploration_enabled"
         ),
