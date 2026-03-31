@@ -116,6 +116,7 @@ def build_prior_trade_gate_decision(
     top_market_weather_history_status: str | None = None,
     top_market_weather_history_live_ready: bool | None = None,
     top_market_weather_history_live_ready_reason: str | None = None,
+    weather_history_unhealthy_filtered: int = 0,
     enforce_weather_history_live_ready: bool = False,
     daily_weather_board_summary: dict[str, Any] | None = None,
     enforce_daily_weather_live_only: bool = False,
@@ -160,6 +161,7 @@ def build_prior_trade_gate_decision(
         else None
     )
     top_market_weather_history_live_ready_reason_text = str(top_market_weather_history_live_ready_reason or "").strip()
+    weather_history_unhealthy_filtered_count = max(0, int(weather_history_unhealthy_filtered or 0))
     top_market_canonical_policy_applied = plan_summary.get("top_market_canonical_policy_applied")
     top_market_maker_entry_edge = plan_summary.get("top_market_maker_entry_edge")
     top_market_maker_entry_edge_net_fees = plan_summary.get("top_market_maker_entry_edge_net_fees")
@@ -235,6 +237,14 @@ def build_prior_trade_gate_decision(
             "Daily weather live mode requires fresh station-history readiness, "
             f"but the top plan is not live-ready ({health_reason})."
         )
+    if (
+        enforce_weather_history_live_ready
+        and planned_orders <= 0
+        and weather_history_unhealthy_filtered_count > 0
+    ):
+        blockers.append(
+            "Daily weather live mode filtered all candidate plans due to unhealthy station-history readiness."
+        )
 
     gate_pass = len(blockers) == 0
     gate_status = "pass" if gate_pass else "hold"
@@ -257,9 +267,14 @@ def build_prior_trade_gate_decision(
             gate_status = "daily_weather_only"
         elif (
             enforce_weather_history_live_ready
-            and planned_orders > 0
-            and top_market_contract_family_normalized in _DAILY_WEATHER_CONTRACT_FAMILIES
-            and top_market_weather_history_live_ready_effective is not True
+            and (
+                (
+                    planned_orders > 0
+                    and top_market_contract_family_normalized in _DAILY_WEATHER_CONTRACT_FAMILIES
+                    and top_market_weather_history_live_ready_effective is not True
+                )
+                or (planned_orders <= 0 and weather_history_unhealthy_filtered_count > 0)
+            )
         ):
             gate_status = "weather_history_unhealthy"
         elif planned_orders <= 0:
@@ -308,6 +323,7 @@ def build_prior_trade_gate_decision(
         "allowed_canonical_niches": sorted(normalized_allowed_niches) if normalized_allowed_niches else None,
         "daily_weather_live_only_enforced": bool(enforce_daily_weather_live_only),
         "weather_history_live_gate_enforced": bool(enforce_weather_history_live_ready),
+        "weather_history_unhealthy_filtered": weather_history_unhealthy_filtered_count,
         "daily_weather_board_coverage_required": bool(require_daily_weather_board_coverage),
         "daily_weather_markets_total": daily_weather_markets_total,
         "daily_weather_family_counts": daily_weather_family_counts,
@@ -465,6 +481,7 @@ def run_kalshi_micro_prior_execute(
         allowed_canonical_niches=allowed_live_canonical_niches,
         book_db_path=book_db_path,
         include_incentives=include_incentives,
+        require_weather_history_live_ready_for_daily_weather=enforce_live_quality_filters,
         timeout_seconds=timeout_seconds,
         http_request_json=http_request_json,
         http_get_json=http_get_json,
@@ -497,7 +514,7 @@ def run_kalshi_micro_prior_execute(
         book_db_path=effective_book_db_path,
     )
     open_positions_count = count_open_positions(book_db_path=effective_book_db_path)
-    weather_history_live_gate_effective = bool(allow_live_orders)
+    weather_history_live_gate_effective = bool(enforce_live_quality_filters)
     prior_trade_gate_summary = build_prior_trade_gate_decision(
         plan_summary=plan_summary,
         ledger_summary=ledger_summary_before,
@@ -511,6 +528,7 @@ def run_kalshi_micro_prior_execute(
         top_market_weather_history_status=top_market_weather_history_status,
         top_market_weather_history_live_ready=top_market_weather_history_live_ready,
         top_market_weather_history_live_ready_reason=top_market_weather_history_live_ready_reason,
+        weather_history_unhealthy_filtered=int(plan_summary.get("weather_history_unhealthy_filtered") or 0),
         enforce_weather_history_live_ready=weather_history_live_gate_effective,
         daily_weather_board_summary=weather_board_summary,
         enforce_daily_weather_live_only=daily_weather_live_only_effective,
@@ -590,6 +608,15 @@ def run_kalshi_micro_prior_execute(
         "allowed_live_canonical_niches": list(allowed_live_canonical_niches) if allowed_live_canonical_niches else None,
         "weather_board_summary": weather_board_summary,
         "weather_history_live_gate_effective": weather_history_live_gate_effective,
+        "plan_weather_history_live_filter_enabled": plan_summary.get("weather_history_live_filter_enabled"),
+        "plan_weather_history_daily_candidates_total": plan_summary.get("weather_history_daily_candidates_total"),
+        "plan_weather_history_daily_candidates_live_ready": plan_summary.get(
+            "weather_history_daily_candidates_live_ready"
+        ),
+        "plan_weather_history_daily_candidates_unhealthy": plan_summary.get(
+            "weather_history_daily_candidates_unhealthy"
+        ),
+        "plan_weather_history_unhealthy_filtered": plan_summary.get("weather_history_unhealthy_filtered"),
         "plan_canonical_policy_enabled": plan_summary.get("canonical_policy_enabled"),
         "plan_canonical_policy_reason": plan_summary.get("canonical_policy_reason"),
         "plan_matched_live_markets_with_canonical_policy": plan_summary.get(

@@ -24,6 +24,7 @@ from betbot.onboarding import _is_placeholder, _parse_env_file
 
 
 LIVE_ALLOWED_CANONICAL_NICHES = ("macro_release", "weather_energy_transmission", "weather_climate")
+_DAILY_WEATHER_CONTRACT_FAMILIES = {"daily_rain", "daily_temperature", "daily_snow"}
 
 
 def _latest_market_rows(history_rows: list[dict[str, str]]) -> dict[str, dict[str, str]]:
@@ -608,6 +609,7 @@ def build_micro_prior_plans(
     canonical_policy_alias_by_lookup_key: dict[str, dict[str, Any]] | None = None,
     require_canonical_mapping: bool = False,
     allowed_canonical_niches: set[str] | None = None,
+    require_weather_history_live_ready_for_daily_weather: bool = False,
 ) -> tuple[list[dict[str, Any]], dict[str, int]]:
     if planning_bankroll_dollars <= 0:
         raise ValueError("planning_bankroll_dollars must be positive")
@@ -633,6 +635,7 @@ def build_micro_prior_plans(
         "canonical_unmapped_in_allowed_niche_guess": 0,
         "canonical_unmapped_outside_allowed_niche_guess": 0,
         "canonical_niche_disallowed": 0,
+        "weather_history_unhealthy": 0,
         "canonical_confidence_below_min": 0,
         "canonical_evidence_below_min": 0,
         "canonical_spread_above_max": 0,
@@ -706,6 +709,15 @@ def build_micro_prior_plans(
             continue
         if not isinstance(conservative_candidate, dict):
             skip_counts["missing_maker_side"] += 1
+            continue
+        contract_family = str(row.get("contract_family") or "").strip().lower()
+        weather_history_live_ready = _as_bool(row.get("weather_station_history_live_ready"))
+        if (
+            require_weather_history_live_ready_for_daily_weather
+            and contract_family in _DAILY_WEATHER_CONTRACT_FAMILIES
+            and weather_history_live_ready is not True
+        ):
+            skip_counts["weather_history_unhealthy"] += 1
             continue
         side = str(conservative_candidate.get("side") or "").strip()
         price = conservative_candidate.get("maker_entry_price_dollars")
@@ -938,6 +950,12 @@ def build_micro_prior_plans(
                 "market_title": row.get("market_title"),
                 "close_time": row.get("close_time"),
                 "hours_to_close": hours_to_close,
+                "contract_family": contract_family,
+                "weather_station_history_status": str(row.get("weather_station_history_status") or "").strip(),
+                "weather_station_history_live_ready": weather_history_live_ready,
+                "weather_station_history_live_ready_reason": (
+                    str(row.get("weather_station_history_live_ready_reason") or "").strip()
+                ),
                 "side": side,
                 "canonical_ticker": canonical_ticker or "",
                 "canonical_niche": canonical_niche or "",
@@ -1042,6 +1060,10 @@ def _write_plan_csv(path: Path, plans: list[dict[str, Any]]) -> None:
         "market_title",
         "close_time",
         "hours_to_close",
+        "contract_family",
+        "weather_station_history_status",
+        "weather_station_history_live_ready",
+        "weather_station_history_live_ready_reason",
         "side",
         "canonical_ticker",
         "canonical_niche",
@@ -1138,6 +1160,7 @@ def run_kalshi_micro_prior_plan(
     taker_fee_multiplier_override: float | None = None,
     conservative_fee_rounding: bool = True,
     include_incentives: bool = False,
+    require_weather_history_live_ready_for_daily_weather: bool = False,
     http_request_json=_http_request_json,
     http_get_json: HttpGetter = _http_get_json,
     sign_request: KalshiSigner = _kalshi_sign_request,
@@ -1157,6 +1180,18 @@ def run_kalshi_micro_prior_plan(
         taker_fee_multiplier_override=taker_fee_multiplier_override,
         conservative_fee_rounding=conservative_fee_rounding,
     )
+    daily_weather_candidates_total = 0
+    daily_weather_candidates_live_ready = 0
+    daily_weather_candidates_unhealthy = 0
+    for row in enriched_rows:
+        contract_family = str(row.get("contract_family") or "").strip().lower()
+        if contract_family not in _DAILY_WEATHER_CONTRACT_FAMILIES:
+            continue
+        daily_weather_candidates_total += 1
+        if _as_bool(row.get("weather_station_history_live_ready")) is True:
+            daily_weather_candidates_live_ready += 1
+        else:
+            daily_weather_candidates_unhealthy += 1
     incentive_bonus_per_contract_by_ticker: dict[str, float] = {}
     canonical_policy_by_live_ticker: dict[str, dict[str, Any]] = {}
     canonical_policy_alias_by_lookup_key: dict[str, dict[str, Any]] = {}
@@ -1199,6 +1234,7 @@ def run_kalshi_micro_prior_plan(
         canonical_policy_alias_by_lookup_key=canonical_policy_alias_by_lookup_key,
         require_canonical_mapping=require_canonical_mapping,
         allowed_canonical_niches=normalized_allowed_niches,
+        require_weather_history_live_ready_for_daily_weather=require_weather_history_live_ready_for_daily_weather,
     )
     live_balance_cents: int | None = None
     balance_error: str | None = None
@@ -1244,6 +1280,7 @@ def run_kalshi_micro_prior_plan(
                     canonical_policy_alias_by_lookup_key=canonical_policy_alias_by_lookup_key,
                     require_canonical_mapping=require_canonical_mapping,
                     allowed_canonical_niches=normalized_allowed_niches,
+                    require_weather_history_live_ready_for_daily_weather=require_weather_history_live_ready_for_daily_weather,
                 )
         if not _is_placeholder(access_key_id) and not _is_placeholder(private_key_path):
             try:
@@ -1322,10 +1359,37 @@ def run_kalshi_micro_prior_plan(
             (row for row in enriched_rows if str(row.get("market_ticker") or "").strip() == top_market_ticker),
             {},
         )
+    top_contract_family = (
+        str(top_plan.get("contract_family") or "").strip().lower()
+        or str(top_enriched_row.get("contract_family") or "").strip().lower()
+    )
+    top_weather_station_history_status = (
+        str(top_plan.get("weather_station_history_status") or "").strip().lower()
+        or str(top_enriched_row.get("weather_station_history_status") or "").strip().lower()
+    )
+    top_weather_station_history_cache_hit = _as_bool(
+        top_enriched_row.get("weather_station_history_cache_hit")
+    )
+    top_weather_station_history_cache_fallback_used = _as_bool(
+        top_enriched_row.get("weather_station_history_cache_fallback_used")
+    )
+    top_weather_station_history_cache_fresh = _as_bool(
+        top_enriched_row.get("weather_station_history_cache_fresh")
+    )
     top_weather_station_history_cache_age_seconds = _as_float(
         top_enriched_row.get("weather_station_history_cache_age_seconds")
     )
-    top_weather_station_history_live_ready = _as_bool(top_enriched_row.get("weather_station_history_live_ready"))
+    top_weather_station_history_live_ready = (
+        _as_bool(top_plan.get("weather_station_history_live_ready"))
+        if top_plan
+        else None
+    )
+    if top_weather_station_history_live_ready is None:
+        top_weather_station_history_live_ready = _as_bool(top_enriched_row.get("weather_station_history_live_ready"))
+    top_weather_station_history_live_ready_reason = (
+        str(top_plan.get("weather_station_history_live_ready_reason") or "").strip()
+        or str(top_enriched_row.get("weather_station_history_live_ready_reason") or "").strip()
+    )
 
     summary = {
         "captured_at": captured_at.isoformat(),
@@ -1396,36 +1460,29 @@ def run_kalshi_micro_prior_plan(
         "canonical_unmapped_outside_allowed_niche_guess": canonical_unmapped_analysis["outside_allowed_niche_guess"],
         "canonical_unmapped_counts_by_niche_guess": canonical_unmapped_analysis["counts_by_niche_guess"],
         "canonical_unmapped_top_markets": canonical_unmapped_analysis["top_markets"],
+        "weather_history_live_filter_enabled": bool(require_weather_history_live_ready_for_daily_weather),
+        "weather_history_daily_candidates_total": daily_weather_candidates_total,
+        "weather_history_daily_candidates_live_ready": daily_weather_candidates_live_ready,
+        "weather_history_daily_candidates_unhealthy": daily_weather_candidates_unhealthy,
+        "weather_history_unhealthy_filtered": int(skip_counts.get("weather_history_unhealthy", 0)),
         "planned_orders": len(plans),
         "top_market_ticker": top_plan.get("market_ticker") if plans else None,
         "top_market_title": top_plan.get("market_title") if plans else None,
         "top_market_close_time": top_plan.get("close_time") if plans else None,
         "top_market_hours_to_close": top_plan.get("hours_to_close") if plans else None,
         "top_market_side": top_plan.get("side") if plans else None,
-        "top_market_contract_family": (
-            str(top_enriched_row.get("contract_family") or "").strip() or None
-            if top_enriched_row
-            else None
-        ),
+        "top_market_contract_family": top_contract_family or None,
         "top_market_weather_station_history_status": (
-            str(top_enriched_row.get("weather_station_history_status") or "").strip() or None
-            if top_enriched_row
-            else None
+            top_weather_station_history_status or None
         ),
         "top_market_weather_station_history_cache_hit": (
-            _as_bool(top_enriched_row.get("weather_station_history_cache_hit"))
-            if top_enriched_row
-            else None
+            top_weather_station_history_cache_hit
         ),
         "top_market_weather_station_history_cache_fallback_used": (
-            _as_bool(top_enriched_row.get("weather_station_history_cache_fallback_used"))
-            if top_enriched_row
-            else None
+            top_weather_station_history_cache_fallback_used
         ),
         "top_market_weather_station_history_cache_fresh": (
-            _as_bool(top_enriched_row.get("weather_station_history_cache_fresh"))
-            if top_enriched_row
-            else None
+            top_weather_station_history_cache_fresh
         ),
         "top_market_weather_station_history_cache_age_seconds": (
             top_weather_station_history_cache_age_seconds
@@ -1434,9 +1491,7 @@ def run_kalshi_micro_prior_plan(
         ),
         "top_market_weather_station_history_live_ready": top_weather_station_history_live_ready,
         "top_market_weather_station_history_live_ready_reason": (
-            str(top_enriched_row.get("weather_station_history_live_ready_reason") or "").strip() or None
-            if top_enriched_row
-            else None
+            top_weather_station_history_live_ready_reason or None
         ),
         "top_market_canonical_ticker": top_plan.get("canonical_ticker") if plans else None,
         "top_market_canonical_niche": top_plan.get("canonical_niche") if plans else None,

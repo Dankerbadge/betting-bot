@@ -231,6 +231,9 @@ class KalshiMicroPriorPlanTests(unittest.TestCase):
                 summary["top_market_weather_station_history_live_ready_reason"],
                 "status_rate_limited",
             )
+            self.assertEqual(summary["weather_history_daily_candidates_total"], 1)
+            self.assertEqual(summary["weather_history_daily_candidates_live_ready"], 0)
+            self.assertEqual(summary["weather_history_daily_candidates_unhealthy"], 1)
 
     def test_build_micro_prior_plans_skips_zero_cost_endpoint_quotes(self) -> None:
         enriched_rows = build_prior_rows(
@@ -268,6 +271,67 @@ class KalshiMicroPriorPlanTests(unittest.TestCase):
 
         self.assertEqual(plans, [])
         self.assertEqual(skip_counts["maker_edge_below_min"], 1)
+
+    def test_build_micro_prior_plans_filters_unhealthy_daily_weather_before_top_pick(self) -> None:
+        plans, skip_counts = build_micro_prior_plans(
+            enriched_rows=[
+                {
+                    "market_ticker": "KXRAIN-UNHEALTHY",
+                    "market_title": "Unhealthy Daily Rain",
+                    "category": "Climate and Weather",
+                    "close_time": "2026-04-01T03:59:00Z",
+                    "hours_to_close": 8.0,
+                    "contract_family": "daily_rain",
+                    "weather_station_history_live_ready": False,
+                    "weather_station_history_live_ready_reason": "status_rate_limited",
+                    "matched_live_market": True,
+                    "latest_yes_bid_dollars": 0.38,
+                    "latest_yes_ask_dollars": 0.39,
+                    "latest_no_bid_dollars": 0.61,
+                    "latest_no_ask_dollars": 0.62,
+                    "fair_yes_probability": 0.50,
+                    "fair_yes_probability_conservative": 0.50,
+                    "fair_no_probability": 0.50,
+                    "fair_no_probability_conservative": 0.50,
+                    "confidence": 0.74,
+                    "evidence_count": 5,
+                    "thesis": "Would be top without weather-history filter.",
+                },
+                {
+                    "market_ticker": "KXRAIN-HEALTHY",
+                    "market_title": "Healthy Daily Rain",
+                    "category": "Climate and Weather",
+                    "close_time": "2026-04-01T03:59:00Z",
+                    "hours_to_close": 8.0,
+                    "contract_family": "daily_rain",
+                    "weather_station_history_live_ready": True,
+                    "weather_station_history_live_ready_reason": "ready",
+                    "matched_live_market": True,
+                    "latest_yes_bid_dollars": 0.36,
+                    "latest_yes_ask_dollars": 0.37,
+                    "latest_no_bid_dollars": 0.63,
+                    "latest_no_ask_dollars": 0.64,
+                    "fair_yes_probability": 0.45,
+                    "fair_yes_probability_conservative": 0.45,
+                    "fair_no_probability": 0.55,
+                    "fair_no_probability_conservative": 0.55,
+                    "confidence": 0.72,
+                    "evidence_count": 5,
+                    "thesis": "Healthy backup should become top.",
+                },
+            ],
+            planning_bankroll_dollars=40.0,
+            daily_risk_cap_dollars=3.0,
+            contracts_per_order=1,
+            max_orders=2,
+            min_maker_edge=0.005,
+            max_entry_price_dollars=0.99,
+            require_weather_history_live_ready_for_daily_weather=True,
+        )
+
+        self.assertEqual(len(plans), 1)
+        self.assertEqual(plans[0]["market_ticker"], "KXRAIN-HEALTHY")
+        self.assertEqual(skip_counts["weather_history_unhealthy"], 1)
 
     def test_build_micro_prior_plans_ranks_by_maker_edge_not_taker_edge(self) -> None:
         plans, _ = build_micro_prior_plans(

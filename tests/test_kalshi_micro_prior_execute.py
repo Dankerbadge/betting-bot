@@ -388,6 +388,94 @@ class KalshiMicroPriorExecuteTests(unittest.TestCase):
                 "status_rate_limited",
             )
 
+    def test_run_kalshi_micro_prior_execute_flags_weather_history_unhealthy_in_dry_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            env_file = base / "env.txt"
+            priors_csv = base / "priors.csv"
+            history_csv = base / "history.csv"
+            env_file.write_text(
+                (
+                    "KALSHI_ENV=prod\n"
+                    "BETBOT_JURISDICTION=new_jersey\n"
+                    "KALSHI_ACCESS_KEY_ID=key123\n"
+                    "KALSHI_PRIVATE_KEY_PATH=/tmp/key.pem\n"
+                ),
+                encoding="utf-8",
+            )
+            with priors_csv.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(
+                    handle,
+                    fieldnames=["market_ticker", "fair_yes_probability", "confidence", "thesis", "source_note", "updated_at"],
+                )
+                writer.writeheader()
+                writer.writerow(
+                    {
+                        "market_ticker": "KXRAIN-1",
+                        "fair_yes_probability": "0.62",
+                        "confidence": "0.85",
+                        "thesis": "Daily rain edge",
+                        "source_note": "Note",
+                        "updated_at": "2026-03-27T21:00:00+00:00",
+                    }
+                )
+            with history_csv.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(
+                    handle,
+                    fieldnames=["captured_at", "category", "market_ticker", "market_title", "yes_bid_dollars", "yes_ask_dollars"],
+                )
+                writer.writeheader()
+                writer.writerow(
+                    {
+                        "captured_at": "2026-03-27T21:00:00+00:00",
+                        "category": "Weather",
+                        "market_ticker": "KXRAIN-1",
+                        "market_title": "Will it rain in New York tomorrow?",
+                        "yes_bid_dollars": "0.49",
+                        "yes_ask_dollars": "0.50",
+                    }
+                )
+
+            plan_summary = {
+                "status": "no_candidates",
+                "planned_orders": 0,
+                "positive_maker_entry_markets": 0,
+                "positive_maker_entry_markets_with_canonical_policy": 0,
+                "weather_history_unhealthy_filtered": 2,
+                "actual_live_balance_dollars": 100.0,
+                "funding_gap_dollars": 0.0,
+                "output_file": str(base / "plan.json"),
+            }
+            execute_summary = {
+                "status": "dry_run",
+                "planned_orders": 0,
+                "total_planned_cost_dollars": 0.0,
+                "actual_live_balance_dollars": 100.0,
+                "actual_live_balance_source": "live",
+                "balance_live_verified": True,
+                "output_file": str(base / "execute.json"),
+                "output_csv": str(base / "execute.csv"),
+                "attempts": [],
+            }
+
+            with (
+                patch("betbot.kalshi_micro_prior_execute.run_kalshi_micro_prior_plan", return_value=plan_summary),
+                patch("betbot.kalshi_micro_prior_execute.run_kalshi_micro_execute", return_value=execute_summary),
+            ):
+                summary = run_kalshi_micro_prior_execute(
+                    env_file=str(env_file),
+                    priors_csv=str(priors_csv),
+                    history_csv=str(history_csv),
+                    output_dir=str(base),
+                    allow_live_orders=False,
+                    enforce_canonical_dataset=True,
+                    now=datetime(2026, 3, 27, 21, 0, tzinfo=timezone.utc),
+                )
+
+            self.assertTrue(summary["weather_history_live_gate_effective"])
+            self.assertEqual(summary["prior_trade_gate_summary"]["gate_status"], "weather_history_unhealthy")
+            self.assertEqual(summary["plan_weather_history_unhealthy_filtered"], 2)
+
     def test_run_kalshi_micro_prior_execute_default_enforces_canonical_dataset(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
