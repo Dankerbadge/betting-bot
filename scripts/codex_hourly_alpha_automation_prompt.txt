@@ -3,8 +3,11 @@ Run `/Users/dankerbadge/Documents/Betting Bot/scripts/hourly_alpha_overnight.sh`
 After it finishes:
 1. Read `/Users/dankerbadge/Documents/Betting Bot/outputs/overnight_alpha_latest.json`.
 2. Open one inbox item summarizing:
-- overall status (`ok`/`degraded`/`failed`),
+- overall status (`ok`/`degraded`/`failed`/`skipped_*`),
+- `pipeline_ready`, `live_ready`, and `live_blockers`,
 - each step result and duration,
+- frontier refresh status with trusted/untrusted bucket counts,
+- balance heartbeat source, age, and live-ready flag,
 - freshness ages for history CSV, ws-state JSON, and execution journal,
 - first concrete remediation action if any step failed.
 
