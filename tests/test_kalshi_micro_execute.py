@@ -9,8 +9,10 @@ import unittest
 from unittest.mock import patch
 from urllib.error import URLError
 
+from betbot.kalshi_execution_journal import append_execution_events
 from betbot.kalshi_book import ensure_book_schema
 from betbot.kalshi_micro_execute import (
+    _build_empirical_fill_training_rows,
     _http_request_json,
     _estimate_empirical_fill_probabilities_from_rows,
     _load_latest_break_even_edges_by_bucket,
@@ -499,6 +501,47 @@ class KalshiMicroExecuteTests(unittest.TestCase):
         self.assertGreater(float(profile.get("effective_samples") or 0.0), 1.0)
         self.assertGreater(float(profile.get("fill_prob_60s") or 0.0), 0.0)
         self.assertGreaterEqual(float(profile.get("fill_prob_horizon") or 0.0), float(profile.get("full_fill_prob_horizon") or 0.0))
+
+    def test_build_empirical_fill_training_rows_parses_journal_timestamps(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            journal_path = base / "kalshi_execution_journal.sqlite3"
+            append_execution_events(
+                journal_db_path=journal_path,
+                events=[
+                    {
+                        "run_id": "test-run",
+                        "captured_at_utc": "2026-03-27T21:00:00+00:00",
+                        "event_type": "order_submitted",
+                        "market_ticker": "KXTEST-EDGE",
+                        "client_order_id": "client-1",
+                        "execution_frontier_bucket": "aggr_mid|spread_mid|ttc_short",
+                        "quote_aggressiveness": 0.55,
+                        "order_size_depth_ratio": 0.2,
+                        "queue_ahead_estimate_contracts": 8.0,
+                        "spread_dollars": 0.02,
+                        "time_to_close_seconds": 7200,
+                    },
+                    {
+                        "run_id": "test-run",
+                        "captured_at_utc": "2026-03-27T21:00:45+00:00",
+                        "event_type": "full_fill",
+                        "market_ticker": "KXTEST-EDGE",
+                        "client_order_id": "client-1",
+                    },
+                ],
+            )
+
+            rows = _build_empirical_fill_training_rows(
+                journal_db_path=journal_path,
+                as_of=datetime(2026, 3, 27, 22, 0, tzinfo=timezone.utc),
+                lookback_days=7.0,
+                recent_events=100,
+            )
+
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["frontier_bucket"], "aggr_mid|spread_mid|ttc_short")
+            self.assertAlmostEqual(float(rows[0]["first_fill_seconds"]), 45.0, places=3)
 
     def test_run_kalshi_micro_execute_allows_guarded_untrusted_bucket_probe_submission(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

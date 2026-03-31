@@ -157,6 +157,19 @@ def _coalesce_float(*values: Any) -> float | None:
     return None
 
 
+def _parse_ts(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
 def _derive_empirical_fill_probabilities(
     *,
     bucket_profile: dict[str, Any],
@@ -1323,6 +1336,7 @@ def _write_attempts_csv(path: Path, attempts: list[dict[str, Any]]) -> None:
         "market_ticker",
         "canonical_ticker",
         "canonical_niche",
+        "contract_family",
         "planned_side",
         "planned_contracts",
         "planned_entry_price_dollars",
@@ -1406,7 +1420,7 @@ def _write_attempts_csv(path: Path, attempts: list[dict[str, Any]]) -> None:
         "order_payload_preview",
     ]
     with path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
         for attempt in attempts:
             serializable = dict(attempt)

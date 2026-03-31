@@ -21,6 +21,7 @@ HISTORY_FIELDNAMES = [
 PRIOR_FIELDNAMES = [
     "market_ticker",
     "fair_yes_probability",
+    "contract_family",
     "confidence",
     "thesis",
     "source_note",
@@ -98,6 +99,7 @@ class KalshiNonsportsPriorsTests(unittest.TestCase):
                     {
                         "market_ticker": "KXTEST-1",
                         "fair_yes_probability": "0.08",
+                        "contract_family": "daily_rain",
                         "confidence": "0.7",
                         "thesis": "Test",
                         "source_note": "Note",
@@ -123,6 +125,9 @@ class KalshiNonsportsPriorsTests(unittest.TestCase):
             self.assertEqual(summary["top_market_best_maker_entry_side"], "yes")
             self.assertTrue(Path(summary["output_csv"]).exists())
             self.assertTrue(Path(summary["output_file"]).exists())
+            with Path(summary["output_csv"]).open("r", newline="", encoding="utf-8") as handle:
+                written_rows = list(csv.DictReader(handle))
+            self.assertEqual(written_rows[0]["contract_family"], "daily_rain")
 
     def test_build_prior_rows_excludes_endpoint_prices_from_orderable_entries(self) -> None:
         prior_rows = [

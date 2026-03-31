@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.openai.codex.betbot.hourly</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/zsh</string>
+    <string>-lc</string>
+    <string>/Users/dankerbadge/Documents/Betting Bot/scripts/hourly_alpha_overnight.sh</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/dankerbadge/Documents/Betting Bot</string>
+
+  <key>StartInterval</key>
+  <integer>3600</integer>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>/Users/dankerbadge/Documents/Betting Bot/outputs/hourly_alpha_launchd_stdout.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/Users/dankerbadge/Documents/Betting Bot/outputs/hourly_alpha_launchd_stderr.log</string>
+</dict>
+</plist>

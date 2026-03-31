@@ -439,8 +439,9 @@ def _write_prior_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         "source_note",
         "updated_at",
     ]
+    fieldnames.extend(_WEATHER_HISTORY_PASSTHROUGH_FIELDS)
     with path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
         writer.writerows(rows)
 

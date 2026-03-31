@@ -1,0 +1,14 @@
+Run `/Users/dankerbadge/Documents/Betting Bot/scripts/hourly_alpha_overnight.sh` once in the current worktree.
+
+After it finishes:
+1. Read `/Users/dankerbadge/Documents/Betting Bot/outputs/overnight_alpha_latest.json`.
+2. Open one inbox item summarizing:
+- overall status (`ok`/`degraded`/`failed`),
+- each step result and duration,
+- freshness ages for history CSV, ws-state JSON, and execution journal,
+- first concrete remediation action if any step failed.
+
+Safety constraints:
+- Keep this run research/dry-run only.
+- Do not pass `--allow-live-orders`.
+- Do not modify env secrets or risk caps.
