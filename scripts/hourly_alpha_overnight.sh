@@ -15,6 +15,7 @@ export BETBOT_WEATHER_CACHE_MAX_AGE_HOURS="${BETBOT_WEATHER_CACHE_MAX_AGE_HOURS:
 export BETBOT_WEATHER_PRIOR_MAX_AGE_HOURS="${BETBOT_WEATHER_PRIOR_MAX_AGE_HOURS:-6}"
 export BETBOT_WEATHER_PRIOR_MAX_MARKETS="${BETBOT_WEATHER_PRIOR_MAX_MARKETS:-30}"
 export BETBOT_WEATHER_ALLOWED_CONTRACT_FAMILIES="${BETBOT_WEATHER_ALLOWED_CONTRACT_FAMILIES:-daily_rain,daily_temperature}"
+export BETBOT_WEATHER_CDO_TOKEN_FILE="${BETBOT_WEATHER_CDO_TOKEN_FILE:-$REPO_ROOT/.secrets/noaa_cdo_token.txt}"
 export BETBOT_TIMEOUT_SECONDS="${BETBOT_TIMEOUT_SECONDS:-15}"
 export BETBOT_FRONTIER_RECENT_ROWS="${BETBOT_FRONTIER_RECENT_ROWS:-20000}"
 export BETBOT_FRONTIER_MAX_AGE_SECONDS="${BETBOT_FRONTIER_MAX_AGE_SECONDS:-10800}"
@@ -443,11 +444,71 @@ def _weather_history_token_state(env_values: dict[str, str]) -> dict[str, Any]:
             return {
                 "weather_history_token_present": True,
                 "weather_history_token_env_key": key,
+                "weather_history_token_source": f"env:{key}",
+                "weather_history_token_file_used": None,
             }
     return {
         "weather_history_token_present": False,
         "weather_history_token_env_key": None,
+        "weather_history_token_source": "missing",
+        "weather_history_token_file_used": None,
     }
+
+
+def _resolve_weather_history_token(
+    *,
+    env_values: dict[str, str],
+    repo_root: Path,
+) -> dict[str, Any]:
+    direct_state = _weather_history_token_state(env_values)
+    if bool(direct_state.get("weather_history_token_present")):
+        return direct_state
+
+    file_candidates: list[Path] = []
+    explicit_file = str(env_values.get("BETBOT_WEATHER_CDO_TOKEN_FILE") or "").strip()
+    if explicit_file:
+        explicit_path = Path(explicit_file).expanduser()
+        if not explicit_path.is_absolute():
+            explicit_path = (repo_root / explicit_path).resolve()
+        file_candidates.append(explicit_path)
+    else:
+        default_from_env = str(os.environ.get("BETBOT_WEATHER_CDO_TOKEN_FILE") or "").strip()
+        if default_from_env:
+            default_path = Path(default_from_env).expanduser()
+            if not default_path.is_absolute():
+                default_path = (repo_root / default_path).resolve()
+            file_candidates.append(default_path)
+    fallback_paths = [
+        repo_root / ".secrets" / "noaa_cdo_token.txt",
+        repo_root / ".secrets" / "ncei_cdo_token.txt",
+        repo_root / ".secrets" / "cdo_token.txt",
+    ]
+    for fallback in fallback_paths:
+        if fallback not in file_candidates:
+            file_candidates.append(fallback)
+
+    for candidate in file_candidates:
+        if not candidate.exists() or not candidate.is_file():
+            continue
+        try:
+            token_text = candidate.read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+        if _is_placeholder_value(token_text):
+            continue
+        if not token_text:
+            continue
+        env_values["BETBOT_NOAA_CDO_TOKEN"] = token_text
+        return {
+            "weather_history_token_present": True,
+            "weather_history_token_env_key": "BETBOT_NOAA_CDO_TOKEN",
+            "weather_history_token_source": "token_file",
+            "weather_history_token_file_used": str(candidate),
+        }
+
+    direct_state["weather_history_token_source"] = "missing"
+    direct_state["weather_history_token_file_used"] = None
+    return direct_state
 
 
 def _weather_history_readiness_state(
@@ -1107,7 +1168,10 @@ def main() -> int:
     except Exception as exc:  # pragma: no cover - defensive fallback
         env_file_values = {}
         env_file_parse_error = str(exc)
-    weather_history_token_state = _weather_history_token_state(env_file_values)
+    weather_history_token_state = _resolve_weather_history_token(
+        env_values=env_file_values,
+        repo_root=repo_root,
+    )
     history_csv = Path(os.environ["BETBOT_HISTORY_CSV"])
     priors_csv = Path(os.environ["BETBOT_PRIORS_CSV"])
 
@@ -1149,6 +1213,8 @@ def main() -> int:
                     "env_file_parse_error": env_file_parse_error,
                     "weather_history_token_present": weather_history_token_state.get("weather_history_token_present"),
                     "weather_history_token_env_key": weather_history_token_state.get("weather_history_token_env_key"),
+                    "weather_history_token_source": weather_history_token_state.get("weather_history_token_source"),
+                    "weather_history_token_file_used": weather_history_token_state.get("weather_history_token_file_used"),
                     "betbot_launcher": launcher,
                     "steps": [
                         _synthetic_step(
@@ -1247,6 +1313,8 @@ def main() -> int:
             "env_file_parse_error": env_file_parse_error,
             "weather_history_token_present": weather_history_token_state.get("weather_history_token_present"),
             "weather_history_token_env_key": weather_history_token_state.get("weather_history_token_env_key"),
+            "weather_history_token_source": weather_history_token_state.get("weather_history_token_source"),
+            "weather_history_token_file_used": weather_history_token_state.get("weather_history_token_file_used"),
             "betbot_launcher": launcher,
             "steps": steps,
             "overall_status": "failed",
@@ -1666,6 +1734,8 @@ def main() -> int:
         "env_file_parse_error": env_file_parse_error,
         "weather_history_token_present": weather_history_token_state.get("weather_history_token_present"),
         "weather_history_token_env_key": weather_history_token_state.get("weather_history_token_env_key"),
+        "weather_history_token_source": weather_history_token_state.get("weather_history_token_source"),
+        "weather_history_token_file_used": weather_history_token_state.get("weather_history_token_file_used"),
         "betbot_launcher": launcher,
         "steps": steps,
         "overall_status": overall_status,
