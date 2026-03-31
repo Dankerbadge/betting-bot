@@ -451,6 +451,7 @@ def _run_step(
     args: list[str],
     cwd: Path,
     run_dir: Path,
+    env_overrides: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     started_at = _now_iso()
     started_monotonic = time.monotonic()
@@ -458,12 +459,21 @@ def _run_step(
     stderr_file = run_dir / f"{name}.stderr.log"
 
     cmd = launcher + args
+    merged_env = os.environ.copy()
+    if isinstance(env_overrides, dict):
+        for key, value in env_overrides.items():
+            key_text = str(key or "").strip()
+            if not key_text:
+                continue
+            merged_env[key_text] = str(value or "")
+
     proc = subprocess.run(
         cmd,
         cwd=str(cwd),
         text=True,
         capture_output=True,
         check=False,
+        env=merged_env,
     )
 
     stdout_file.write_text(proc.stdout or "", encoding="utf-8")
@@ -1011,6 +1021,13 @@ def main() -> int:
     requested_env_file = Path(os.environ["BETBOT_ENV_FILE"])
     env_resolution = _resolve_env_file(requested_path=requested_env_file, repo_root=repo_root)
     env_file = Path(str(env_resolution.get("env_file_effective") or requested_env_file))
+    env_file_values: dict[str, str] = {}
+    env_file_parse_error: str | None = None
+    try:
+        env_file_values = _parse_env_values(env_file)
+    except Exception as exc:  # pragma: no cover - defensive fallback
+        env_file_values = {}
+        env_file_parse_error = str(exc)
     history_csv = Path(os.environ["BETBOT_HISTORY_CSV"])
     priors_csv = Path(os.environ["BETBOT_PRIORS_CSV"])
 
@@ -1048,6 +1065,8 @@ def main() -> int:
                     "env_file_resolution_reason": env_resolution.get("env_file_resolution_reason"),
                     "env_file_kalshi_ready": env_resolution.get("env_file_kalshi_ready"),
                     "env_file_kalshi_ready_reason": env_resolution.get("env_file_kalshi_ready_reason"),
+                    "env_file_loaded_key_count": len(env_file_values),
+                    "env_file_parse_error": env_file_parse_error,
                     "betbot_launcher": launcher,
                     "steps": [
                         _synthetic_step(
@@ -1142,6 +1161,8 @@ def main() -> int:
             "env_file_resolution_reason": env_resolution.get("env_file_resolution_reason"),
             "env_file_kalshi_ready": env_resolution.get("env_file_kalshi_ready"),
             "env_file_kalshi_ready_reason": env_resolution.get("env_file_kalshi_ready_reason"),
+            "env_file_loaded_key_count": len(env_file_values),
+            "env_file_parse_error": env_file_parse_error,
             "betbot_launcher": launcher,
             "steps": steps,
             "overall_status": "failed",
@@ -1221,6 +1242,7 @@ def main() -> int:
             ],
             cwd=repo_root,
             run_dir=run_logs,
+            env_overrides=env_file_values,
         )
     )
 
@@ -1247,6 +1269,7 @@ def main() -> int:
             ],
             cwd=repo_root,
             run_dir=run_logs,
+            env_overrides=env_file_values,
         )
     )
 
@@ -1275,6 +1298,7 @@ def main() -> int:
             ],
             cwd=repo_root,
             run_dir=run_logs,
+            env_overrides=env_file_values,
         )
         weather_step["cache_state_before"] = weather_cache
         steps.append(weather_step)
@@ -1324,6 +1348,7 @@ def main() -> int:
             ],
             cwd=repo_root,
             run_dir=run_logs,
+            env_overrides=env_file_values,
         )
         weather_prior_step["prior_state_before"] = weather_prior_state_before
         steps.append(weather_prior_step)
@@ -1352,6 +1377,7 @@ def main() -> int:
         ],
         cwd=repo_root,
         run_dir=run_logs,
+        env_overrides=env_file_values,
     )
     steps.append(frontier_refresh_step)
 
@@ -1385,6 +1411,7 @@ def main() -> int:
             ],
             cwd=repo_root,
             run_dir=run_logs,
+            env_overrides=env_file_values,
         )
         # Balance smoke is diagnostic: a failing smoke should enrich blockers,
         # not mark the whole orchestration step as failed.
@@ -1444,6 +1471,7 @@ def main() -> int:
             args=prior_trader_args,
             cwd=repo_root,
             run_dir=run_logs,
+            env_overrides=env_file_values,
         )
     )
 
@@ -1525,6 +1553,8 @@ def main() -> int:
         "env_file_resolution_reason": env_resolution.get("env_file_resolution_reason"),
         "env_file_kalshi_ready": env_resolution.get("env_file_kalshi_ready"),
         "env_file_kalshi_ready_reason": env_resolution.get("env_file_kalshi_ready_reason"),
+        "env_file_loaded_key_count": len(env_file_values),
+        "env_file_parse_error": env_file_parse_error,
         "betbot_launcher": launcher,
         "steps": steps,
         "overall_status": overall_status,
