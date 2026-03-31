@@ -2793,6 +2793,8 @@ def run_kalshi_micro_execute(
         "execution_frontier_recommendations": execution_frontier_summary.get("recommendations"),
         "frontier_artifact_path": runtime_version.get("frontier_artifact_path"),
         "frontier_artifact_sha256": runtime_version.get("frontier_artifact_sha256"),
+        "frontier_artifact_file_sha256": runtime_version.get("frontier_artifact_file_sha256"),
+        "frontier_artifact_payload_sha256": runtime_version.get("frontier_artifact_payload_sha256"),
         "frontier_artifact_as_of_utc": runtime_version.get("frontier_artifact_as_of_utc"),
         "frontier_artifact_age_seconds": runtime_version.get("frontier_artifact_age_seconds"),
         "execution_empirical_fill_model_enabled": bool(execution_empirical_fill_model_enabled),

@@ -1417,6 +1417,8 @@ def run_kalshi_micro_prior_trader(
     summary["probe_reason"] = top_attempt.get("probe_reason")
     summary["frontier_artifact_path"] = runtime_version.get("frontier_artifact_path")
     summary["frontier_artifact_sha256"] = runtime_version.get("frontier_artifact_sha256")
+    summary["frontier_artifact_file_sha256"] = runtime_version.get("frontier_artifact_file_sha256")
+    summary["frontier_artifact_payload_sha256"] = runtime_version.get("frontier_artifact_payload_sha256")
     summary["frontier_artifact_as_of_utc"] = runtime_version.get("frontier_artifact_as_of_utc")
     summary["frontier_artifact_age_seconds"] = runtime_version.get("frontier_artifact_age_seconds")
     summary["frontier_trusted_bucket_count"] = runtime_version.get("frontier_trusted_bucket_count")

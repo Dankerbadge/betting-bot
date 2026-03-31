@@ -358,6 +358,8 @@ def _run_step(
             step["recommendations"] = parsed.get("recommendations")
             step["frontier_artifact_path"] = parsed.get("frontier_artifact_path")
             step["frontier_artifact_sha256"] = parsed.get("frontier_artifact_sha256")
+            step["frontier_artifact_file_sha256"] = parsed.get("frontier_artifact_file_sha256")
+            step["frontier_artifact_payload_sha256"] = parsed.get("frontier_artifact_payload_sha256")
             step["frontier_artifact_as_of_utc"] = parsed.get("frontier_artifact_as_of_utc")
             step["frontier_artifact_age_seconds"] = parsed.get("frontier_artifact_age_seconds")
             step["frontier_selection_mode"] = parsed.get("frontier_selection_mode")
@@ -415,6 +417,8 @@ def _run_step(
             step["probe_reason"] = parsed.get("probe_reason")
             step["frontier_artifact_path"] = parsed.get("frontier_artifact_path")
             step["frontier_artifact_sha256"] = parsed.get("frontier_artifact_sha256")
+            step["frontier_artifact_file_sha256"] = parsed.get("frontier_artifact_file_sha256")
+            step["frontier_artifact_payload_sha256"] = parsed.get("frontier_artifact_payload_sha256")
             step["frontier_artifact_as_of_utc"] = parsed.get("frontier_artifact_as_of_utc")
             step["frontier_artifact_age_seconds"] = parsed.get("frontier_artifact_age_seconds")
 
@@ -690,6 +694,8 @@ def _runtime_version_for_report(
             "weather_priors_version": None,
             "frontier_artifact_path": None,
             "frontier_artifact_sha256": None,
+            "frontier_artifact_file_sha256": None,
+            "frontier_artifact_payload_sha256": None,
             "frontier_artifact_as_of_utc": None,
             "frontier_artifact_age_seconds": None,
             "frontier_selection_mode": None,
@@ -1220,6 +1226,8 @@ def main() -> int:
         ),
         "frontier_artifact_path": runtime_version.get("frontier_artifact_path"),
         "frontier_artifact_sha256": runtime_version.get("frontier_artifact_sha256"),
+        "frontier_artifact_file_sha256": runtime_version.get("frontier_artifact_file_sha256"),
+        "frontier_artifact_payload_sha256": runtime_version.get("frontier_artifact_payload_sha256"),
         "frontier_artifact_as_of_utc": runtime_version.get("frontier_artifact_as_of_utc"),
         "frontier_artifact_age_seconds": runtime_version.get("frontier_artifact_age_seconds"),
         "frontier_selection_mode": runtime_version.get("frontier_selection_mode"),

@@ -7,6 +7,12 @@ from pathlib import Path
 import subprocess
 from typing import Any
 
+_FRONTIER_HASH_KEYS = {
+    "frontier_artifact_sha256",
+    "frontier_artifact_file_sha256",
+    "frontier_artifact_payload_sha256",
+}
+
 
 def _parse_timestamp(value: Any) -> datetime | None:
     text = str(value or "").strip()
@@ -78,6 +84,19 @@ def canonical_json_sha256(payload: dict[str, Any]) -> str | None:
     except (TypeError, ValueError):
         return None
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def _strip_frontier_hash_fields(payload: Any) -> Any:
+    if isinstance(payload, dict):
+        cleaned: dict[str, Any] = {}
+        for key, value in payload.items():
+            if key in _FRONTIER_HASH_KEYS:
+                continue
+            cleaned[key] = _strip_frontier_hash_fields(value)
+        return cleaned
+    if isinstance(payload, list):
+        return [_strip_frontier_hash_fields(item) for item in payload]
+    return payload
 
 
 def file_mtime_utc(path: str | Path | None) -> str | None:
@@ -212,15 +231,24 @@ def build_frontier_artifact_identity(
         if isinstance(artifact_as_of_dt, datetime)
         else None
     )
-    if path_text and target and target.exists():
-        artifact_sha = file_sha256(target)
-    elif isinstance(report_payload, dict):
-        artifact_sha = canonical_json_sha256(report_payload)
-    else:
-        artifact_sha = None
+    file_hash: str | None = file_sha256(target) if path_text and target and target.exists() else None
+    existing_artifact_hash: str | None = None
+    existing_file_hash: str | None = None
+    existing_payload_hash: str | None = None
+    payload_hash: str | None = None
+    if isinstance(report_payload, dict):
+        existing_artifact_hash = str(report_payload.get("frontier_artifact_sha256") or "").strip() or None
+        existing_file_hash = str(report_payload.get("frontier_artifact_file_sha256") or "").strip() or None
+        existing_payload_hash = str(report_payload.get("frontier_artifact_payload_sha256") or "").strip() or None
+        payload_hash = existing_payload_hash or canonical_json_sha256(_strip_frontier_hash_fields(report_payload))
+    artifact_file_sha256 = file_hash or existing_file_hash
+    artifact_payload_sha256 = payload_hash
+    artifact_sha = existing_artifact_hash or artifact_file_sha256 or artifact_payload_sha256
     return {
         "frontier_artifact_path": path_text,
         "frontier_artifact_sha256": artifact_sha,
+        "frontier_artifact_file_sha256": artifact_file_sha256,
+        "frontier_artifact_payload_sha256": artifact_payload_sha256,
         "frontier_artifact_as_of_utc": artifact_as_of_utc,
         "frontier_artifact_age_seconds": artifact_age_seconds,
         "frontier_selection_mode": frontier_selection_mode or None,

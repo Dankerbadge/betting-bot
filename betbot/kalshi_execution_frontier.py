@@ -630,6 +630,8 @@ def run_kalshi_execution_frontier(
     summary["runtime_version"] = runtime_version
     summary["frontier_artifact_path"] = runtime_version.get("frontier_artifact_path")
     summary["frontier_artifact_sha256"] = runtime_version.get("frontier_artifact_sha256")
+    summary["frontier_artifact_file_sha256"] = runtime_version.get("frontier_artifact_file_sha256")
+    summary["frontier_artifact_payload_sha256"] = runtime_version.get("frontier_artifact_payload_sha256")
     summary["frontier_artifact_as_of_utc"] = runtime_version.get("frontier_artifact_as_of_utc")
     summary["frontier_artifact_age_seconds"] = runtime_version.get("frontier_artifact_age_seconds")
     summary["frontier_selection_mode"] = runtime_version.get("frontier_selection_mode")
