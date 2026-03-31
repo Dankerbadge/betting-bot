@@ -1034,6 +1034,7 @@ class KalshiMicroPriorTraderTests(unittest.TestCase):
             history_csv = base / "history.csv"
             history_csv.write_text("captured_at,market_ticker\n2026-03-27T20:55:00+00:00,KXRAIN-1\n", encoding="utf-8")
             allow_live_orders_seen: list[bool] = []
+            weather_refresh_call_count = 0
 
             def fake_prior_execute_runner(**kwargs):
                 allow_live_orders_seen.append(bool(kwargs.get("allow_live_orders")))
@@ -1054,6 +1055,13 @@ class KalshiMicroPriorTraderTests(unittest.TestCase):
                     "plan_summary_file": str(base / "plan.json"),
                 }
 
+            def fake_weather_prior_runner(**kwargs):
+                nonlocal weather_refresh_call_count
+                weather_refresh_call_count += 1
+                if weather_refresh_call_count == 1:
+                    return {"status": "no_weather_priors"}
+                return {"status": "ready"}
+
             summary = run_kalshi_micro_prior_trader(
                 env_file="data/research/account_onboarding.local.env",
                 output_dir=str(base),
@@ -1073,7 +1081,7 @@ class KalshiMicroPriorTraderTests(unittest.TestCase):
                     "live_ready_counts": {"live_ready": 0, "not_live_ready": 2},
                     "status_counts": {"rate_limited": 2},
                 },
-                weather_prior_runner=lambda **kwargs: {"status": "ready"},
+                weather_prior_runner=fake_weather_prior_runner,
                 auto_refresh_priors=False,
                 prior_execute_runner=fake_prior_execute_runner,
                 reconcile_runner=lambda **kwargs: {
@@ -1087,6 +1095,59 @@ class KalshiMicroPriorTraderTests(unittest.TestCase):
             self.assertFalse(summary["allow_live_orders_effective"])
             self.assertFalse(summary["weather_refresh_live_ready"])
             self.assertIn("zero live-ready station/day keys", str(summary["live_orders_downgraded_reason"]))
+            self.assertTrue(summary["weather_prewarm_fallback_triggered"])
+            self.assertEqual(summary["weather_prior_refresh_attempts"], 2)
+            self.assertEqual(weather_refresh_call_count, 2)
+
+    def test_run_kalshi_micro_prior_trader_skips_prewarm_when_weather_priors_are_healthy(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            history_csv = base / "history.csv"
+            history_csv.write_text("captured_at,market_ticker\n2026-03-27T20:55:00+00:00,KXRAIN-1\n", encoding="utf-8")
+            prewarm_called: list[bool] = []
+
+            summary = run_kalshi_micro_prior_trader(
+                env_file="data/research/account_onboarding.local.env",
+                output_dir=str(base),
+                history_csv=str(history_csv),
+                capture_before_execute=False,
+                auto_refresh_weather_priors=True,
+                auto_prewarm_weather_station_history=True,
+                weather_prior_runner=lambda **kwargs: {
+                    "status": "ready",
+                    "station_history_status_counts": {"ready": 2},
+                    "contract_family_generated_counts": {"daily_rain": 1, "daily_temperature": 1},
+                },
+                weather_prewarm_runner=lambda **kwargs: (
+                    prewarm_called.append(True) or {"status": "ready", "prewarm_keys_attempted": 1}
+                ),
+                auto_refresh_priors=False,
+                prior_execute_runner=lambda **kwargs: {
+                    "status": "dry_run",
+                    "actual_live_balance_dollars": 40.0,
+                    "actual_live_balance_source": "live",
+                    "balance_live_verified": True,
+                    "prior_trade_gate_summary": {
+                        "gate_pass": False,
+                        "gate_status": "no_candidates",
+                        "gate_score": 0.0,
+                        "gate_blockers": ["No prior-backed maker plans are available."],
+                    },
+                    "output_file": str(base / "prior_execute.json"),
+                    "execute_summary_file": str(base / "execute_summary.json"),
+                    "execute_output_csv": str(base / "execute.csv"),
+                    "plan_summary_file": str(base / "plan.json"),
+                },
+                reconcile_runner=lambda **kwargs: {
+                    "status": "no_order_ids",
+                    "output_file": str(base / "reconcile.json"),
+                },
+                now=datetime(2026, 3, 27, 21, 0, tzinfo=timezone.utc),
+            )
+
+            self.assertEqual(prewarm_called, [])
+            self.assertFalse(summary["weather_prewarm_fallback_triggered"])
+            self.assertEqual(summary["weather_prior_refresh_attempts"], 1)
 
 
 if __name__ == "__main__":

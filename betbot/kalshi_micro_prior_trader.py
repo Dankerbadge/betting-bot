@@ -480,11 +480,54 @@ def run_kalshi_micro_prior_trader(
 
     weather_prior_summary: dict[str, Any] | None = None
     weather_prewarm_summary: dict[str, Any] | None = None
+    weather_prior_refresh_attempts = 0
+    weather_prewarm_fallback_triggered = False
+    weather_prewarm_fallback_reason: str | None = None
     if auto_refresh_weather_priors:
         history_path = Path(effective_history_csv)
         if history_path.exists():
             try:
-                if auto_prewarm_weather_station_history:
+                def _run_weather_prior_refresh() -> dict[str, Any]:
+                    return weather_prior_runner(
+                        priors_csv=priors_csv,
+                        history_csv=effective_history_csv,
+                        output_dir=output_dir,
+                        allowed_contract_families=auto_weather_allowed_contract_families,
+                        max_markets=max(1, auto_weather_prior_max_markets),
+                        timeout_seconds=timeout_seconds,
+                        historical_lookback_years=max(1, int(auto_weather_historical_lookback_years)),
+                        station_history_cache_max_age_hours=max(0.0, float(auto_weather_station_history_cache_max_age_hours)),
+                        protect_manual=True,
+                        write_back_to_priors=True,
+                        now=captured_at,
+                    )
+
+                def _weather_prior_needs_prewarm_fallback(summary: dict[str, Any] | None) -> tuple[bool, str | None]:
+                    if not isinstance(summary, dict):
+                        return (True, "missing_weather_prior_summary")
+                    status = str(summary.get("status") or "").strip().lower()
+                    if status != "ready":
+                        return (True, f"weather_priors_status_{status or 'unknown'}")
+                    status_counts = dict(summary.get("station_history_status_counts") or {})
+                    if not status_counts:
+                        return (False, None)
+                    ready_history = int(status_counts.get("ready") or 0) + int(status_counts.get("ready_partial") or 0)
+                    daily_generated = int(summary.get("contract_family_generated_counts", {}).get("daily_rain") or 0) + int(
+                        summary.get("contract_family_generated_counts", {}).get("daily_temperature") or 0
+                    )
+                    daily_skipped = int(summary.get("contract_family_skipped_counts", {}).get("daily_rain") or 0) + int(
+                        summary.get("contract_family_skipped_counts", {}).get("daily_temperature") or 0
+                    )
+                    if ready_history <= 0 and (daily_generated + daily_skipped) > 0:
+                        return (True, "no_ready_station_history_for_daily_weather")
+                    return (False, None)
+
+                weather_prior_summary = _run_weather_prior_refresh()
+                weather_prior_refresh_attempts = 1
+                needs_prewarm_fallback, prewarm_reason = _weather_prior_needs_prewarm_fallback(weather_prior_summary)
+                if auto_prewarm_weather_station_history and needs_prewarm_fallback:
+                    weather_prewarm_fallback_triggered = True
+                    weather_prewarm_fallback_reason = prewarm_reason
                     weather_prewarm_summary = weather_prewarm_runner(
                         history_csv=effective_history_csv,
                         output_dir=output_dir,
@@ -497,19 +540,9 @@ def run_kalshi_micro_prior_trader(
                         max_station_day_keys=max(1, int(auto_weather_prewarm_max_station_day_keys)),
                         now=captured_at,
                     )
-                weather_prior_summary = weather_prior_runner(
-                    priors_csv=priors_csv,
-                    history_csv=effective_history_csv,
-                    output_dir=output_dir,
-                    allowed_contract_families=auto_weather_allowed_contract_families,
-                    max_markets=max(1, auto_weather_prior_max_markets),
-                    timeout_seconds=timeout_seconds,
-                    historical_lookback_years=max(1, int(auto_weather_historical_lookback_years)),
-                    station_history_cache_max_age_hours=max(0.0, float(auto_weather_station_history_cache_max_age_hours)),
-                    protect_manual=True,
-                    write_back_to_priors=True,
-                    now=captured_at,
-                )
+                    if str(weather_prewarm_summary.get("status") or "").strip().lower() == "ready":
+                        weather_prior_summary = _run_weather_prior_refresh()
+                        weather_prior_refresh_attempts = 2
             except Exception as exc:
                 weather_prior_summary = {
                     "status": "error",
@@ -536,7 +569,7 @@ def run_kalshi_micro_prior_trader(
                 "Live orders were downgraded to dry-run because weather prior refresh did not complete cleanly "
                 f"(status={weather_prior_status or 'unknown'})."
             )
-        elif auto_prewarm_weather_station_history:
+        elif auto_prewarm_weather_station_history and weather_prewarm_fallback_triggered:
             prewarm_status = str(
                 weather_prewarm_summary.get("status") if isinstance(weather_prewarm_summary, dict) else ""
             ).strip().lower()
@@ -672,6 +705,7 @@ def run_kalshi_micro_prior_trader(
         "weather_priors_skipped_output_csv": (
             weather_prior_summary.get("skipped_output_csv") if isinstance(weather_prior_summary, dict) else None
         ),
+        "weather_prior_refresh_attempts": weather_prior_refresh_attempts,
         "weather_prewarm_status": (
             weather_prewarm_summary.get("status") if isinstance(weather_prewarm_summary, dict) else "skipped"
         ),
@@ -687,6 +721,8 @@ def run_kalshi_micro_prior_trader(
         "weather_prewarm_summary_file": (
             weather_prewarm_summary.get("output_file") if isinstance(weather_prewarm_summary, dict) else None
         ),
+        "weather_prewarm_fallback_triggered": weather_prewarm_fallback_triggered,
+        "weather_prewarm_fallback_reason": weather_prewarm_fallback_reason,
         "weather_refresh_live_ready": weather_refresh_live_ready,
         "weather_refresh_live_ready_reason": weather_refresh_live_ready_reason,
         "auto_refresh_priors": auto_refresh_priors,

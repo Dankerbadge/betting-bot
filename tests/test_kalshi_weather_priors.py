@@ -699,6 +699,83 @@ class KalshiWeatherPriorsTests(unittest.TestCase):
             self.assertEqual(row["weather_station_history_live_ready"], "False")
             self.assertEqual(row["weather_station_history_live_ready_reason"], "insufficient_sample_years")
 
+    def test_run_kalshi_weather_priors_uses_variable_specific_sample_depth_for_rain(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            history_csv = base / "history.csv"
+            priors_csv = base / "priors.csv"
+            _write_csv(
+                history_csv,
+                HISTORY_FIELDNAMES,
+                [
+                    {
+                        "captured_at": "2026-03-30T12:00:00+00:00",
+                        "category": "Climate and Weather",
+                        "series_ticker": "KXRAINNYC",
+                        "event_ticker": "KXRAINNYC-26MAR30",
+                        "market_ticker": "KXRAINNYC-26MAR30",
+                        "event_title": "Will it rain in NYC today?",
+                        "market_title": "Will it rain in NYC today?",
+                        "rules_primary": "If measurable rain at KJFK, resolves Yes.",
+                        "close_time": "2026-03-30T20:00:00+00:00",
+                        "hours_to_close": "8",
+                        "yes_bid_dollars": "0.44",
+                        "yes_ask_dollars": "0.46",
+                        "spread_dollars": "0.02",
+                    },
+                ],
+            )
+            _write_csv(priors_csv, PRIOR_FIELDNAMES, [])
+
+            summary = run_kalshi_weather_priors(
+                priors_csv=str(priors_csv),
+                history_csv=str(history_csv),
+                output_dir=str(base),
+                station_forecast_fetcher=lambda **kwargs: {
+                    "status": "ready",
+                    "station_id": "KJFK",
+                    "forecast_updated_at": "2026-03-30T12:00:00+00:00",
+                    "periods": [
+                        {
+                            "startTime": "2026-03-30T13:00:00+00:00",
+                            "temperature": 62,
+                            "probabilityOfPrecipitation": {"value": 40},
+                        },
+                    ],
+                },
+                station_history_fetcher=lambda **kwargs: {
+                    "status": "ready",
+                    "sample_years": 20,
+                    "sample_years_precip": 5,
+                    "sample_years_tmax": 20,
+                    "sample_years_tmin": 20,
+                    "sample_years_mean": 20,
+                    "rain_day_frequency": 0.35,
+                    "prcp_values_in": [0.0, 0.1, 0.2, 0.0, 0.05],
+                    "tmax_values_f": [60.0] * 20,
+                    "tmin_values_f": [45.0] * 20,
+                    "daily_mean_values_f": [52.5] * 20,
+                    "cache_hit": True,
+                    "cache_fallback_used": False,
+                    "cache_fresh": True,
+                    "cache_age_seconds": 30.0,
+                },
+                anomaly_series_fetcher=lambda **kwargs: {"status": "ready", "values": [0.0] * 24},
+                now=datetime(2026, 3, 30, 12, 5, tzinfo=timezone.utc),
+            )
+
+            self.assertEqual(summary["status"], "ready")
+            with Path(summary["output_csv"]).open("r", newline="", encoding="utf-8") as handle:
+                rows = [dict(row) for row in csv.DictReader(handle)]
+            self.assertEqual(len(rows), 1)
+            row = rows[0]
+            self.assertEqual(row["contract_family"], "daily_rain")
+            self.assertEqual(row["weather_station_history_sample_metric"], "precip")
+            self.assertEqual(row["weather_station_history_sample_years"], "5")
+            self.assertEqual(row["weather_station_history_sample_years_total"], "20")
+            self.assertEqual(row["weather_station_history_live_ready"], "False")
+            self.assertEqual(row["weather_station_history_live_ready_reason"], "insufficient_sample_years")
+
 
 if __name__ == "__main__":
     unittest.main()

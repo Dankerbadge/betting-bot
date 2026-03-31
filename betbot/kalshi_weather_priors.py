@@ -87,7 +87,13 @@ WEATHER_PRIOR_EXTRA_FIELDS = [
     "weather_station_history_cache_fallback_used",
     "weather_station_history_cache_fresh",
     "weather_station_history_cache_age_seconds",
+    "weather_station_history_sample_metric",
     "weather_station_history_sample_years",
+    "weather_station_history_sample_years_total",
+    "weather_station_history_sample_years_precip",
+    "weather_station_history_sample_years_tmax",
+    "weather_station_history_sample_years_tmin",
+    "weather_station_history_sample_years_mean",
     "weather_station_history_min_sample_years_required",
     "weather_station_history_live_ready",
     "weather_station_history_live_ready_reason",
@@ -131,7 +137,13 @@ WEATHER_PRIOR_OUTPUT_FIELDNAMES = [
     "weather_station_history_cache_fallback_used",
     "weather_station_history_cache_fresh",
     "weather_station_history_cache_age_seconds",
+    "weather_station_history_sample_metric",
     "weather_station_history_sample_years",
+    "weather_station_history_sample_years_total",
+    "weather_station_history_sample_years_precip",
+    "weather_station_history_sample_years_tmax",
+    "weather_station_history_sample_years_tmin",
+    "weather_station_history_sample_years_mean",
     "weather_station_history_min_sample_years_required",
     "weather_station_history_live_ready",
     "weather_station_history_live_ready_reason",
@@ -206,13 +218,84 @@ def _as_bool(value: Any) -> bool:
     return text in {"1", "true", "yes", "y", "t"}
 
 
+def _history_sample_years_snapshot(history_payload: dict[str, Any] | None) -> dict[str, int | None]:
+    if not isinstance(history_payload, dict):
+        return {
+            "sample_years_total": None,
+            "sample_years_precip": None,
+            "sample_years_tmax": None,
+            "sample_years_tmin": None,
+            "sample_years_mean": None,
+        }
+
+    def _from_value(value: Any) -> int | None:
+        numeric = _parse_float(value)
+        if not isinstance(numeric, float) or numeric < 0:
+            return None
+        return int(numeric)
+
+    sample_years_total = _from_value(history_payload.get("sample_years"))
+    sample_years_precip = _from_value(history_payload.get("sample_years_precip"))
+    sample_years_tmax = _from_value(history_payload.get("sample_years_tmax"))
+    sample_years_tmin = _from_value(history_payload.get("sample_years_tmin"))
+    sample_years_mean = _from_value(history_payload.get("sample_years_mean"))
+
+    if sample_years_total is None and isinstance(history_payload.get("daily_samples"), list):
+        sample_years_total = len([item for item in history_payload.get("daily_samples", []) if isinstance(item, dict)])
+    if sample_years_precip is None and isinstance(history_payload.get("prcp_values_in"), list):
+        sample_years_precip = len([item for item in history_payload.get("prcp_values_in", []) if isinstance(item, (int, float))])
+    if sample_years_tmax is None and isinstance(history_payload.get("tmax_values_f"), list):
+        sample_years_tmax = len([item for item in history_payload.get("tmax_values_f", []) if isinstance(item, (int, float))])
+    if sample_years_tmin is None and isinstance(history_payload.get("tmin_values_f"), list):
+        sample_years_tmin = len([item for item in history_payload.get("tmin_values_f", []) if isinstance(item, (int, float))])
+    if sample_years_mean is None and isinstance(history_payload.get("daily_mean_values_f"), list):
+        sample_years_mean = len(
+            [item for item in history_payload.get("daily_mean_values_f", []) if isinstance(item, (int, float))]
+        )
+
+    return {
+        "sample_years_total": sample_years_total,
+        "sample_years_precip": sample_years_precip,
+        "sample_years_tmax": sample_years_tmax,
+        "sample_years_tmin": sample_years_tmin,
+        "sample_years_mean": sample_years_mean,
+    }
+
+
+def _history_sample_years_for_metric(
+    history_payload: dict[str, Any] | None,
+    *,
+    sample_metric: str | None = None,
+) -> int | None:
+    metric = str(sample_metric or "").strip().lower()
+    snapshot = _history_sample_years_snapshot(history_payload)
+    sample_years_total = snapshot.get("sample_years_total")
+    if metric in {"precip", "rain"}:
+        sample_years_precip = snapshot.get("sample_years_precip")
+        return sample_years_total if sample_years_precip is None else sample_years_precip
+    if metric in {"tmax", "high"}:
+        sample_years_tmax = snapshot.get("sample_years_tmax")
+        return sample_years_total if sample_years_tmax is None else sample_years_tmax
+    if metric in {"tmin", "low"}:
+        sample_years_tmin = snapshot.get("sample_years_tmin")
+        return sample_years_total if sample_years_tmin is None else sample_years_tmin
+    if metric in {"mean", "daily_mean"}:
+        sample_years_mean = snapshot.get("sample_years_mean")
+        return sample_years_total if sample_years_mean is None else sample_years_mean
+    return sample_years_total
+
+
 def _history_live_health(
     history_payload: dict[str, Any] | None,
     *,
     contract_family: str | None = None,
+    sample_metric: str | None = None,
 ) -> dict[str, Any]:
     family = str(contract_family or "").strip().lower()
+    metric = str(sample_metric or "").strip().lower()
     min_sample_years_required = int(_MIN_SAMPLE_YEARS_BY_DAILY_FAMILY.get(family, 0) or 0)
+    sample_snapshot = _history_sample_years_snapshot(history_payload)
+    sample_years = _history_sample_years_for_metric(history_payload, sample_metric=metric)
     if not isinstance(history_payload, dict):
         return {
             "status": "missing",
@@ -220,7 +303,13 @@ def _history_live_health(
             "cache_fallback_used": False,
             "cache_fresh": False,
             "cache_age_seconds": None,
-            "sample_years": None,
+            "sample_metric": metric,
+            "sample_years": sample_years,
+            "sample_years_total": sample_snapshot.get("sample_years_total"),
+            "sample_years_precip": sample_snapshot.get("sample_years_precip"),
+            "sample_years_tmax": sample_snapshot.get("sample_years_tmax"),
+            "sample_years_tmin": sample_snapshot.get("sample_years_tmin"),
+            "sample_years_mean": sample_snapshot.get("sample_years_mean"),
             "min_sample_years_required": min_sample_years_required,
             "live_ready": False,
             "live_ready_reason": "missing_history_payload",
@@ -231,8 +320,6 @@ def _history_live_health(
     cache_fresh = _as_bool(history_payload.get("cache_fresh"))
     cache_age_seconds_raw = _parse_float(history_payload.get("cache_age_seconds"))
     cache_age_seconds = round(cache_age_seconds_raw, 3) if isinstance(cache_age_seconds_raw, float) else None
-    sample_years_raw = _parse_float(history_payload.get("sample_years"))
-    sample_years = int(sample_years_raw) if isinstance(sample_years_raw, float) and sample_years_raw >= 0 else None
     live_ready = status in {"ready", "ready_partial"}
     reason = "ready"
     if not live_ready:
@@ -252,7 +339,13 @@ def _history_live_health(
         "cache_fallback_used": cache_fallback_used,
         "cache_fresh": cache_fresh,
         "cache_age_seconds": cache_age_seconds,
+        "sample_metric": metric,
         "sample_years": sample_years,
+        "sample_years_total": sample_snapshot.get("sample_years_total"),
+        "sample_years_precip": sample_snapshot.get("sample_years_precip"),
+        "sample_years_tmax": sample_snapshot.get("sample_years_tmax"),
+        "sample_years_tmin": sample_snapshot.get("sample_years_tmin"),
+        "sample_years_mean": sample_snapshot.get("sample_years_mean"),
         "min_sample_years_required": min_sample_years_required,
         "live_ready": live_ready,
         "live_ready_reason": reason,
@@ -598,6 +691,30 @@ def _target_month_day(
     return (local_dt.month, local_dt.day)
 
 
+def _temperature_expected_label(row: dict[str, Any]) -> str:
+    descriptor = " ".join(
+        (
+            str(row.get("event_title") or ""),
+            str(row.get("market_title") or ""),
+            str(row.get("rules_primary") or ""),
+        )
+    ).lower()
+    if any(token in descriptor for token in ("daily low", "low temperature", "lowest temperature")):
+        return "daily low"
+    if any(token in descriptor for token in ("daily high", "high temperature", "highest temperature")):
+        return "daily high"
+    return "hourly mean"
+
+
+def _temperature_sample_metric(expected_label: str) -> str:
+    normalized = str(expected_label or "").strip().lower()
+    if normalized == "daily high":
+        return "tmax"
+    if normalized == "daily low":
+        return "tmin"
+    return "mean"
+
+
 def _climatology_temperature_series(
     history_payload: dict[str, Any],
     *,
@@ -687,7 +804,18 @@ def _build_daily_rain_prior(
     no_rain_probability = 1.0
     for value in pop_values:
         no_rain_probability *= (1.0 - value)
-    model_probability_raw_unclamped = 1.0 - no_rain_probability
+    model_probability_raw_independent = 1.0 - no_rain_probability
+    model_probability_raw_unclamped = model_probability_raw_independent
+    rain_corr_weight = 0.0
+    if len(pop_values) >= 4:
+        pop_variability = pstdev(pop_values) if len(pop_values) > 1 else 0.0
+        pop_variability_normalized = min(1.0, max(0.0, pop_variability / 0.25))
+        rain_corr_weight = 0.35 + (0.45 * (1.0 - pop_variability_normalized))
+        max_hourly_pop = max(pop_values)
+        model_probability_raw_unclamped = (
+            (1.0 - rain_corr_weight) * model_probability_raw_independent
+            + rain_corr_weight * max_hourly_pop
+        )
     climatology_frequency = None
     if isinstance(history_payload, dict):
         rain_frequency = history_payload.get("rain_day_frequency")
@@ -736,14 +864,20 @@ def _build_daily_rain_prior(
         f"nws_station_hourly_forecast:{station_id}",
         f"periods_used={len(pop_values)}",
         f"forecast_updated_at={updated_at or 'unknown'}",
+        f"raw_pop_independent={model_probability_raw_independent:.4f}",
     ]
-    history_health = _history_live_health(history_payload, contract_family="daily_rain")
+    history_health = _history_live_health(
+        history_payload,
+        contract_family="daily_rain",
+        sample_metric="precip",
+    )
     window_start = str(settlement.get("observation_window_local_start") or "").strip()
     window_end = str(settlement.get("observation_window_local_end") or "").strip()
     if window_start and window_end:
         source_parts.append(f"settlement_window_local={window_start}-{window_end}")
     if isinstance(history_payload, dict):
         source_parts.append(f"ncei_cdo_status={history_health.get('status')}")
+        source_parts.append(f"historical_sample_metric={history_health.get('sample_metric')}")
         source_parts.append(f"historical_sample_years={history_health.get('sample_years')}")
         source_parts.append(f"historical_min_sample_years_required={history_health.get('min_sample_years_required')}")
         source_parts.append(f"historical_years={climatology_count}")
@@ -752,6 +886,8 @@ def _build_daily_rain_prior(
         source_parts.append(f"station_history_live_ready={history_health.get('live_ready')}")
         source_parts.append(f"station_history_live_ready_reason={history_health.get('live_ready_reason')}")
     source_parts.append(f"execution_guarded_probability={execution_probability:.4f}")
+    if rain_corr_weight > 0.0:
+        source_parts.append(f"rain_corr_weight={rain_corr_weight:.3f}")
 
     return (
         {
@@ -835,22 +971,13 @@ def _build_daily_temperature_prior(
     if not temperatures:
         return None, "station_forecast_missing_temperatures"
 
-    descriptor = " ".join(
-        (
-            str(row.get("event_title") or ""),
-            str(row.get("market_title") or ""),
-            str(row.get("rules_primary") or ""),
-        )
-    ).lower()
-    if any(token in descriptor for token in ("daily low", "low temperature", "lowest temperature")):
+    expected_label = _temperature_expected_label(row)
+    if expected_label == "daily low":
         expected_temperature = min(temperatures)
-        expected_label = "daily low"
-    elif any(token in descriptor for token in ("daily high", "high temperature", "highest temperature")):
+    elif expected_label == "daily high":
         expected_temperature = max(temperatures)
-        expected_label = "daily high"
     else:
         expected_temperature = mean(temperatures)
-        expected_label = "hourly mean"
 
     sigma_forecast = max(2.0, pstdev(temperatures) if len(temperatures) > 1 else 3.5)
     climatology_values = (
@@ -907,13 +1034,18 @@ def _build_daily_temperature_prior(
         f"temp_points={len(temperatures)}",
         f"forecast_updated_at={updated_at or 'unknown'}",
     ]
-    history_health = _history_live_health(history_payload, contract_family="daily_temperature")
+    history_health = _history_live_health(
+        history_payload,
+        contract_family="daily_temperature",
+        sample_metric=_temperature_sample_metric(expected_label),
+    )
     window_start = str(settlement.get("observation_window_local_start") or "").strip()
     window_end = str(settlement.get("observation_window_local_end") or "").strip()
     if window_start and window_end:
         source_parts.append(f"settlement_window_local={window_start}-{window_end}")
     if isinstance(history_payload, dict):
         source_parts.append(f"ncei_cdo_status={history_health.get('status')}")
+        source_parts.append(f"historical_sample_metric={history_health.get('sample_metric')}")
         source_parts.append(f"historical_sample_years={history_health.get('sample_years')}")
         source_parts.append(f"historical_min_sample_years_required={history_health.get('min_sample_years_required')}")
         source_parts.append(f"historical_samples={climatology_count}")
@@ -1180,7 +1312,16 @@ def run_kalshi_weather_priors(
                 history_payload = station_history_cache.get(cache_key)
                 history_status = str((history_payload or {}).get("status") or "").strip().lower() or "unknown"
                 history_fetch_status_counts[history_status] = history_fetch_status_counts.get(history_status, 0) + 1
-            history_health = _history_live_health(history_payload, contract_family=family)
+            history_sample_metric = ""
+            if family == "daily_rain":
+                history_sample_metric = "precip"
+            elif family == "daily_temperature":
+                history_sample_metric = _temperature_sample_metric(_temperature_expected_label(row))
+            history_health = _history_live_health(
+                history_payload,
+                contract_family=family,
+                sample_metric=history_sample_metric,
+            )
         if family == "daily_rain":
             try:
                 generated, skip_reason = _build_daily_rain_prior(
@@ -1288,8 +1429,38 @@ def run_kalshi_weather_priors(
                     if family in {"daily_rain", "daily_temperature"}
                     else ""
                 ),
+                "weather_station_history_sample_metric": (
+                    str((history_health or {}).get("sample_metric") or "").strip()
+                    if family in {"daily_rain", "daily_temperature"}
+                    else ""
+                ),
                 "weather_station_history_sample_years": (
                     (history_health or {}).get("sample_years")
+                    if family in {"daily_rain", "daily_temperature"}
+                    else ""
+                ),
+                "weather_station_history_sample_years_total": (
+                    (history_health or {}).get("sample_years_total")
+                    if family in {"daily_rain", "daily_temperature"}
+                    else ""
+                ),
+                "weather_station_history_sample_years_precip": (
+                    (history_health or {}).get("sample_years_precip")
+                    if family in {"daily_rain", "daily_temperature"}
+                    else ""
+                ),
+                "weather_station_history_sample_years_tmax": (
+                    (history_health or {}).get("sample_years_tmax")
+                    if family in {"daily_rain", "daily_temperature"}
+                    else ""
+                ),
+                "weather_station_history_sample_years_tmin": (
+                    (history_health or {}).get("sample_years_tmin")
+                    if family in {"daily_rain", "daily_temperature"}
+                    else ""
+                ),
+                "weather_station_history_sample_years_mean": (
+                    (history_health or {}).get("sample_years_mean")
                     if family in {"daily_rain", "daily_temperature"}
                     else ""
                 ),

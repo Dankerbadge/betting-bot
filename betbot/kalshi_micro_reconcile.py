@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import csv
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 from typing import Any
@@ -224,6 +224,56 @@ def _parse_ts(value: Any) -> datetime | None:
     return parsed.astimezone(timezone.utc)
 
 
+def _history_midpoint_index(history_csv: Path) -> dict[str, list[tuple[datetime, float]]]:
+    if not history_csv.exists():
+        return {}
+    index: dict[str, list[tuple[datetime, float]]] = {}
+    with history_csv.open("r", newline="", encoding="utf-8") as handle:
+        for row in csv.DictReader(handle):
+            ticker = str(row.get("market_ticker") or "").strip()
+            captured_at = _parse_ts(row.get("captured_at"))
+            if not ticker or captured_at is None:
+                continue
+            yes_bid = _parse_float(row.get("yes_bid_dollars"))
+            yes_ask = _parse_float(row.get("yes_ask_dollars"))
+            midpoint = None
+            if isinstance(yes_bid, float) and isinstance(yes_ask, float):
+                midpoint = (yes_bid + yes_ask) / 2.0
+            elif isinstance(yes_bid, float):
+                midpoint = yes_bid
+            elif isinstance(yes_ask, float):
+                midpoint = yes_ask
+            if midpoint is None:
+                continue
+            index.setdefault(ticker, []).append((captured_at, midpoint))
+    for ticker in index:
+        index[ticker].sort(key=lambda item: item[0])
+    return index
+
+
+def _future_midpoint(
+    *,
+    observations: list[tuple[datetime, float]],
+    target_ts: datetime,
+) -> float | None:
+    for observed_ts, midpoint in observations:
+        if observed_ts >= target_ts:
+            return midpoint
+    return None
+
+
+def _side_adjusted_markout(
+    *,
+    side: str,
+    fill_price: float,
+    future_mid_yes: float,
+) -> float:
+    side_normalized = str(side or "").strip().lower()
+    if side_normalized == "no":
+        return (1.0 - future_mid_yes) - fill_price
+    return future_mid_yes - fill_price
+
+
 def _order_journal_state(
     *,
     journal_db_path: Path,
@@ -241,12 +291,27 @@ def _order_journal_state(
     cancel_confirmed_seen = False
     settlement_pnls: set[float] = set()
     latest_queue_position: float | None = None
+    fill_events: list[dict[str, Any]] = []
+    markout_horizons_logged: set[int] = set()
 
     for event in events:
         event_type = str(event.get("event_type") or "").strip()
         if event_type in {"partial_fill", "full_fill"}:
             filled_contracts += max(0.0, _parse_float(event.get("contracts_fp")) or 0.0)
             fill_fees += max(0.0, _parse_float(event.get("fee_dollars")) or 0.0)
+            fill_ts = _parse_ts(event.get("captured_at_utc"))
+            fill_price = _parse_float(event.get("limit_price_dollars"))
+            fill_side = str(event.get("side") or "").strip().lower()
+            fill_contracts = max(0.0, _parse_float(event.get("contracts_fp")) or 0.0)
+            if fill_ts is not None and isinstance(fill_price, float) and fill_contracts > 0:
+                fill_events.append(
+                    {
+                        "captured_at_utc": fill_ts,
+                        "limit_price_dollars": fill_price,
+                        "side": fill_side or "yes",
+                        "contracts_fp": fill_contracts,
+                    }
+                )
             if event_type == "full_fill":
                 has_full_fill = True
         elif event_type == "order_terminal":
@@ -263,6 +328,19 @@ def _order_journal_state(
             queue_position = _parse_float(event.get("queue_position_contracts"))
             if queue_position is not None:
                 latest_queue_position = queue_position
+        elif event_type == "markout_snapshot":
+            payload = event.get("payload")
+            if isinstance(payload, dict):
+                payload_inner = payload.get("payload") if isinstance(payload.get("payload"), dict) else {}
+                horizon_value = payload.get("horizon_seconds")
+                if horizon_value in (None, ""):
+                    horizon_value = payload_inner.get("horizon_seconds")
+                try:
+                    horizon_seconds = int(float(horizon_value))
+                except (TypeError, ValueError):
+                    horizon_seconds = None
+                if isinstance(horizon_seconds, int) and horizon_seconds > 0:
+                    markout_horizons_logged.add(horizon_seconds)
 
     return {
         "filled_contracts": filled_contracts,
@@ -272,6 +350,8 @@ def _order_journal_state(
         "cancel_confirmed_seen": cancel_confirmed_seen,
         "settlement_pnls": settlement_pnls,
         "latest_queue_position": latest_queue_position,
+        "fill_events": fill_events,
+        "markout_horizons_logged": markout_horizons_logged,
     }
 
 
@@ -304,6 +384,13 @@ def run_kalshi_micro_reconcile(
         raise ValueError("No kalshi_micro_execute_summary JSON file was found")
 
     execute_summary = _load_json_file(summary_path)
+    execute_history_csv = str(execute_summary.get("history_csv") or "").strip()
+    history_path = (
+        Path(execute_history_csv)
+        if execute_history_csv
+        else (Path(output_dir) / "kalshi_nonsports_history.csv")
+    )
+    history_midpoint_index = _history_midpoint_index(history_path)
     execute_summary_journal = str(execute_summary.get("execution_journal_db_path") or "").strip()
     execute_summary_legacy_log = str(execute_summary.get("execution_event_log_csv") or "").strip()
     if execution_journal_db_path:
@@ -490,6 +577,9 @@ def run_kalshi_micro_reconcile(
             cancel_confirmed_logged = bool(existing_state.get("cancel_confirmed_seen"))
             settlement_pnls_logged = set(existing_state.get("settlement_pnls") or set())
             latest_queue_position = _parse_float(existing_state.get("latest_queue_position"))
+            existing_fill_events = list(existing_state.get("fill_events") or [])
+            markout_horizons_logged = set(existing_state.get("markout_horizons_logged") or set())
+            new_fill_events_for_markout: list[dict[str, Any]] = []
 
             order_ts = _parse_ts(order.get("last_update_time")) or _parse_ts(order.get("created_time")) or captured_at
             order_ts_iso = order_ts.astimezone(timezone.utc).isoformat()
@@ -548,6 +638,15 @@ def run_kalshi_micro_reconcile(
                         "result": "reconcile_fill_backfill",
                     }
                 )
+                if filled_delta > 1e-9 and isinstance(effective_fill_price, float):
+                    new_fill_events_for_markout.append(
+                        {
+                            "captured_at_utc": order_ts,
+                            "limit_price_dollars": effective_fill_price,
+                            "side": planned_side or "yes",
+                            "contracts_fp": filled_delta,
+                        }
+                    )
             elif filled_delta > 1e-9:
                 journal_events.append(
                     {
@@ -561,6 +660,15 @@ def run_kalshi_micro_reconcile(
                         "result": "reconcile_fill_backfill",
                     }
                 )
+                if isinstance(effective_fill_price, float):
+                    new_fill_events_for_markout.append(
+                        {
+                            "captured_at_utc": order_ts,
+                            "limit_price_dollars": effective_fill_price,
+                            "side": planned_side or "yes",
+                            "contracts_fp": filled_delta,
+                        }
+                    )
 
             if status.strip().lower() in {"canceled", "cancelled"} and not cancel_confirmed_logged:
                 journal_events.append(
@@ -624,6 +732,63 @@ def run_kalshi_micro_reconcile(
                     }
                 )
 
+            if ticker and ticker in history_midpoint_index:
+                fill_events_for_markout = [*existing_fill_events, *new_fill_events_for_markout]
+                observations = history_midpoint_index.get(ticker, [])
+                for horizon_seconds in (10, 60, 300):
+                    if horizon_seconds in markout_horizons_logged:
+                        continue
+                    weighted_markout = 0.0
+                    weighted_contracts = 0.0
+                    for fill_event in fill_events_for_markout:
+                        fill_ts = fill_event.get("captured_at_utc")
+                        fill_price = _parse_float(fill_event.get("limit_price_dollars"))
+                        fill_side = str(fill_event.get("side") or planned_side or "yes").strip().lower()
+                        fill_contracts = max(0.0, _parse_float(fill_event.get("contracts_fp")) or 0.0)
+                        if not isinstance(fill_ts, datetime) or not isinstance(fill_price, float) or fill_contracts <= 0.0:
+                            continue
+                        future_mid_yes = _future_midpoint(
+                            observations=observations,
+                            target_ts=fill_ts + timedelta(seconds=horizon_seconds),
+                        )
+                        if not isinstance(future_mid_yes, float):
+                            continue
+                        side_adjusted_markout = _side_adjusted_markout(
+                            side=fill_side,
+                            fill_price=fill_price,
+                            future_mid_yes=future_mid_yes,
+                        )
+                        weighted_markout += side_adjusted_markout * fill_contracts
+                        weighted_contracts += fill_contracts
+                    if weighted_contracts <= 0.0:
+                        continue
+                    markout_per_contract = weighted_markout / weighted_contracts
+                    journal_events.append(
+                        {
+                            **event_base,
+                            "captured_at_utc": captured_at.astimezone(timezone.utc).isoformat(),
+                            "event_type": "markout_snapshot",
+                            "contracts_fp": weighted_contracts,
+                            "markout_10s_dollars": (
+                                markout_per_contract if horizon_seconds == 10 else None
+                            ),
+                            "markout_60s_dollars": (
+                                markout_per_contract if horizon_seconds == 60 else None
+                            ),
+                            "markout_300s_dollars": (
+                                markout_per_contract if horizon_seconds == 300 else None
+                            ),
+                            "status": normalized_terminal_status or status,
+                            "result": f"reconcile_markout_{horizon_seconds}s",
+                            "horizon_seconds": horizon_seconds,
+                            "markout_per_contract_dollars": markout_per_contract,
+                            "markout_contracts": weighted_contracts,
+                            "source": "reconcile",
+                            "reconcile_fetch_source": source,
+                            "execute_run_id": execute_run_id,
+                        }
+                    )
+
     stamp = captured_at.astimezone().strftime("%Y%m%d_%H%M%S")
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -641,6 +806,9 @@ def run_kalshi_micro_reconcile(
         default_run_id=journal_run_id,
         default_captured_at=captured_at,
     )
+    markout_snapshot_events_generated = sum(
+        1 for event in journal_events if str(event.get("event_type") or "").strip() == "markout_snapshot"
+    )
 
     summary = {
         "env_file": str(env_path),
@@ -653,6 +821,8 @@ def run_kalshi_micro_reconcile(
         "execution_journal_db_path": str(journal_path),
         "execution_journal_run_id": journal_run_id,
         "execution_journal_rows_written": execution_journal_rows_written,
+        "markout_snapshot_events_generated": markout_snapshot_events_generated,
+        "history_csv": str(history_path),
         "book_db_path": str(effective_book_db_path),
         "status_counts": status_counts,
         "total_fees_paid_dollars": round(total_fees_paid, 4),
