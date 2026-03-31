@@ -30,7 +30,6 @@ if ! mkdir "$LOCK_DIR" 2>/dev/null; then
   python3 - <<'PY'
 from __future__ import annotations
 
-import csv
 from datetime import datetime, timezone
 import json
 import os
@@ -139,6 +138,12 @@ try:
     from betbot.runtime_version import build_runtime_version_block
 except Exception:  # pragma: no cover - best effort metadata only
     build_runtime_version_block = None  # type: ignore[assignment]
+try:
+    from betbot.onboarding import _is_placeholder as _onboarding_is_placeholder
+    from betbot.onboarding import _parse_env_file as _onboarding_parse_env_file
+except Exception:  # pragma: no cover - fallback parser for control-plane only
+    _onboarding_is_placeholder = None  # type: ignore[assignment]
+    _onboarding_parse_env_file = None  # type: ignore[assignment]
 
 
 def _now_iso() -> str:
@@ -180,6 +185,86 @@ def _load_json(path: Path) -> dict[str, Any] | None:
     except (OSError, json.JSONDecodeError):
         return None
     return payload if isinstance(payload, dict) else None
+
+
+def _parse_env_values(path: Path) -> dict[str, str]:
+    if callable(_onboarding_parse_env_file):
+        return dict(_onboarding_parse_env_file(path))
+    values: dict[str, str] = {}
+    if not path.exists():
+        return values
+    for line in path.read_text(encoding="utf-8").splitlines():
+        raw = line.strip()
+        if not raw or raw.startswith("#") or "=" not in raw:
+            continue
+        key, value = raw.split("=", 1)
+        values[key.strip()] = value.strip()
+    return values
+
+
+def _is_placeholder_value(value: Any) -> bool:
+    if callable(_onboarding_is_placeholder):
+        return bool(_onboarding_is_placeholder(None if value is None else str(value)))
+    raw = str(value or "").strip()
+    if not raw:
+        return True
+    return raw.upper().startswith("TODO")
+
+
+def _env_has_kalshi_credentials(path: Path) -> tuple[bool, str]:
+    if not path.exists():
+        return False, "env_file_missing"
+    try:
+        data = _parse_env_values(path)
+    except Exception as exc:  # pragma: no cover - defensive
+        return False, f"env_parse_error:{exc}"
+    env_name = str(data.get("KALSHI_ENV") or "").strip().lower()
+    if env_name not in {"demo", "prod", "production"}:
+        return False, "kalshi_env_invalid"
+    access_key = data.get("KALSHI_ACCESS_KEY_ID")
+    if _is_placeholder_value(access_key):
+        return False, "kalshi_access_key_missing"
+    private_key_path_raw = str(data.get("KALSHI_PRIVATE_KEY_PATH") or "").strip()
+    if _is_placeholder_value(private_key_path_raw):
+        return False, "kalshi_private_key_path_missing"
+    private_key_path = Path(private_key_path_raw).expanduser()
+    if not private_key_path.is_absolute():
+        private_key_path = (path.parent / private_key_path).resolve()
+    if not private_key_path.exists():
+        return False, "kalshi_private_key_file_missing"
+    return True, "kalshi_credentials_ready"
+
+
+def _resolve_env_file(*, requested_path: Path, repo_root: Path) -> dict[str, Any]:
+    requested = requested_path.expanduser()
+    local_candidate = repo_root / "data" / "research" / "account_onboarding.local.env"
+    template_candidate = repo_root / "data" / "research" / "account_onboarding.env.template"
+    requested_ready, requested_reason = _env_has_kalshi_credentials(requested)
+    effective = requested
+    source = "requested"
+    resolution_reason = requested_reason
+    if (not requested_ready) and local_candidate != requested:
+        local_ready, local_reason = _env_has_kalshi_credentials(local_candidate)
+        if local_ready:
+            effective = local_candidate
+            source = "auto_local_override"
+            resolution_reason = f"requested_{requested_reason}; using_local_{local_reason}"
+    if not effective.exists() and template_candidate.exists():
+        effective = template_candidate
+        if source == "requested":
+            source = "fallback_template"
+        resolution_reason = "effective_env_missing_fallback_template"
+    effective_ready, effective_reason = _env_has_kalshi_credentials(effective)
+    return {
+        "env_file_requested": str(requested),
+        "env_file_effective": str(effective),
+        "env_file_source": source,
+        "env_file_resolution_reason": resolution_reason,
+        "env_file_requested_kalshi_ready": bool(requested_ready),
+        "env_file_requested_kalshi_ready_reason": requested_reason,
+        "env_file_kalshi_ready": bool(effective_ready),
+        "env_file_kalshi_ready_reason": effective_reason,
+    }
 
 
 def _file_meta(path: Path) -> dict[str, Any]:
@@ -923,7 +1008,9 @@ def _write_report(
 def main() -> int:
     repo_root = Path(os.environ["BETBOT_REPO_ROOT"])
     output_dir = Path(os.environ["BETBOT_OUTPUT_DIR"])
-    env_file = Path(os.environ["BETBOT_ENV_FILE"])
+    requested_env_file = Path(os.environ["BETBOT_ENV_FILE"])
+    env_resolution = _resolve_env_file(requested_path=requested_env_file, repo_root=repo_root)
+    env_file = Path(str(env_resolution.get("env_file_effective") or requested_env_file))
     history_csv = Path(os.environ["BETBOT_HISTORY_CSV"])
     priors_csv = Path(os.environ["BETBOT_PRIORS_CSV"])
 
@@ -955,6 +1042,12 @@ def main() -> int:
                     "repo_root": str(repo_root),
                     "mode": "research_dry_run_only",
                     "live_orders_allowed": False,
+                    "env_file_requested": env_resolution.get("env_file_requested"),
+                    "env_file_effective": env_resolution.get("env_file_effective"),
+                    "env_file_source": env_resolution.get("env_file_source"),
+                    "env_file_resolution_reason": env_resolution.get("env_file_resolution_reason"),
+                    "env_file_kalshi_ready": env_resolution.get("env_file_kalshi_ready"),
+                    "env_file_kalshi_ready_reason": env_resolution.get("env_file_kalshi_ready_reason"),
                     "betbot_launcher": launcher,
                     "steps": [
                         _synthetic_step(
@@ -1043,6 +1136,12 @@ def main() -> int:
             "repo_root": str(repo_root),
             "mode": "research_dry_run_only",
             "live_orders_allowed": False,
+            "env_file_requested": env_resolution.get("env_file_requested"),
+            "env_file_effective": env_resolution.get("env_file_effective"),
+            "env_file_source": env_resolution.get("env_file_source"),
+            "env_file_resolution_reason": env_resolution.get("env_file_resolution_reason"),
+            "env_file_kalshi_ready": env_resolution.get("env_file_kalshi_ready"),
+            "env_file_kalshi_ready_reason": env_resolution.get("env_file_kalshi_ready_reason"),
             "betbot_launcher": launcher,
             "steps": steps,
             "overall_status": "failed",
@@ -1378,6 +1477,8 @@ def main() -> int:
         failure_kind = str(balance_smoke_step.get("kalshi_failure_kind") or "").strip()
         if failure_kind:
             live_blockers.append(f"balance_smoke_{failure_kind}")
+    if not bool(env_resolution.get("env_file_kalshi_ready")):
+        live_blockers.append("env_file_missing_kalshi_credentials")
     if isinstance(frontier_step, dict):
         frontier_status = str(frontier_step.get("status") or "").strip().lower()
         if frontier_status and frontier_status != "ready":
@@ -1418,6 +1519,12 @@ def main() -> int:
         "repo_root": str(repo_root),
         "mode": "research_dry_run_only",
         "live_orders_allowed": False,
+        "env_file_requested": env_resolution.get("env_file_requested"),
+        "env_file_effective": env_resolution.get("env_file_effective"),
+        "env_file_source": env_resolution.get("env_file_source"),
+        "env_file_resolution_reason": env_resolution.get("env_file_resolution_reason"),
+        "env_file_kalshi_ready": env_resolution.get("env_file_kalshi_ready"),
+        "env_file_kalshi_ready_reason": env_resolution.get("env_file_kalshi_ready_reason"),
         "betbot_launcher": launcher,
         "steps": steps,
         "overall_status": overall_status,
