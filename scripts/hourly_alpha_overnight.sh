@@ -99,6 +99,19 @@ payload = {
     "heuristic_fill_weight": None,
     "probe_lane_used": None,
     "probe_reason": None,
+    "prior_trade_gate_status": None,
+    "prior_trade_gate_blockers": None,
+    "no_candidates_diagnostics": None,
+    "probe_policy": {
+        "enable_untrusted_bucket_probe_exploration": None,
+        "untrusted_bucket_probe_exploration_enabled": None,
+        "untrusted_bucket_probe_max_orders_per_run": None,
+        "untrusted_bucket_probe_required_edge_buffer_dollars": None,
+        "untrusted_bucket_probe_contracts_cap": None,
+        "untrusted_bucket_probe_submitted_attempts": None,
+        "untrusted_bucket_probe_blocked_attempts": None,
+        "untrusted_bucket_probe_reason_counts": None,
+    },
     "skip_reason": "skipped_locked",
     "steps": [],
     "failed_steps": [],
@@ -904,6 +917,89 @@ def _classify_balance_smoke_failure(*, message: Any, http_status: Any) -> str:
     return "unknown"
 
 
+def _plan_skip_diagnostics_from_summary(
+    *,
+    plan_summary_file: Any,
+    top_n: int = 5,
+) -> dict[str, Any]:
+    diagnostics: dict[str, Any] = {
+        "plan_summary_file": None,
+        "plan_summary_status": "missing",
+        "plan_summary_error": None,
+        "plan_summary_planned_orders": None,
+        "plan_skip_counts_total": 0,
+        "plan_skip_counts_nonzero_total": 0,
+        "plan_skip_counts_top": [],
+        "plan_skip_reason_dominant": None,
+        "plan_skip_reason_dominant_count": None,
+        "plan_skip_reason_dominant_share": None,
+    }
+    path_text = str(plan_summary_file or "").strip()
+    diagnostics["plan_summary_file"] = path_text or None
+    if not path_text:
+        diagnostics["plan_summary_error"] = "plan_summary_file_missing"
+        return diagnostics
+
+    path = Path(path_text)
+    if not path.exists():
+        diagnostics["plan_summary_error"] = "plan_summary_file_not_found"
+        return diagnostics
+
+    payload = _load_json(path)
+    if not isinstance(payload, dict):
+        diagnostics["plan_summary_status"] = "invalid"
+        diagnostics["plan_summary_error"] = "plan_summary_payload_invalid"
+        return diagnostics
+
+    diagnostics["plan_summary_status"] = str(payload.get("status") or "").strip() or "unknown"
+    planned_orders_raw = payload.get("planned_orders")
+    if isinstance(planned_orders_raw, (int, float)):
+        diagnostics["plan_summary_planned_orders"] = int(planned_orders_raw)
+
+    skip_counts_raw = payload.get("skip_counts")
+    if not isinstance(skip_counts_raw, dict):
+        diagnostics["plan_summary_error"] = "skip_counts_missing"
+        return diagnostics
+
+    normalized_counts: list[tuple[str, int]] = []
+    for raw_reason, raw_count in skip_counts_raw.items():
+        reason = str(raw_reason or "").strip()
+        if not reason:
+            continue
+        count_value: int | None = None
+        if isinstance(raw_count, bool):
+            count_value = int(raw_count)
+        elif isinstance(raw_count, (int, float)):
+            count_value = int(raw_count)
+        else:
+            count_parsed = _parse_float(raw_count)
+            if isinstance(count_parsed, float):
+                count_value = int(count_parsed)
+        if count_value is None:
+            continue
+        normalized_counts.append((reason, max(0, count_value)))
+
+    total = int(sum(count for _, count in normalized_counts))
+    nonzero = [(reason, count) for reason, count in normalized_counts if count > 0]
+    nonzero.sort(key=lambda item: (-item[1], item[0]))
+    top_limit = max(1, int(top_n))
+
+    diagnostics["plan_skip_counts_total"] = total
+    diagnostics["plan_skip_counts_nonzero_total"] = len(nonzero)
+    diagnostics["plan_skip_counts_top"] = [
+        {"reason": reason, "count": count}
+        for reason, count in nonzero[:top_limit]
+    ]
+
+    if nonzero:
+        dominant_reason, dominant_count = nonzero[0]
+        diagnostics["plan_skip_reason_dominant"] = dominant_reason
+        diagnostics["plan_skip_reason_dominant_count"] = dominant_count
+        if total > 0:
+            diagnostics["plan_skip_reason_dominant_share"] = round(float(dominant_count) / float(total), 4)
+    return diagnostics
+
+
 def _run_step(
     *,
     name: str,
@@ -1063,6 +1159,8 @@ def _run_step(
             step["execution_frontier_report_stale_reason"] = parsed.get("execution_frontier_report_stale_reason")
             step["capture_status"] = parsed.get("capture_status")
             step["prior_trade_gate_status"] = parsed.get("prior_trade_gate_status")
+            step["prior_trade_gate_blockers"] = parsed.get("prior_trade_gate_blockers")
+            step["prior_plan_summary_file"] = parsed.get("prior_plan_summary_file")
             step["top_market_ticker"] = parsed.get("top_market_ticker")
             step["top_market_contract_family"] = parsed.get("top_market_contract_family")
             step["top_market_weather_history_status"] = parsed.get("top_market_weather_history_status")
@@ -1099,12 +1197,48 @@ def _run_step(
             step["heuristic_fill_weight"] = parsed.get("heuristic_fill_weight")
             step["probe_lane_used"] = parsed.get("probe_lane_used")
             step["probe_reason"] = parsed.get("probe_reason")
+            step["enable_untrusted_bucket_probe_exploration"] = parsed.get(
+                "enable_untrusted_bucket_probe_exploration"
+            )
+            step["untrusted_bucket_probe_exploration_enabled"] = parsed.get(
+                "untrusted_bucket_probe_exploration_enabled"
+            )
+            step["untrusted_bucket_probe_max_orders_per_run"] = parsed.get(
+                "untrusted_bucket_probe_max_orders_per_run"
+            )
+            step["untrusted_bucket_probe_required_edge_buffer_dollars"] = parsed.get(
+                "untrusted_bucket_probe_required_edge_buffer_dollars"
+            )
+            step["untrusted_bucket_probe_contracts_cap"] = parsed.get(
+                "untrusted_bucket_probe_contracts_cap"
+            )
+            step["untrusted_bucket_probe_submitted_attempts"] = parsed.get(
+                "untrusted_bucket_probe_submitted_attempts"
+            )
+            step["untrusted_bucket_probe_blocked_attempts"] = parsed.get(
+                "untrusted_bucket_probe_blocked_attempts"
+            )
+            step["untrusted_bucket_probe_reason_counts"] = parsed.get(
+                "untrusted_bucket_probe_reason_counts"
+            )
             step["frontier_artifact_path"] = parsed.get("frontier_artifact_path")
             step["frontier_artifact_sha256"] = parsed.get("frontier_artifact_sha256")
             step["frontier_artifact_file_sha256"] = parsed.get("frontier_artifact_file_sha256")
             step["frontier_artifact_payload_sha256"] = parsed.get("frontier_artifact_payload_sha256")
             step["frontier_artifact_as_of_utc"] = parsed.get("frontier_artifact_as_of_utc")
             step["frontier_artifact_age_seconds"] = parsed.get("frontier_artifact_age_seconds")
+            skip_diagnostics = _plan_skip_diagnostics_from_summary(
+                plan_summary_file=parsed.get("prior_plan_summary_file")
+            )
+            step["plan_summary_status"] = skip_diagnostics.get("plan_summary_status")
+            step["plan_summary_error"] = skip_diagnostics.get("plan_summary_error")
+            step["plan_summary_planned_orders"] = skip_diagnostics.get("plan_summary_planned_orders")
+            step["plan_skip_counts_total"] = skip_diagnostics.get("plan_skip_counts_total")
+            step["plan_skip_counts_nonzero_total"] = skip_diagnostics.get("plan_skip_counts_nonzero_total")
+            step["plan_skip_counts_top"] = skip_diagnostics.get("plan_skip_counts_top")
+            step["plan_skip_reason_dominant"] = skip_diagnostics.get("plan_skip_reason_dominant")
+            step["plan_skip_reason_dominant_count"] = skip_diagnostics.get("plan_skip_reason_dominant_count")
+            step["plan_skip_reason_dominant_share"] = skip_diagnostics.get("plan_skip_reason_dominant_share")
 
     return step
 
@@ -1574,6 +1708,54 @@ def _top_level_decision_identity(step: dict[str, Any] | None) -> dict[str, Any]:
         "heuristic_fill_weight": _parse_float(step.get("heuristic_fill_weight")),
         "probe_lane_used": step.get("probe_lane_used"),
         "probe_reason": step.get("probe_reason"),
+    }
+
+
+def _top_level_probe_policy(step: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(step, dict):
+        return {
+            "enable_untrusted_bucket_probe_exploration": None,
+            "untrusted_bucket_probe_exploration_enabled": None,
+            "untrusted_bucket_probe_max_orders_per_run": None,
+            "untrusted_bucket_probe_required_edge_buffer_dollars": None,
+            "untrusted_bucket_probe_contracts_cap": None,
+            "untrusted_bucket_probe_submitted_attempts": None,
+            "untrusted_bucket_probe_blocked_attempts": None,
+            "untrusted_bucket_probe_reason_counts": None,
+        }
+    return {
+        "enable_untrusted_bucket_probe_exploration": step.get("enable_untrusted_bucket_probe_exploration"),
+        "untrusted_bucket_probe_exploration_enabled": step.get("untrusted_bucket_probe_exploration_enabled"),
+        "untrusted_bucket_probe_max_orders_per_run": step.get("untrusted_bucket_probe_max_orders_per_run"),
+        "untrusted_bucket_probe_required_edge_buffer_dollars": _parse_float(
+            step.get("untrusted_bucket_probe_required_edge_buffer_dollars")
+        ),
+        "untrusted_bucket_probe_contracts_cap": step.get("untrusted_bucket_probe_contracts_cap"),
+        "untrusted_bucket_probe_submitted_attempts": step.get("untrusted_bucket_probe_submitted_attempts"),
+        "untrusted_bucket_probe_blocked_attempts": step.get("untrusted_bucket_probe_blocked_attempts"),
+        "untrusted_bucket_probe_reason_counts": step.get("untrusted_bucket_probe_reason_counts"),
+    }
+
+
+def _top_level_no_candidates_diagnostics(step: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(step, dict):
+        return None
+    gate_status = str(step.get("prior_trade_gate_status") or "").strip().lower()
+    if gate_status != "no_candidates":
+        return None
+    return {
+        "prior_trade_gate_status": gate_status,
+        "prior_trade_gate_blockers": step.get("prior_trade_gate_blockers"),
+        "plan_summary_file": step.get("prior_plan_summary_file"),
+        "plan_summary_status": step.get("plan_summary_status"),
+        "plan_summary_error": step.get("plan_summary_error"),
+        "plan_summary_planned_orders": step.get("plan_summary_planned_orders"),
+        "dominant_skip_reason": step.get("plan_skip_reason_dominant"),
+        "dominant_skip_count": step.get("plan_skip_reason_dominant_count"),
+        "dominant_skip_share": step.get("plan_skip_reason_dominant_share"),
+        "skip_counts_total": step.get("plan_skip_counts_total"),
+        "skip_counts_nonzero_total": step.get("plan_skip_counts_nonzero_total"),
+        "top_skip_counts": step.get("plan_skip_counts_top"),
     }
 
 
@@ -2327,6 +2509,10 @@ def main() -> int:
     top_level_balance = _top_level_balance_heartbeat(balance_step if isinstance(balance_step, dict) else None)
     top_level_frontier = _top_level_execution_frontier(frontier_step if isinstance(frontier_step, dict) else None)
     decision_identity = _top_level_decision_identity(prior_trader_step if isinstance(prior_trader_step, dict) else None)
+    probe_policy = _top_level_probe_policy(prior_trader_step if isinstance(prior_trader_step, dict) else None)
+    no_candidates_diagnostics = _top_level_no_candidates_diagnostics(
+        prior_trader_step if isinstance(prior_trader_step, dict) else None
+    )
     runtime_version = _runtime_version_for_report(
         run_started_at=started_at,
         run_id=run_id,
@@ -2391,6 +2577,68 @@ def main() -> int:
         ),
         "execution_frontier": top_level_frontier,
         "decision_identity": decision_identity,
+        "probe_policy": probe_policy,
+        "no_candidates_diagnostics": no_candidates_diagnostics,
+        "prior_trade_gate_status": (
+            prior_trader_step.get("prior_trade_gate_status")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        "prior_trade_gate_blockers": (
+            prior_trader_step.get("prior_trade_gate_blockers")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        "prior_plan_summary_file": (
+            prior_trader_step.get("prior_plan_summary_file")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        "plan_summary_status": (
+            prior_trader_step.get("plan_summary_status")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        "plan_summary_error": (
+            prior_trader_step.get("plan_summary_error")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        "plan_summary_planned_orders": (
+            prior_trader_step.get("plan_summary_planned_orders")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        "plan_skip_reason_dominant": (
+            prior_trader_step.get("plan_skip_reason_dominant")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        "plan_skip_reason_dominant_count": (
+            prior_trader_step.get("plan_skip_reason_dominant_count")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        "plan_skip_reason_dominant_share": (
+            prior_trader_step.get("plan_skip_reason_dominant_share")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        "plan_skip_counts_total": (
+            prior_trader_step.get("plan_skip_counts_total")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        "plan_skip_counts_nonzero_total": (
+            prior_trader_step.get("plan_skip_counts_nonzero_total")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        "plan_skip_counts_top": (
+            prior_trader_step.get("plan_skip_counts_top")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
         "top_market_ticker": decision_identity.get("top_market_ticker"),
         "top_market_contract_family": decision_identity.get("top_market_contract_family"),
         "fair_yes_probability_raw": decision_identity.get("fair_yes_probability_raw"),
