@@ -1440,6 +1440,19 @@ def run_kalshi_micro_prior_plan(
         for row in allowed_universe_rows
         if str(row.get("contract_family") or "").strip().lower() in _PRODUCTION_DAILY_WEATHER_CONTRACT_FAMILIES
     ]
+    daily_weather_rows_with_conservative_candidate = sum(
+        1
+        for row in daily_weather_rows
+        if isinstance(
+            _select_conservative_maker_candidate(
+                row=row,
+                contracts_per_order=contracts_per_order,
+                maker_fee_multiplier_override=maker_fee_multiplier_override,
+                conservative_fee_rounding=conservative_fee_rounding,
+            ),
+            dict,
+        )
+    )
     _, allowed_universe_skip_counts = _build_plans_for_rows(
         allowed_universe_rows,
         incentive_map=incentive_bonus_per_contract_by_ticker,
@@ -1452,6 +1465,11 @@ def run_kalshi_micro_prior_plan(
     )
     allowed_universe_skip_profile = _skip_counts_profile(allowed_universe_skip_counts, top_n=10)
     daily_weather_skip_profile = _skip_counts_profile(daily_weather_skip_counts, top_n=10)
+    daily_weather_planned_orders = sum(
+        1
+        for plan in plans
+        if str(plan.get("contract_family") or "").strip().lower() in _PRODUCTION_DAILY_WEATHER_CONTRACT_FAMILIES
+    )
     top_plan = plans[0] if plans else {}
     top_market_ticker = str(top_plan.get("market_ticker") or "").strip()
     top_enriched_row = {}
@@ -1604,6 +1622,8 @@ def run_kalshi_micro_prior_plan(
         "production_daily_weather_contract_families": sorted(_PRODUCTION_DAILY_WEATHER_CONTRACT_FAMILIES),
         "allowed_universe_candidate_pool_size": len(allowed_universe_rows),
         "daily_weather_candidate_pool_size": len(daily_weather_rows),
+        "daily_weather_rows_with_conservative_candidate": daily_weather_rows_with_conservative_candidate,
+        "daily_weather_planned_orders": daily_weather_planned_orders,
         "allowed_universe_skip_counts": allowed_universe_skip_profile.get("skip_counts"),
         "allowed_universe_skip_counts_total": allowed_universe_skip_profile.get("skip_counts_total"),
         "allowed_universe_skip_counts_nonzero_total": allowed_universe_skip_profile.get(

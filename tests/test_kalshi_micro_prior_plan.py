@@ -841,6 +841,8 @@ class KalshiMicroPriorPlanTests(unittest.TestCase):
             self.assertEqual(summary["production_daily_weather_contract_families"], ["daily_rain", "daily_temperature"])
             self.assertEqual(summary["allowed_universe_candidate_pool_size"], 1)
             self.assertEqual(summary["daily_weather_candidate_pool_size"], 0)
+            self.assertEqual(summary["daily_weather_rows_with_conservative_candidate"], 0)
+            self.assertEqual(summary["daily_weather_planned_orders"], 0)
             self.assertEqual(summary["allowed_universe_skip_reason_dominant"], "canonical_evidence_below_min")
             self.assertEqual(summary["allowed_universe_skip_reason_dominant_count"], 1)
             self.assertEqual(summary["daily_weather_skip_counts_total"], 0)

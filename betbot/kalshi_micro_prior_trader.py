@@ -1127,6 +1127,18 @@ def run_kalshi_micro_prior_trader(
                         prior_gate.get("daily_weather_board_max_capture_age_seconds")
                         if isinstance(prior_gate, dict) else None
                     ),
+                    "daily_weather_markets": (
+                        prior_gate.get("daily_weather_markets_total") if isinstance(prior_gate, dict) else None
+                    ),
+                    "daily_weather_family_counts": (
+                        prior_gate.get("daily_weather_family_counts") if isinstance(prior_gate, dict) else None
+                    ),
+                    "daily_weather_markets_with_fresh_snapshot": (
+                        prior_gate.get("daily_weather_markets_total")
+                        if isinstance(prior_gate, dict)
+                        and prior_gate.get("daily_weather_board_capture_fresh") is True
+                        else 0
+                    ),
                     "plan_weather_history_unhealthy_filtered": (
                         execute_summary.get("plan_weather_history_unhealthy_filtered")
                         if isinstance(execute_summary, dict)

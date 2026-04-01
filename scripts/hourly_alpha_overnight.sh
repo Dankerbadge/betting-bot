@@ -948,6 +948,8 @@ def _plan_skip_diagnostics_from_summary(
         "daily_weather_skip_reason_dominant": None,
         "daily_weather_skip_reason_dominant_count": None,
         "daily_weather_skip_reason_dominant_share": None,
+        "daily_weather_rows_with_conservative_candidate": None,
+        "daily_weather_planned_orders": None,
     }
     path_text = str(plan_summary_file or "").strip()
     diagnostics["plan_summary_file"] = path_text or None
@@ -1031,6 +1033,12 @@ def _plan_skip_diagnostics_from_summary(
     if isinstance(daily_pool, (int, float)):
         diagnostics["daily_weather_candidate_pool_size"] = int(daily_pool)
     _apply_skip_profile(counts_key="daily_weather_skip_counts", output_prefix="daily_weather")
+    daily_conservative_rows = payload.get("daily_weather_rows_with_conservative_candidate")
+    if isinstance(daily_conservative_rows, (int, float)):
+        diagnostics["daily_weather_rows_with_conservative_candidate"] = int(daily_conservative_rows)
+    daily_planned_orders = payload.get("daily_weather_planned_orders")
+    if isinstance(daily_planned_orders, (int, float)):
+        diagnostics["daily_weather_planned_orders"] = int(daily_planned_orders)
     return diagnostics
 
 
@@ -1096,6 +1104,7 @@ def _run_step(
         "stdout_json_parse_error": parse_error,
         "status": (parsed or {}).get("status") if isinstance(parsed, dict) else None,
         "output_file": (parsed or {}).get("output_file") if isinstance(parsed, dict) else None,
+        "reason": (parsed or {}).get("reason") if isinstance(parsed, dict) else None,
         "ok": proc.returncode == 0,
     }
 
@@ -1203,6 +1212,7 @@ def _run_step(
             step["daily_weather_board_fresh"] = parsed.get("daily_weather_board_fresh")
             step["daily_weather_board_age_seconds"] = parsed.get("daily_weather_board_age_seconds")
             step["daily_weather_markets"] = parsed.get("daily_weather_markets")
+            step["daily_weather_family_counts"] = parsed.get("daily_weather_family_counts")
             step["daily_weather_markets_with_fresh_snapshot"] = parsed.get("daily_weather_markets_with_fresh_snapshot")
             step["daily_weather_board_freshness_threshold_seconds"] = parsed.get(
                 "daily_weather_board_freshness_threshold_seconds"
@@ -1303,6 +1313,10 @@ def _run_step(
             step["daily_weather_skip_reason_dominant_share"] = skip_diagnostics.get(
                 "daily_weather_skip_reason_dominant_share"
             )
+            step["daily_weather_rows_with_conservative_candidate"] = skip_diagnostics.get(
+                "daily_weather_rows_with_conservative_candidate"
+            )
+            step["daily_weather_planned_orders"] = skip_diagnostics.get("daily_weather_planned_orders")
 
     return step
 
@@ -1834,6 +1848,53 @@ def _top_level_no_candidates_diagnostics(step: dict[str, Any] | None) -> dict[st
         "daily_weather_skip_counts_total": step.get("daily_weather_skip_counts_total"),
         "daily_weather_skip_counts_nonzero_total": step.get("daily_weather_skip_counts_nonzero_total"),
         "daily_weather_top_skip_counts": step.get("daily_weather_skip_counts_top"),
+        "daily_weather_rows_with_conservative_candidate": step.get("daily_weather_rows_with_conservative_candidate"),
+        "daily_weather_planned_orders": step.get("daily_weather_planned_orders"),
+    }
+
+
+def _top_level_daily_weather_funnel(
+    *,
+    prior_trader_step: dict[str, Any] | None,
+    weather_prior_state_after: dict[str, Any],
+    weather_history_state: dict[str, Any],
+) -> dict[str, Any]:
+    if not isinstance(prior_trader_step, dict):
+        return {
+            "captured_daily_weather_markets_total": None,
+            "captured_daily_weather_markets_with_fresh_snapshot": None,
+            "captured_daily_weather_family_counts": None,
+            "daily_weather_board_age_seconds": None,
+            "priors_allowed_daily_weather_rows_total": weather_prior_state_after.get("allowed_rows_total"),
+            "priors_allowed_daily_weather_family_counts": weather_prior_state_after.get("allowed_family_counts"),
+            "priors_weather_history_live_ready_rows": weather_history_state.get("weather_history_live_ready_rows"),
+            "priors_weather_history_unhealthy_rows": weather_history_state.get("weather_history_unhealthy_rows"),
+            "allowed_universe_candidate_pool_size": None,
+            "daily_weather_candidate_pool_size": None,
+            "daily_weather_rows_with_conservative_candidate": None,
+            "daily_weather_skip_reason_dominant": None,
+            "daily_weather_skip_counts_top": None,
+            "daily_weather_planned_orders": None,
+        }
+    return {
+        "captured_daily_weather_markets_total": prior_trader_step.get("daily_weather_markets"),
+        "captured_daily_weather_markets_with_fresh_snapshot": prior_trader_step.get(
+            "daily_weather_markets_with_fresh_snapshot"
+        ),
+        "captured_daily_weather_family_counts": prior_trader_step.get("daily_weather_family_counts"),
+        "daily_weather_board_age_seconds": prior_trader_step.get("daily_weather_board_age_seconds"),
+        "priors_allowed_daily_weather_rows_total": weather_prior_state_after.get("allowed_rows_total"),
+        "priors_allowed_daily_weather_family_counts": weather_prior_state_after.get("allowed_family_counts"),
+        "priors_weather_history_live_ready_rows": weather_history_state.get("weather_history_live_ready_rows"),
+        "priors_weather_history_unhealthy_rows": weather_history_state.get("weather_history_unhealthy_rows"),
+        "allowed_universe_candidate_pool_size": prior_trader_step.get("allowed_universe_candidate_pool_size"),
+        "daily_weather_candidate_pool_size": prior_trader_step.get("daily_weather_candidate_pool_size"),
+        "daily_weather_rows_with_conservative_candidate": prior_trader_step.get(
+            "daily_weather_rows_with_conservative_candidate"
+        ),
+        "daily_weather_skip_reason_dominant": prior_trader_step.get("daily_weather_skip_reason_dominant"),
+        "daily_weather_skip_counts_top": prior_trader_step.get("daily_weather_skip_counts_top"),
+        "daily_weather_planned_orders": prior_trader_step.get("daily_weather_planned_orders"),
     }
 
 
@@ -1930,6 +1991,13 @@ def main() -> int:
                     "balance_heartbeat": _top_level_balance_heartbeat(None),
                     "execution_frontier": _top_level_execution_frontier(None),
                     "decision_identity": _top_level_decision_identity(None),
+                    "probe_policy": _top_level_probe_policy(None),
+                    "no_candidates_diagnostics": None,
+                    "daily_weather_funnel": _top_level_daily_weather_funnel(
+                        prior_trader_step=None,
+                        weather_prior_state_after={},
+                        weather_history_state={},
+                    ),
                     "top_market_ticker": None,
                     "top_market_contract_family": None,
                     "fair_yes_probability_raw": None,
@@ -2018,6 +2086,13 @@ def main() -> int:
             "balance_heartbeat": _top_level_balance_heartbeat(None),
             "execution_frontier": _top_level_execution_frontier(None),
             "decision_identity": _top_level_decision_identity(None),
+            "probe_policy": _top_level_probe_policy(None),
+            "no_candidates_diagnostics": None,
+            "daily_weather_funnel": _top_level_daily_weather_funnel(
+                prior_trader_step=None,
+                weather_prior_state_after={},
+                weather_history_state={},
+            ),
             "top_market_ticker": None,
             "top_market_contract_family": None,
             "fair_yes_probability_raw": None,
@@ -2146,6 +2221,7 @@ def main() -> int:
         os.environ.get("BETBOT_DAILY_WEATHER_TICKER_REFRESH_ON_BASE_CAPTURE"),
         default=True,
     )
+    base_refresh_step: dict[str, Any] | None = None
     if daily_weather_ticker_refresh_enabled and daily_weather_ticker_refresh_on_base_capture:
         base_refresh_step = _run_daily_weather_ticker_refresh(
             env_values=env_file_values,
@@ -2223,7 +2299,13 @@ def main() -> int:
         max_age_hours=float(os.environ.get("BETBOT_WEATHER_PRIOR_MAX_AGE_HOURS", "6")),
         allowed_contract_families=allowed_weather_contract_families,
     )
-    if bool(weather_prior_state_before.get("stale")):
+    force_weather_prior_refresh_reason: str | None = None
+    if isinstance(base_refresh_step, dict):
+        base_rows_appended = base_refresh_step.get("rows_appended")
+        if isinstance(base_rows_appended, (int, float)) and int(base_rows_appended) > 0:
+            force_weather_prior_refresh_reason = "base_daily_weather_refresh_appended_rows"
+
+    if bool(weather_prior_state_before.get("stale")) or force_weather_prior_refresh_reason is not None:
         weather_prior_step = _run_step(
             name="weather_prior_refresh",
             launcher=launcher,
@@ -2251,6 +2333,7 @@ def main() -> int:
             env_overrides=env_file_values,
         )
         weather_prior_step["prior_state_before"] = weather_prior_state_before
+        weather_prior_step["forced_refresh_reason"] = force_weather_prior_refresh_reason
         steps.append(weather_prior_step)
     else:
         steps.append(
@@ -2631,6 +2714,11 @@ def main() -> int:
     no_candidates_diagnostics = _top_level_no_candidates_diagnostics(
         prior_trader_step if isinstance(prior_trader_step, dict) else None
     )
+    daily_weather_funnel = _top_level_daily_weather_funnel(
+        prior_trader_step=prior_trader_step if isinstance(prior_trader_step, dict) else None,
+        weather_prior_state_after=weather_prior_state_after,
+        weather_history_state=weather_history_state,
+    )
     runtime_version = _runtime_version_for_report(
         run_started_at=started_at,
         run_id=run_id,
@@ -2697,6 +2785,7 @@ def main() -> int:
         "decision_identity": decision_identity,
         "probe_policy": probe_policy,
         "no_candidates_diagnostics": no_candidates_diagnostics,
+        "daily_weather_funnel": daily_weather_funnel,
         "prior_trade_gate_status": (
             prior_trader_step.get("prior_trade_gate_status")
             if isinstance(prior_trader_step, dict)
@@ -2827,6 +2916,16 @@ def main() -> int:
             if isinstance(prior_trader_step, dict)
             else None
         ),
+        "daily_weather_rows_with_conservative_candidate": (
+            prior_trader_step.get("daily_weather_rows_with_conservative_candidate")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        "daily_weather_planned_orders": (
+            prior_trader_step.get("daily_weather_planned_orders")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
         "top_market_ticker": decision_identity.get("top_market_ticker"),
         "top_market_contract_family": decision_identity.get("top_market_contract_family"),
         "fair_yes_probability_raw": decision_identity.get("fair_yes_probability_raw"),
@@ -2858,6 +2957,11 @@ def main() -> int:
         ),
         "weather_prior_refresh_reason": (
             weather_prior_step.get("reason")
+            if isinstance(weather_prior_step, dict)
+            else None
+        ),
+        "weather_prior_refresh_forced_reason": (
+            weather_prior_step.get("forced_refresh_reason")
             if isinstance(weather_prior_step, dict)
             else None
         ),
