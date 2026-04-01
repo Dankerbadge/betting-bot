@@ -30,6 +30,8 @@ export BETBOT_BALANCE_SMOKE_ON_FAILURE="${BETBOT_BALANCE_SMOKE_ON_FAILURE:-1}"
 export BETBOT_DAILY_WEATHER_STALE_RECOVERY_ENABLED="${BETBOT_DAILY_WEATHER_STALE_RECOVERY_ENABLED:-1}"
 export BETBOT_DAILY_WEATHER_STALE_RECOVERY_MAX_RETRIES="${BETBOT_DAILY_WEATHER_STALE_RECOVERY_MAX_RETRIES:-1}"
 export BETBOT_DAILY_WEATHER_STALE_RECOVERY_SLEEP_SECONDS="${BETBOT_DAILY_WEATHER_STALE_RECOVERY_SLEEP_SECONDS:-2}"
+export BETBOT_DAILY_WEATHER_TICKER_REFRESH_ENABLED="${BETBOT_DAILY_WEATHER_TICKER_REFRESH_ENABLED:-1}"
+export BETBOT_DAILY_WEATHER_TICKER_REFRESH_MAX_MARKETS="${BETBOT_DAILY_WEATHER_TICKER_REFRESH_MAX_MARKETS:-20}"
 export BETBOT_DAILY_WEATHER_RECOVERY_ALERT_WINDOW_HOURS="${BETBOT_DAILY_WEATHER_RECOVERY_ALERT_WINDOW_HOURS:-6}"
 export BETBOT_DAILY_WEATHER_RECOVERY_ALERT_THRESHOLD="${BETBOT_DAILY_WEATHER_RECOVERY_ALERT_THRESHOLD:-3}"
 export BETBOT_DAILY_WEATHER_RECOVERY_ALERT_MAX_EVENTS="${BETBOT_DAILY_WEATHER_RECOVERY_ALERT_MAX_EVENTS:-500}"
@@ -139,6 +141,7 @@ from __future__ import annotations
 import csv
 from datetime import datetime, timezone
 import json
+import math
 import os
 from pathlib import Path
 import subprocess
@@ -146,6 +149,8 @@ import sys
 import tempfile
 import time
 from typing import Any
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
 
 try:
     from betbot.runtime_version import build_runtime_version_block
@@ -157,6 +162,16 @@ try:
 except Exception:  # pragma: no cover - fallback parser for control-plane only
     _onboarding_is_placeholder = None  # type: ignore[assignment]
     _onboarding_parse_env_file = None  # type: ignore[assignment]
+try:
+    from betbot.dns_guard import urlopen_with_dns_recovery as _urlopen_with_dns_recovery
+except Exception:  # pragma: no cover - fallback for constrained runtime
+    _urlopen_with_dns_recovery = None  # type: ignore[assignment]
+try:
+    from betbot.kalshi_nonsports_capture import HISTORY_FIELDNAMES as _capture_history_fieldnames
+    from betbot.kalshi_nonsports_capture import _append_history as _capture_append_history
+except Exception:  # pragma: no cover - fallback when module unavailable
+    _capture_history_fieldnames = []
+    _capture_append_history = None  # type: ignore[assignment]
 
 
 def _now_iso() -> str:
@@ -358,6 +373,276 @@ def _is_daily_weather_board_stale_gate(step: dict[str, Any] | None) -> bool:
         return False
     gate_status = str(step.get("prior_trade_gate_status") or "").strip().lower()
     return gate_status == "daily_weather_board_stale"
+
+
+def _kalshi_api_roots_for_env(env_values: dict[str, str]) -> tuple[str, ...]:
+    env_name = str(env_values.get("KALSHI_ENV") or "prod").strip().lower()
+    if env_name == "demo":
+        return ("https://demo-api.kalshi.co/trade-api/v2",)
+    if env_name in {"prod", "production"}:
+        return (
+            "https://api.elections.kalshi.com/trade-api/v2",
+            "https://trading-api.kalshi.com/trade-api/v2",
+        )
+    return ("https://api.elections.kalshi.com/trade-api/v2",)
+
+
+def _http_get_json_url(url: str, timeout_seconds: float) -> tuple[int, Any]:
+    request = Request(
+        url=url,
+        headers={
+            "Accept": "application/json",
+            "User-Agent": "betbot-hourly-overnight/1.0",
+        },
+        method="GET",
+    )
+    try:
+        if callable(_urlopen_with_dns_recovery):
+            with _urlopen_with_dns_recovery(
+                request,
+                timeout_seconds=max(1.0, float(timeout_seconds)),
+                urlopen_fn=urlopen,
+            ) as response:
+                status = int(getattr(response, "status", 200) or 200)
+                payload_text = response.read().decode("utf-8", errors="replace")
+        else:
+            with urlopen(request, timeout=max(1.0, float(timeout_seconds))) as response:
+                status = int(getattr(response, "status", 200) or 200)
+                payload_text = response.read().decode("utf-8", errors="replace")
+    except HTTPError as exc:
+        status = int(exc.code or 0)
+        payload_text = exc.read().decode("utf-8", errors="replace")
+    except Exception as exc:
+        return 599, {"error": str(exc), "error_type": type(exc).__name__}
+    try:
+        return status, json.loads(payload_text)
+    except json.JSONDecodeError:
+        return status, {"raw_text": payload_text[:400]}
+
+
+def _load_daily_weather_tickers_from_priors(
+    *,
+    priors_csv: Path,
+    allowed_contract_families: list[str],
+    max_markets: int,
+) -> list[str]:
+    if not priors_csv.exists():
+        return []
+    allowed_set = {str(value or "").strip().lower() for value in allowed_contract_families if str(value or "").strip()}
+    tickers: list[str] = []
+    seen: set[str] = set()
+    with priors_csv.open("r", newline="", encoding="utf-8") as handle:
+        for row in csv.DictReader(handle):
+            contract_family = str(row.get("contract_family") or "").strip().lower()
+            if contract_family not in allowed_set:
+                continue
+            ticker = str(row.get("market_ticker") or "").strip().upper()
+            if not ticker or ticker in seen:
+                continue
+            seen.add(ticker)
+            tickers.append(ticker)
+            if len(tickers) >= max(1, int(max_markets)):
+                break
+    return tickers
+
+
+def _append_history_rows(path: Path, rows: list[dict[str, Any]]) -> None:
+    if callable(_capture_append_history):
+        _capture_append_history(path, rows)
+        return
+    fieldnames = list(_capture_history_fieldnames or [])
+    if not fieldnames:
+        raise RuntimeError("history fieldnames unavailable for ticker refresh append")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    exists = path.exists()
+    with path.open("a", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        if not exists:
+            writer.writeheader()
+        for row in rows:
+            writer.writerow({field: row.get(field, "") for field in fieldnames})
+
+
+def _history_row_from_market_payload(
+    *,
+    market_ticker: str,
+    market_payload: dict[str, Any],
+    captured_at: datetime,
+) -> dict[str, Any]:
+    yes_bid = _parse_float(market_payload.get("yes_bid_dollars"))
+    yes_ask = _parse_float(market_payload.get("yes_ask_dollars"))
+    no_bid = _parse_float(market_payload.get("no_bid_dollars"))
+    no_ask = _parse_float(market_payload.get("no_ask_dollars"))
+    last_price = _parse_float(market_payload.get("last_price_dollars"))
+    liquidity = _parse_float(market_payload.get("liquidity_dollars"))
+    volume_24h = _parse_float(market_payload.get("volume_24h_fp"))
+    open_interest = _parse_float(market_payload.get("open_interest_fp"))
+    yes_bid_size = _parse_float(market_payload.get("yes_bid_size_fp"))
+    yes_ask_size = _parse_float(market_payload.get("yes_ask_size_fp"))
+    spread = ""
+    if isinstance(yes_ask, float) and isinstance(yes_bid, float) and yes_ask >= yes_bid:
+        spread = round(yes_ask - yes_bid, 6)
+    contracts_for_ten_dollars = None
+    ten_dollar_fillable = False
+    if isinstance(yes_ask, float) and yes_ask > 0:
+        contracts_for_ten_dollars = max(1, math.floor(10.0 / yes_ask))
+        ten_dollar_fillable = isinstance(yes_ask_size, float) and yes_ask_size >= contracts_for_ten_dollars
+    two_sided_book = (
+        isinstance(yes_bid, float)
+        and yes_bid > 0
+        and isinstance(yes_ask, float)
+        and yes_ask > 0
+        and isinstance(yes_bid_size, float)
+        and yes_bid_size > 0
+        and isinstance(yes_ask_size, float)
+        and yes_ask_size > 0
+    )
+    close_time_text = str(market_payload.get("close_time") or "").strip()
+    hours_to_close = ""
+    close_time_dt = _parse_iso(close_time_text)
+    if isinstance(close_time_dt, datetime):
+        hours_to_close = round((close_time_dt - captured_at.astimezone(timezone.utc)).total_seconds() / 3600.0, 4)
+    return {
+        "captured_at": captured_at.isoformat(),
+        "summary_file": "",
+        "scan_csv": "",
+        "category": "Climate and Weather",
+        "market_family": "weather_climate",
+        "resolution_source_type": "official_source",
+        "series_ticker": str(market_payload.get("series_ticker") or "").strip(),
+        "event_ticker": str(market_payload.get("event_ticker") or "").strip(),
+        "market_ticker": market_ticker,
+        "event_title": str(market_payload.get("event_ticker") or "").strip(),
+        "event_sub_title": "",
+        "market_title": str(market_payload.get("title") or "").strip(),
+        "yes_sub_title": str(market_payload.get("yes_sub_title") or "").strip(),
+        "rules_primary": str(market_payload.get("rules_primary") or "").strip(),
+        "close_time": close_time_text,
+        "hours_to_close": hours_to_close,
+        "yes_bid_dollars": yes_bid if yes_bid is not None else "",
+        "yes_bid_size_contracts": yes_bid_size if yes_bid_size is not None else "",
+        "yes_ask_dollars": yes_ask if yes_ask is not None else "",
+        "yes_ask_size_contracts": yes_ask_size if yes_ask_size is not None else "",
+        "no_bid_dollars": no_bid if no_bid is not None else "",
+        "no_ask_dollars": no_ask if no_ask is not None else "",
+        "last_price_dollars": last_price if last_price is not None else "",
+        "spread_dollars": spread,
+        "liquidity_dollars": liquidity if liquidity is not None else "",
+        "volume_24h_contracts": volume_24h if volume_24h is not None else "",
+        "open_interest_contracts": open_interest if open_interest is not None else "",
+        "ten_dollar_fillable_at_best_ask": ten_dollar_fillable,
+        "two_sided_book": two_sided_book,
+        "execution_fit_score": "",
+    }
+
+
+def _run_daily_weather_ticker_refresh(
+    *,
+    env_values: dict[str, str],
+    priors_csv: Path,
+    history_csv: Path,
+    allowed_contract_families: list[str],
+    timeout_seconds: float,
+    max_markets: int,
+    captured_at: datetime,
+) -> dict[str, Any]:
+    started_at = _now_iso()
+    started_monotonic = time.monotonic()
+    api_roots = _kalshi_api_roots_for_env(env_values)
+    tickers = _load_daily_weather_tickers_from_priors(
+        priors_csv=priors_csv,
+        allowed_contract_families=allowed_contract_families,
+        max_markets=max_markets,
+    )
+    rows: list[dict[str, Any]] = []
+    fetch_errors: list[dict[str, Any]] = []
+    tickers_succeeded = 0
+    requests_total = 0
+    for ticker in tickers:
+        market_payload: dict[str, Any] | None = None
+        last_status: int | None = None
+        last_error: str | None = None
+        for api_root in api_roots:
+            requests_total += 1
+            status_code, payload = _http_get_json_url(
+                f"{api_root}/markets/{ticker}",
+                timeout_seconds=max(1.0, float(timeout_seconds)),
+            )
+            last_status = int(status_code)
+            if status_code == 200 and isinstance(payload, dict) and isinstance(payload.get("market"), dict):
+                market_payload = dict(payload.get("market") or {})
+                break
+            if isinstance(payload, dict):
+                error_text = str(payload.get("error") or payload.get("errorMessage") or "").strip()
+                if error_text:
+                    last_error = error_text
+        if not isinstance(market_payload, dict):
+            fetch_errors.append(
+                {
+                    "market_ticker": ticker,
+                    "http_status": last_status,
+                    "error": last_error or "market_fetch_failed",
+                }
+            )
+            continue
+        rows.append(
+            _history_row_from_market_payload(
+                market_ticker=ticker,
+                market_payload=market_payload,
+                captured_at=captured_at,
+            )
+        )
+        tickers_succeeded += 1
+
+    append_error = None
+    rows_appended = 0
+    if rows:
+        try:
+            _append_history_rows(history_csv, rows)
+            rows_appended = len(rows)
+        except Exception as exc:
+            append_error = str(exc)
+
+    if not tickers:
+        status = "skipped_no_daily_weather_tickers"
+        reason = "no_daily_weather_tickers_in_priors"
+    elif rows_appended > 0 and not append_error:
+        status = "ready"
+        reason = "daily_weather_tickers_refreshed"
+    elif append_error:
+        status = "append_failed"
+        reason = "history_append_failed"
+    else:
+        status = "upstream_error"
+        reason = "market_refresh_failed"
+
+    finished_at = _now_iso()
+    duration_seconds = round(time.monotonic() - started_monotonic, 3)
+    return {
+        "name": "daily_weather_ticker_refresh",
+        "command": ["kalshi-market-refresh-by-ticker"],
+        "started_at_utc": started_at,
+        "finished_at_utc": finished_at,
+        "duration_seconds": duration_seconds,
+        "exit_code": 0,
+        "stdout_json_file": None,
+        "stderr_log_file": None,
+        "stdout_json_parse_error": None,
+        "status": status,
+        "output_file": None,
+        "ok": True,
+        "reason": reason,
+        "history_csv": str(history_csv),
+        "priors_csv": str(priors_csv),
+        "api_roots": list(api_roots),
+        "market_tickers_attempted": tickers,
+        "market_tickers_attempted_count": len(tickers),
+        "market_tickers_succeeded_count": tickers_succeeded,
+        "requests_total": requests_total,
+        "rows_appended": rows_appended,
+        "append_error": append_error,
+        "fetch_errors": fetch_errors[:20],
+    }
 
 
 def _weather_cache_state(*, output_dir: Path, max_age_hours: float) -> dict[str, Any]:
@@ -1787,6 +2072,14 @@ def main() -> int:
         0.0,
         float(os.environ.get("BETBOT_DAILY_WEATHER_STALE_RECOVERY_SLEEP_SECONDS", "2")),
     )
+    daily_weather_ticker_refresh_enabled = _is_enabled(
+        os.environ.get("BETBOT_DAILY_WEATHER_TICKER_REFRESH_ENABLED"),
+        default=True,
+    )
+    daily_weather_ticker_refresh_max_markets = max(
+        1,
+        int(os.environ.get("BETBOT_DAILY_WEATHER_TICKER_REFRESH_MAX_MARKETS", "20")),
+    )
     stale_recovery_attempts = 0
     stale_recovery_triggered = False
     stale_recovery_resolved = False
@@ -1852,6 +2145,33 @@ def main() -> int:
         capture_retry_step["stale_recovery_capture_page_limit"] = stale_recovery_capture_page_limit
         capture_retry_step["stale_recovery_capture_max_pages"] = stale_recovery_capture_max_pages
         steps.append(capture_retry_step)
+
+        if daily_weather_ticker_refresh_enabled:
+            ticker_refresh_step = _run_daily_weather_ticker_refresh(
+                env_values=env_file_values,
+                priors_csv=priors_csv,
+                history_csv=history_csv,
+                allowed_contract_families=allowed_weather_contract_families,
+                timeout_seconds=float(os.environ.get("BETBOT_TIMEOUT_SECONDS", "15")),
+                max_markets=daily_weather_ticker_refresh_max_markets,
+                captured_at=datetime.now(timezone.utc),
+            )
+            ticker_refresh_step["stale_recovery_attempt"] = stale_recovery_attempts
+            ticker_refresh_step["stale_recovery_trigger_gate_status"] = "daily_weather_board_stale"
+            steps.append(ticker_refresh_step)
+        else:
+            steps.append(
+                _synthetic_step(
+                    name=f"daily_weather_ticker_refresh_{stale_recovery_attempts}",
+                    status="skipped_disabled",
+                    ok=True,
+                    reason="daily_weather_ticker_refresh_disabled",
+                    payload={
+                        "stale_recovery_attempt": stale_recovery_attempts,
+                        "stale_recovery_trigger_gate_status": "daily_weather_board_stale",
+                    },
+                )
+            )
 
         prior_trader_step = _run_step(
             name=f"prior_trader_dry_run_retry_{stale_recovery_attempts}",
@@ -1921,6 +2241,7 @@ def main() -> int:
             payload=dict(daily_weather_recovery_alert_state),
         )
     )
+    daily_weather_ticker_refresh_step = _latest_step_with_prefix(steps, "daily_weather_ticker_refresh")
 
     failed_steps = [step["name"] for step in steps if not bool(step.get("ok"))]
     degraded_reasons: list[str] = []
@@ -1992,7 +2313,11 @@ def main() -> int:
         live_blockers.append("weather_history_station_mapping_missing")
     if int(weather_history_state.get("weather_history_sample_depth_block_count") or 0) > 0:
         live_blockers.append("weather_history_sample_depth_insufficient")
-    if bool(daily_weather_recovery_alert_state.get("alert_triggered")):
+    if (
+        bool(daily_weather_recovery_alert_state.get("alert_triggered"))
+        and stale_recovery_triggered
+        and not stale_recovery_resolved
+    ):
         live_blockers.append("daily_weather_recovery_failure_burst")
         if str(daily_weather_recovery_failure_kind or "").strip().lower().startswith("capture_upstream_error"):
             live_blockers.append("daily_weather_recovery_upstream_error_burst")
@@ -2103,6 +2428,28 @@ def main() -> int:
         "daily_weather_stale_recovery_enabled": stale_recovery_enabled,
         "daily_weather_stale_recovery_max_retries": stale_recovery_max_retries,
         "daily_weather_stale_recovery_sleep_seconds": stale_recovery_sleep_seconds,
+        "daily_weather_ticker_refresh_enabled": daily_weather_ticker_refresh_enabled,
+        "daily_weather_ticker_refresh_max_markets": daily_weather_ticker_refresh_max_markets,
+        "daily_weather_ticker_refresh_status": (
+            daily_weather_ticker_refresh_step.get("status")
+            if isinstance(daily_weather_ticker_refresh_step, dict)
+            else None
+        ),
+        "daily_weather_ticker_refresh_rows_appended": (
+            daily_weather_ticker_refresh_step.get("rows_appended")
+            if isinstance(daily_weather_ticker_refresh_step, dict)
+            else None
+        ),
+        "daily_weather_ticker_refresh_tickers_attempted_count": (
+            daily_weather_ticker_refresh_step.get("market_tickers_attempted_count")
+            if isinstance(daily_weather_ticker_refresh_step, dict)
+            else None
+        ),
+        "daily_weather_ticker_refresh_tickers_succeeded_count": (
+            daily_weather_ticker_refresh_step.get("market_tickers_succeeded_count")
+            if isinstance(daily_weather_ticker_refresh_step, dict)
+            else None
+        ),
         "daily_weather_stale_recovery_triggered": stale_recovery_triggered,
         "daily_weather_stale_recovery_attempts": stale_recovery_attempts,
         "daily_weather_stale_recovery_resolved": stale_recovery_resolved,
