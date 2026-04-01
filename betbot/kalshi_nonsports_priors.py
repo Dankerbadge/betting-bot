@@ -315,6 +315,7 @@ def build_prior_rows(
             "category": str(latest.get("category") or "") if latest else "",
             "market_title": str(latest.get("market_title") or "") if latest else "",
             "close_time": str(latest.get("close_time") or "") if latest else "",
+            "latest_history_captured_at": str(latest.get("captured_at") or "") if latest else "",
             "hours_to_close": _parse_float(str(latest.get("hours_to_close") or "")) if latest else "",
             "fair_yes_probability": fair_yes_probability if fair_yes_probability is not None else "",
             "fair_yes_probability_low": fair_yes_probability_low if fair_yes_probability_low is not None else "",
@@ -335,8 +336,15 @@ def build_prior_rows(
             "last_evidence_at": last_evidence_at,
             "latest_yes_bid_dollars": latest_yes_bid if latest_yes_bid is not None else "",
             "latest_yes_ask_dollars": latest_yes_ask if latest_yes_ask is not None else "",
+            "latest_yes_bid_size_contracts": _parse_float(str(latest.get("yes_bid_size_contracts") or "")) if latest else "",
+            "latest_yes_ask_size_contracts": _parse_float(str(latest.get("yes_ask_size_contracts") or "")) if latest else "",
             "latest_no_bid_dollars": latest_no_bid if latest_no_bid is not None else "",
             "latest_no_ask_dollars": latest_no_ask if latest_no_ask is not None else "",
+            "latest_spread_dollars": _parse_float(str(latest.get("spread_dollars") or "")) if latest else "",
+            "latest_two_sided_book": str(latest.get("two_sided_book") or "") if latest else "",
+            "latest_ten_dollar_fillable_at_best_ask": (
+                str(latest.get("ten_dollar_fillable_at_best_ask") or "") if latest else ""
+            ),
             "market_mid_probability": market_mid if market_mid is not None else "",
             "market_no_mid_probability": no_mid if no_mid is not None else "",
             "edge_to_yes_bid": edge_to_yes_bid,

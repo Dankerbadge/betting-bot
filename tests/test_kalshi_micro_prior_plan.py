@@ -314,9 +314,19 @@ class KalshiMicroPriorPlanTests(unittest.TestCase):
             self.assertEqual(summary["daily_weather_rows_with_one_side_failed"], 0)
             self.assertEqual(summary["daily_weather_rows_with_both_sides_failed"], 1)
             self.assertEqual(summary["daily_weather_orderable_bid_rows"], 1)
+            self.assertEqual(summary["daily_weather_rows_with_any_orderable_bid"], 1)
+            self.assertEqual(summary["daily_weather_rows_with_any_orderable_ask"], 1)
             self.assertEqual(summary["daily_weather_rows_with_fair_probabilities"], 1)
             self.assertEqual(summary["daily_weather_rows_with_both_quote_and_fair_value"], 1)
             self.assertEqual(summary["daily_weather_allowed_universe_rows_with_conservative_candidate"], 0)
+            self.assertEqual(summary["daily_weather_quote_age_rows_with_timestamp"], 2)
+            self.assertEqual(summary["daily_weather_quote_stale_max_age_seconds"], 900.0)
+            self.assertEqual(summary["daily_weather_quote_orderability_counts"]["missing_yes_bid"], 1)
+            self.assertEqual(summary["daily_weather_quote_orderability_counts"]["missing_no_bid"], 1)
+            self.assertEqual(summary["daily_weather_quote_orderability_counts"]["has_yes_ask"], 1)
+            self.assertEqual(summary["daily_weather_quote_orderability_counts"]["has_no_ask"], 1)
+            self.assertEqual(summary["daily_weather_quote_orderability_counts"]["rows_with_any_orderable_bid"], 1)
+            self.assertEqual(summary["daily_weather_quote_orderability_counts"]["rows_with_any_orderable_ask"], 1)
             self.assertEqual(
                 summary["daily_weather_conservative_candidate_failure_counts"]["missing_yes_bid"],
                 1,

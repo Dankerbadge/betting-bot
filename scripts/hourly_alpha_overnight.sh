@@ -954,8 +954,13 @@ def _plan_skip_diagnostics_from_summary(
         "daily_weather_rows_with_one_side_failed": None,
         "daily_weather_rows_with_both_sides_failed": None,
         "daily_weather_orderable_bid_rows": None,
+        "daily_weather_rows_with_any_orderable_bid": None,
+        "daily_weather_rows_with_any_orderable_ask": None,
         "daily_weather_rows_with_fair_probabilities": None,
         "daily_weather_rows_with_both_quote_and_fair_value": None,
+        "daily_weather_quote_orderability_counts": None,
+        "daily_weather_quote_age_rows_with_timestamp": None,
+        "daily_weather_quote_stale_max_age_seconds": None,
         "daily_weather_allowed_universe_rows_with_conservative_candidate": None,
         "daily_weather_conservative_candidate_failure_counts": None,
         "daily_weather_planned_orders": None,
@@ -1060,12 +1065,44 @@ def _plan_skip_diagnostics_from_summary(
     daily_orderable_bid_rows = payload.get("daily_weather_orderable_bid_rows")
     if isinstance(daily_orderable_bid_rows, (int, float)):
         diagnostics["daily_weather_orderable_bid_rows"] = int(daily_orderable_bid_rows)
+    daily_rows_with_any_orderable_bid = payload.get("daily_weather_rows_with_any_orderable_bid")
+    if isinstance(daily_rows_with_any_orderable_bid, (int, float)):
+        diagnostics["daily_weather_rows_with_any_orderable_bid"] = int(daily_rows_with_any_orderable_bid)
+    daily_rows_with_any_orderable_ask = payload.get("daily_weather_rows_with_any_orderable_ask")
+    if isinstance(daily_rows_with_any_orderable_ask, (int, float)):
+        diagnostics["daily_weather_rows_with_any_orderable_ask"] = int(daily_rows_with_any_orderable_ask)
     daily_rows_with_fair = payload.get("daily_weather_rows_with_fair_probabilities")
     if isinstance(daily_rows_with_fair, (int, float)):
         diagnostics["daily_weather_rows_with_fair_probabilities"] = int(daily_rows_with_fair)
     daily_rows_with_quote_and_fair = payload.get("daily_weather_rows_with_both_quote_and_fair_value")
     if isinstance(daily_rows_with_quote_and_fair, (int, float)):
         diagnostics["daily_weather_rows_with_both_quote_and_fair_value"] = int(daily_rows_with_quote_and_fair)
+    daily_quote_orderability_raw = payload.get("daily_weather_quote_orderability_counts")
+    if isinstance(daily_quote_orderability_raw, dict):
+        normalized_daily_quote_orderability: dict[str, int] = {}
+        for raw_reason, raw_count in daily_quote_orderability_raw.items():
+            reason_text = str(raw_reason or "").strip()
+            if not reason_text:
+                continue
+            count_value: int | None = None
+            if isinstance(raw_count, bool):
+                count_value = int(raw_count)
+            elif isinstance(raw_count, (int, float)):
+                count_value = int(raw_count)
+            else:
+                parsed_count = _parse_float(raw_count)
+                if isinstance(parsed_count, float):
+                    count_value = int(parsed_count)
+            if count_value is None:
+                continue
+            normalized_daily_quote_orderability[reason_text] = max(0, count_value)
+        diagnostics["daily_weather_quote_orderability_counts"] = normalized_daily_quote_orderability
+    daily_quote_age_rows = payload.get("daily_weather_quote_age_rows_with_timestamp")
+    if isinstance(daily_quote_age_rows, (int, float)):
+        diagnostics["daily_weather_quote_age_rows_with_timestamp"] = int(daily_quote_age_rows)
+    daily_quote_stale_max_age = payload.get("daily_weather_quote_stale_max_age_seconds")
+    if isinstance(daily_quote_stale_max_age, (int, float)):
+        diagnostics["daily_weather_quote_stale_max_age_seconds"] = round(float(daily_quote_stale_max_age), 3)
     daily_allowed_conservative_rows = payload.get("daily_weather_allowed_universe_rows_with_conservative_candidate")
     if isinstance(daily_allowed_conservative_rows, (int, float)):
         diagnostics["daily_weather_allowed_universe_rows_with_conservative_candidate"] = int(
@@ -1382,11 +1419,26 @@ def _run_step(
                 "daily_weather_rows_with_both_sides_failed"
             )
             step["daily_weather_orderable_bid_rows"] = skip_diagnostics.get("daily_weather_orderable_bid_rows")
+            step["daily_weather_rows_with_any_orderable_bid"] = skip_diagnostics.get(
+                "daily_weather_rows_with_any_orderable_bid"
+            )
+            step["daily_weather_rows_with_any_orderable_ask"] = skip_diagnostics.get(
+                "daily_weather_rows_with_any_orderable_ask"
+            )
             step["daily_weather_rows_with_fair_probabilities"] = skip_diagnostics.get(
                 "daily_weather_rows_with_fair_probabilities"
             )
             step["daily_weather_rows_with_both_quote_and_fair_value"] = skip_diagnostics.get(
                 "daily_weather_rows_with_both_quote_and_fair_value"
+            )
+            step["daily_weather_quote_orderability_counts"] = skip_diagnostics.get(
+                "daily_weather_quote_orderability_counts"
+            )
+            step["daily_weather_quote_age_rows_with_timestamp"] = skip_diagnostics.get(
+                "daily_weather_quote_age_rows_with_timestamp"
+            )
+            step["daily_weather_quote_stale_max_age_seconds"] = skip_diagnostics.get(
+                "daily_weather_quote_stale_max_age_seconds"
             )
             step["daily_weather_allowed_universe_rows_with_conservative_candidate"] = skip_diagnostics.get(
                 "daily_weather_allowed_universe_rows_with_conservative_candidate"
@@ -1932,10 +1984,15 @@ def _top_level_no_candidates_diagnostics(step: dict[str, Any] | None) -> dict[st
         "daily_weather_rows_with_one_side_failed": step.get("daily_weather_rows_with_one_side_failed"),
         "daily_weather_rows_with_both_sides_failed": step.get("daily_weather_rows_with_both_sides_failed"),
         "daily_weather_orderable_bid_rows": step.get("daily_weather_orderable_bid_rows"),
+        "daily_weather_rows_with_any_orderable_bid": step.get("daily_weather_rows_with_any_orderable_bid"),
+        "daily_weather_rows_with_any_orderable_ask": step.get("daily_weather_rows_with_any_orderable_ask"),
         "daily_weather_rows_with_fair_probabilities": step.get("daily_weather_rows_with_fair_probabilities"),
         "daily_weather_rows_with_both_quote_and_fair_value": step.get(
             "daily_weather_rows_with_both_quote_and_fair_value"
         ),
+        "daily_weather_quote_orderability_counts": step.get("daily_weather_quote_orderability_counts"),
+        "daily_weather_quote_age_rows_with_timestamp": step.get("daily_weather_quote_age_rows_with_timestamp"),
+        "daily_weather_quote_stale_max_age_seconds": step.get("daily_weather_quote_stale_max_age_seconds"),
         "daily_weather_allowed_universe_rows_with_conservative_candidate": step.get(
             "daily_weather_allowed_universe_rows_with_conservative_candidate"
         ),
@@ -1970,8 +2027,13 @@ def _top_level_daily_weather_funnel(
             "daily_weather_rows_with_one_side_failed": None,
             "daily_weather_rows_with_both_sides_failed": None,
             "daily_weather_orderable_bid_rows": None,
+            "daily_weather_rows_with_any_orderable_bid": None,
+            "daily_weather_rows_with_any_orderable_ask": None,
             "daily_weather_rows_with_fair_probabilities": None,
             "daily_weather_rows_with_both_quote_and_fair_value": None,
+            "daily_weather_quote_orderability_counts": None,
+            "daily_weather_quote_age_rows_with_timestamp": None,
+            "daily_weather_quote_stale_max_age_seconds": None,
             "daily_weather_allowed_universe_rows_with_conservative_candidate": None,
             "daily_weather_conservative_candidate_failure_counts": None,
             "daily_weather_skip_reason_dominant": None,
@@ -2003,11 +2065,24 @@ def _top_level_daily_weather_funnel(
             "daily_weather_rows_with_both_sides_failed"
         ),
         "daily_weather_orderable_bid_rows": prior_trader_step.get("daily_weather_orderable_bid_rows"),
+        "daily_weather_rows_with_any_orderable_bid": prior_trader_step.get(
+            "daily_weather_rows_with_any_orderable_bid"
+        ),
+        "daily_weather_rows_with_any_orderable_ask": prior_trader_step.get(
+            "daily_weather_rows_with_any_orderable_ask"
+        ),
         "daily_weather_rows_with_fair_probabilities": prior_trader_step.get(
             "daily_weather_rows_with_fair_probabilities"
         ),
         "daily_weather_rows_with_both_quote_and_fair_value": prior_trader_step.get(
             "daily_weather_rows_with_both_quote_and_fair_value"
+        ),
+        "daily_weather_quote_orderability_counts": prior_trader_step.get("daily_weather_quote_orderability_counts"),
+        "daily_weather_quote_age_rows_with_timestamp": prior_trader_step.get(
+            "daily_weather_quote_age_rows_with_timestamp"
+        ),
+        "daily_weather_quote_stale_max_age_seconds": prior_trader_step.get(
+            "daily_weather_quote_stale_max_age_seconds"
         ),
         "daily_weather_allowed_universe_rows_with_conservative_candidate": prior_trader_step.get(
             "daily_weather_allowed_universe_rows_with_conservative_candidate"
@@ -3069,6 +3144,16 @@ def main() -> int:
             if isinstance(prior_trader_step, dict)
             else None
         ),
+        "daily_weather_rows_with_any_orderable_bid": (
+            prior_trader_step.get("daily_weather_rows_with_any_orderable_bid")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        "daily_weather_rows_with_any_orderable_ask": (
+            prior_trader_step.get("daily_weather_rows_with_any_orderable_ask")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
         "daily_weather_rows_with_fair_probabilities": (
             prior_trader_step.get("daily_weather_rows_with_fair_probabilities")
             if isinstance(prior_trader_step, dict)
@@ -3076,6 +3161,21 @@ def main() -> int:
         ),
         "daily_weather_rows_with_both_quote_and_fair_value": (
             prior_trader_step.get("daily_weather_rows_with_both_quote_and_fair_value")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        "daily_weather_quote_orderability_counts": (
+            prior_trader_step.get("daily_weather_quote_orderability_counts")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        "daily_weather_quote_age_rows_with_timestamp": (
+            prior_trader_step.get("daily_weather_quote_age_rows_with_timestamp")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        "daily_weather_quote_stale_max_age_seconds": (
+            prior_trader_step.get("daily_weather_quote_stale_max_age_seconds")
             if isinstance(prior_trader_step, dict)
             else None
         ),

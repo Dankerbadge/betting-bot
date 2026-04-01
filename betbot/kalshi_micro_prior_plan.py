@@ -26,6 +26,7 @@ from betbot.onboarding import _is_placeholder, _parse_env_file
 LIVE_ALLOWED_CANONICAL_NICHES = ("macro_release", "weather_energy_transmission", "weather_climate")
 _DAILY_WEATHER_CONTRACT_FAMILIES = {"daily_rain", "daily_temperature", "daily_snow"}
 _PRODUCTION_DAILY_WEATHER_CONTRACT_FAMILIES = {"daily_rain", "daily_temperature"}
+_DAILY_WEATHER_QUOTE_STALE_MAX_AGE_SECONDS = 900.0
 
 
 def _latest_market_rows(history_rows: list[dict[str, str]]) -> dict[str, dict[str, str]]:
@@ -524,6 +525,8 @@ def _daily_weather_conservative_candidate_failure_analysis(
     contracts_per_order: int,
     maker_fee_multiplier_override: float | None,
     conservative_fee_rounding: bool,
+    captured_at: datetime | None = None,
+    quote_stale_max_age_seconds: float | None = None,
 ) -> dict[str, Any]:
     failure_counts: dict[str, int] = {
         "missing_yes_bid": 0,
@@ -540,8 +543,29 @@ def _daily_weather_conservative_candidate_failure_analysis(
     rows_with_one_side_failed = 0
     rows_with_both_sides_failed = 0
     orderable_bid_rows = 0
+    orderable_ask_rows = 0
     rows_with_fair_probabilities = 0
     rows_with_both_quote_and_fair_value = 0
+    quote_orderability_counts: dict[str, int] = {
+        "missing_yes_bid": 0,
+        "zero_yes_bid": 0,
+        "missing_no_bid": 0,
+        "zero_no_bid": 0,
+        "has_yes_ask": 0,
+        "has_no_ask": 0,
+        "two_sided_book_true": 0,
+        "ten_dollar_fillable_at_best_ask_true": 0,
+        "quote_age_stale": 0,
+        "rows_with_any_orderable_bid": 0,
+        "rows_with_any_orderable_ask": 0,
+    }
+    quote_age_rows_with_timestamp = 0
+    captured_at_effective = captured_at or datetime.now(timezone.utc)
+    quote_stale_age_seconds = (
+        max(0.0, float(quote_stale_max_age_seconds))
+        if isinstance(quote_stale_max_age_seconds, (int, float))
+        else None
+    )
 
     for row in rows:
         yes_bid = _as_float(row.get("latest_yes_bid_dollars"))
@@ -550,12 +574,26 @@ def _daily_weather_conservative_candidate_failure_analysis(
         no_orderable = _is_orderable_price(no_bid)
         if yes_bid is None:
             failure_counts["missing_yes_bid"] += 1
+            quote_orderability_counts["missing_yes_bid"] += 1
         if no_bid is None:
             failure_counts["missing_no_bid"] += 1
+            quote_orderability_counts["missing_no_bid"] += 1
+        if isinstance(yes_bid, float) and yes_bid <= 0.0:
+            quote_orderability_counts["zero_yes_bid"] += 1
+        if isinstance(no_bid, float) and no_bid <= 0.0:
+            quote_orderability_counts["zero_no_bid"] += 1
         if yes_bid is not None and not yes_orderable:
             failure_counts["unorderable_yes_bid"] += 1
         if no_bid is not None and not no_orderable:
             failure_counts["unorderable_no_bid"] += 1
+        yes_ask = _as_float(row.get("latest_yes_ask_dollars"))
+        no_ask = _as_float(row.get("latest_no_ask_dollars"))
+        yes_ask_orderable = _is_orderable_price(yes_ask)
+        no_ask_orderable = _is_orderable_price(no_ask)
+        if yes_ask is not None:
+            quote_orderability_counts["has_yes_ask"] += 1
+        if no_ask is not None:
+            quote_orderability_counts["has_no_ask"] += 1
 
         fair_yes_mid = _as_float(row.get("fair_yes_probability"))
         fair_no_mid = _as_float(row.get("fair_no_probability"))
@@ -575,10 +613,25 @@ def _daily_weather_conservative_candidate_failure_analysis(
 
         if yes_orderable or no_orderable:
             orderable_bid_rows += 1
+            quote_orderability_counts["rows_with_any_orderable_bid"] += 1
+        if yes_ask_orderable or no_ask_orderable:
+            orderable_ask_rows += 1
+            quote_orderability_counts["rows_with_any_orderable_ask"] += 1
         if fair_yes_mid is not None and fair_no_mid is not None:
             rows_with_fair_probabilities += 1
         if (yes_orderable and fair_yes_mid is not None) or (no_orderable and fair_no_mid is not None):
             rows_with_both_quote_and_fair_value += 1
+        if _as_bool(row.get("latest_two_sided_book")) is True:
+            quote_orderability_counts["two_sided_book_true"] += 1
+        if _as_bool(row.get("latest_ten_dollar_fillable_at_best_ask")) is True:
+            quote_orderability_counts["ten_dollar_fillable_at_best_ask_true"] += 1
+        latest_capture_dt = _parse_timestamp(str(row.get("latest_history_captured_at") or ""))
+        if isinstance(latest_capture_dt, datetime):
+            quote_age_rows_with_timestamp += 1
+            if isinstance(quote_stale_age_seconds, float):
+                quote_age_seconds = max(0.0, (captured_at_effective - latest_capture_dt).total_seconds())
+                if quote_age_seconds > quote_stale_age_seconds:
+                    quote_orderability_counts["quote_age_stale"] += 1
 
         yes_candidate = _conservative_maker_candidate_for_side(
             row=row,
@@ -612,9 +665,13 @@ def _daily_weather_conservative_candidate_failure_analysis(
         "rows_with_one_side_failed": rows_with_one_side_failed,
         "rows_with_both_sides_failed": rows_with_both_sides_failed,
         "orderable_bid_rows": orderable_bid_rows,
+        "orderable_ask_rows": orderable_ask_rows,
         "rows_with_fair_probabilities": rows_with_fair_probabilities,
         "rows_with_both_quote_and_fair_value": rows_with_both_quote_and_fair_value,
         "failure_counts": failure_counts,
+        "quote_orderability_counts": quote_orderability_counts,
+        "quote_age_rows_with_timestamp": quote_age_rows_with_timestamp,
+        "quote_stale_max_age_seconds": quote_stale_age_seconds,
     }
 
 
@@ -1550,6 +1607,8 @@ def run_kalshi_micro_prior_plan(
         contracts_per_order=contracts_per_order,
         maker_fee_multiplier_override=maker_fee_multiplier_override,
         conservative_fee_rounding=conservative_fee_rounding,
+        captured_at=captured_at,
+        quote_stale_max_age_seconds=_DAILY_WEATHER_QUOTE_STALE_MAX_AGE_SECONDS,
     )
     daily_weather_allowed_universe_rows_with_conservative_candidate = sum(
         1
@@ -1749,11 +1808,28 @@ def run_kalshi_micro_prior_plan(
         "daily_weather_orderable_bid_rows": daily_weather_conservative_candidate_analysis.get(
             "orderable_bid_rows"
         ),
+        "daily_weather_rows_with_any_orderable_bid": daily_weather_conservative_candidate_analysis.get(
+            "quote_orderability_counts",
+            {},
+        ).get("rows_with_any_orderable_bid"),
+        "daily_weather_rows_with_any_orderable_ask": daily_weather_conservative_candidate_analysis.get(
+            "quote_orderability_counts",
+            {},
+        ).get("rows_with_any_orderable_ask"),
         "daily_weather_rows_with_fair_probabilities": daily_weather_conservative_candidate_analysis.get(
             "rows_with_fair_probabilities"
         ),
         "daily_weather_rows_with_both_quote_and_fair_value": daily_weather_conservative_candidate_analysis.get(
             "rows_with_both_quote_and_fair_value"
+        ),
+        "daily_weather_quote_orderability_counts": daily_weather_conservative_candidate_analysis.get(
+            "quote_orderability_counts"
+        ),
+        "daily_weather_quote_age_rows_with_timestamp": daily_weather_conservative_candidate_analysis.get(
+            "quote_age_rows_with_timestamp"
+        ),
+        "daily_weather_quote_stale_max_age_seconds": daily_weather_conservative_candidate_analysis.get(
+            "quote_stale_max_age_seconds"
         ),
         "daily_weather_conservative_candidate_failure_counts": daily_weather_conservative_candidate_analysis.get(
             "failure_counts"
