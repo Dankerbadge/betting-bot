@@ -518,6 +518,106 @@ def _select_conservative_maker_candidate(
     )
 
 
+def _daily_weather_conservative_candidate_failure_analysis(
+    *,
+    rows: list[dict[str, Any]],
+    contracts_per_order: int,
+    maker_fee_multiplier_override: float | None,
+    conservative_fee_rounding: bool,
+) -> dict[str, Any]:
+    failure_counts: dict[str, int] = {
+        "missing_yes_bid": 0,
+        "missing_no_bid": 0,
+        "unorderable_yes_bid": 0,
+        "unorderable_no_bid": 0,
+        "missing_fair_yes_probability": 0,
+        "missing_fair_no_probability": 0,
+        "missing_conservative_fair_yes": 0,
+        "missing_conservative_fair_no": 0,
+    }
+    rows_with_conservative_candidate = 0
+    rows_with_both_sides_candidate = 0
+    rows_with_one_side_failed = 0
+    rows_with_both_sides_failed = 0
+    orderable_bid_rows = 0
+    rows_with_fair_probabilities = 0
+    rows_with_both_quote_and_fair_value = 0
+
+    for row in rows:
+        yes_bid = _as_float(row.get("latest_yes_bid_dollars"))
+        no_bid = _as_float(row.get("latest_no_bid_dollars"))
+        yes_orderable = _is_orderable_price(yes_bid)
+        no_orderable = _is_orderable_price(no_bid)
+        if yes_bid is None:
+            failure_counts["missing_yes_bid"] += 1
+        if no_bid is None:
+            failure_counts["missing_no_bid"] += 1
+        if yes_bid is not None and not yes_orderable:
+            failure_counts["unorderable_yes_bid"] += 1
+        if no_bid is not None and not no_orderable:
+            failure_counts["unorderable_no_bid"] += 1
+
+        fair_yes_mid = _as_float(row.get("fair_yes_probability"))
+        fair_no_mid = _as_float(row.get("fair_no_probability"))
+        if fair_yes_mid is None:
+            failure_counts["missing_fair_yes_probability"] += 1
+        if fair_no_mid is None:
+            failure_counts["missing_fair_no_probability"] += 1
+
+        fair_yes_conservative = _as_float(row.get("fair_yes_probability_conservative"))
+        fair_yes_low = _as_float(row.get("fair_yes_probability_low"))
+        fair_no_conservative = _as_float(row.get("fair_no_probability_conservative"))
+        fair_no_low = _as_float(row.get("fair_no_probability_low"))
+        if fair_yes_conservative is None and fair_yes_low is None:
+            failure_counts["missing_conservative_fair_yes"] += 1
+        if fair_no_conservative is None and fair_no_low is None:
+            failure_counts["missing_conservative_fair_no"] += 1
+
+        if yes_orderable or no_orderable:
+            orderable_bid_rows += 1
+        if fair_yes_mid is not None and fair_no_mid is not None:
+            rows_with_fair_probabilities += 1
+        if (yes_orderable and fair_yes_mid is not None) or (no_orderable and fair_no_mid is not None):
+            rows_with_both_quote_and_fair_value += 1
+
+        yes_candidate = _conservative_maker_candidate_for_side(
+            row=row,
+            side="yes",
+            contracts_per_order=contracts_per_order,
+            maker_fee_multiplier_override=maker_fee_multiplier_override,
+            conservative_fee_rounding=conservative_fee_rounding,
+        )
+        no_candidate = _conservative_maker_candidate_for_side(
+            row=row,
+            side="no",
+            contracts_per_order=contracts_per_order,
+            maker_fee_multiplier_override=maker_fee_multiplier_override,
+            conservative_fee_rounding=conservative_fee_rounding,
+        )
+        yes_ok = isinstance(yes_candidate, dict)
+        no_ok = isinstance(no_candidate, dict)
+        if yes_ok or no_ok:
+            rows_with_conservative_candidate += 1
+        if yes_ok and no_ok:
+            rows_with_both_sides_candidate += 1
+        elif yes_ok or no_ok:
+            rows_with_one_side_failed += 1
+        else:
+            rows_with_both_sides_failed += 1
+
+    return {
+        "rows_total": len(rows),
+        "rows_with_conservative_candidate": rows_with_conservative_candidate,
+        "rows_with_both_sides_candidate": rows_with_both_sides_candidate,
+        "rows_with_one_side_failed": rows_with_one_side_failed,
+        "rows_with_both_sides_failed": rows_with_both_sides_failed,
+        "orderable_bid_rows": orderable_bid_rows,
+        "rows_with_fair_probabilities": rows_with_fair_probabilities,
+        "rows_with_both_quote_and_fair_value": rows_with_both_quote_and_fair_value,
+        "failure_counts": failure_counts,
+    }
+
+
 def _summarize_unmapped_canonical_markets(
     *,
     enriched_rows: list[dict[str, Any]],
@@ -1435,14 +1535,25 @@ def run_kalshi_micro_prior_plan(
             canonical_policy_alias_by_lookup_key=canonical_policy_alias_by_lookup_key,
         ) in live_allowed_niches
     ]
-    daily_weather_rows = [
+    daily_weather_rows_all = [
+        row
+        for row in enriched_rows
+        if str(row.get("contract_family") or "").strip().lower() in _PRODUCTION_DAILY_WEATHER_CONTRACT_FAMILIES
+    ]
+    daily_weather_rows_allowed_universe = [
         row
         for row in allowed_universe_rows
         if str(row.get("contract_family") or "").strip().lower() in _PRODUCTION_DAILY_WEATHER_CONTRACT_FAMILIES
     ]
-    daily_weather_rows_with_conservative_candidate = sum(
+    daily_weather_conservative_candidate_analysis = _daily_weather_conservative_candidate_failure_analysis(
+        rows=daily_weather_rows_all,
+        contracts_per_order=contracts_per_order,
+        maker_fee_multiplier_override=maker_fee_multiplier_override,
+        conservative_fee_rounding=conservative_fee_rounding,
+    )
+    daily_weather_allowed_universe_rows_with_conservative_candidate = sum(
         1
-        for row in daily_weather_rows
+        for row in daily_weather_rows_allowed_universe
         if isinstance(
             _select_conservative_maker_candidate(
                 row=row,
@@ -1459,9 +1570,9 @@ def run_kalshi_micro_prior_plan(
         max_orders_override=max(1, len(allowed_universe_rows)),
     )
     _, daily_weather_skip_counts = _build_plans_for_rows(
-        daily_weather_rows,
+        daily_weather_rows_allowed_universe,
         incentive_map=incentive_bonus_per_contract_by_ticker,
-        max_orders_override=max(1, len(daily_weather_rows)),
+        max_orders_override=max(1, len(daily_weather_rows_allowed_universe)),
     )
     allowed_universe_skip_profile = _skip_counts_profile(allowed_universe_skip_counts, top_n=10)
     daily_weather_skip_profile = _skip_counts_profile(daily_weather_skip_counts, top_n=10)
@@ -1621,8 +1732,35 @@ def run_kalshi_micro_prior_plan(
         "production_live_allowed_canonical_niches": sorted(live_allowed_niches),
         "production_daily_weather_contract_families": sorted(_PRODUCTION_DAILY_WEATHER_CONTRACT_FAMILIES),
         "allowed_universe_candidate_pool_size": len(allowed_universe_rows),
-        "daily_weather_candidate_pool_size": len(daily_weather_rows),
-        "daily_weather_rows_with_conservative_candidate": daily_weather_rows_with_conservative_candidate,
+        "daily_weather_rows_total": len(daily_weather_rows_all),
+        "daily_weather_candidate_pool_size": len(daily_weather_rows_allowed_universe),
+        "daily_weather_rows_with_conservative_candidate": daily_weather_conservative_candidate_analysis.get(
+            "rows_with_conservative_candidate"
+        ),
+        "daily_weather_rows_with_both_sides_candidate": daily_weather_conservative_candidate_analysis.get(
+            "rows_with_both_sides_candidate"
+        ),
+        "daily_weather_rows_with_one_side_failed": daily_weather_conservative_candidate_analysis.get(
+            "rows_with_one_side_failed"
+        ),
+        "daily_weather_rows_with_both_sides_failed": daily_weather_conservative_candidate_analysis.get(
+            "rows_with_both_sides_failed"
+        ),
+        "daily_weather_orderable_bid_rows": daily_weather_conservative_candidate_analysis.get(
+            "orderable_bid_rows"
+        ),
+        "daily_weather_rows_with_fair_probabilities": daily_weather_conservative_candidate_analysis.get(
+            "rows_with_fair_probabilities"
+        ),
+        "daily_weather_rows_with_both_quote_and_fair_value": daily_weather_conservative_candidate_analysis.get(
+            "rows_with_both_quote_and_fair_value"
+        ),
+        "daily_weather_conservative_candidate_failure_counts": daily_weather_conservative_candidate_analysis.get(
+            "failure_counts"
+        ),
+        "daily_weather_allowed_universe_rows_with_conservative_candidate": (
+            daily_weather_allowed_universe_rows_with_conservative_candidate
+        ),
         "daily_weather_planned_orders": daily_weather_planned_orders,
         "allowed_universe_skip_counts": allowed_universe_skip_profile.get("skip_counts"),
         "allowed_universe_skip_counts_total": allowed_universe_skip_profile.get("skip_counts_total"),

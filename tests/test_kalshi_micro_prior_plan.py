@@ -235,6 +235,101 @@ class KalshiMicroPriorPlanTests(unittest.TestCase):
             self.assertEqual(summary["weather_history_daily_candidates_live_ready"], 0)
             self.assertEqual(summary["weather_history_daily_candidates_unhealthy"], 1)
 
+    def test_run_kalshi_micro_prior_plan_reports_daily_weather_pre_edge_failures(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            history_csv = base / "history.csv"
+            priors_csv = base / "priors.csv"
+            _write_csv(
+                history_csv,
+                HISTORY_FIELDNAMES,
+                [
+                    {
+                        "captured_at": "2026-03-30T21:00:00+00:00",
+                        "category": "Climate and Weather",
+                        "market_ticker": "KXRAINNYC-26MAR30A",
+                        "market_title": "Will it rain in NYC tonight? A",
+                        "close_time": "2026-03-31T03:59:00Z",
+                        "hours_to_close": "7",
+                        "yes_bid_dollars": "0.35",
+                        "yes_ask_dollars": "0.36",
+                    },
+                    {
+                        "captured_at": "2026-03-30T21:00:00+00:00",
+                        "category": "Climate and Weather",
+                        "market_ticker": "KXRAINNYC-26MAR30B",
+                        "market_title": "Will it rain in NYC tonight? B",
+                        "close_time": "2026-03-31T03:59:00Z",
+                        "hours_to_close": "7",
+                        "yes_bid_dollars": "",
+                        "yes_ask_dollars": "",
+                    },
+                ],
+            )
+            prior_fieldnames = PRIOR_FIELDNAMES + [
+                "contract_family",
+                "fair_yes_probability_conservative",
+                "fair_no_probability_conservative",
+            ]
+            _write_csv(
+                priors_csv,
+                prior_fieldnames,
+                [
+                    {
+                        "market_ticker": "KXRAINNYC-26MAR30A",
+                        "fair_yes_probability": "0.55",
+                        "fair_yes_probability_conservative": "0.55",
+                        "fair_no_probability_conservative": "0.45",
+                        "confidence": "0.8",
+                        "thesis": "Weather edge",
+                        "source_note": "Synthetic test",
+                        "updated_at": "2026-03-30T21:00:00+00:00",
+                        "contract_family": "daily_rain",
+                    },
+                    {
+                        "market_ticker": "KXRAINNYC-26MAR30B",
+                        "fair_yes_probability": "",
+                        "fair_yes_probability_conservative": "",
+                        "fair_no_probability_conservative": "",
+                        "confidence": "0.7",
+                        "thesis": "Missing quote/fair coverage",
+                        "source_note": "Synthetic test",
+                        "updated_at": "2026-03-30T21:00:00+00:00",
+                        "contract_family": "daily_rain",
+                    },
+                ],
+            )
+
+            summary = run_kalshi_micro_prior_plan(
+                priors_csv=str(priors_csv),
+                history_csv=str(history_csv),
+                output_dir=str(base),
+                now=datetime(2026, 3, 30, 21, 5, tzinfo=timezone.utc),
+            )
+
+            self.assertEqual(summary["status"], "ready")
+            self.assertEqual(summary["daily_weather_rows_total"], 2)
+            self.assertEqual(summary["daily_weather_rows_with_conservative_candidate"], 1)
+            self.assertEqual(summary["daily_weather_rows_with_both_sides_candidate"], 1)
+            self.assertEqual(summary["daily_weather_rows_with_one_side_failed"], 0)
+            self.assertEqual(summary["daily_weather_rows_with_both_sides_failed"], 1)
+            self.assertEqual(summary["daily_weather_orderable_bid_rows"], 1)
+            self.assertEqual(summary["daily_weather_rows_with_fair_probabilities"], 1)
+            self.assertEqual(summary["daily_weather_rows_with_both_quote_and_fair_value"], 1)
+            self.assertEqual(summary["daily_weather_allowed_universe_rows_with_conservative_candidate"], 0)
+            self.assertEqual(
+                summary["daily_weather_conservative_candidate_failure_counts"]["missing_yes_bid"],
+                1,
+            )
+            self.assertEqual(
+                summary["daily_weather_conservative_candidate_failure_counts"]["missing_no_bid"],
+                1,
+            )
+            self.assertEqual(
+                summary["daily_weather_conservative_candidate_failure_counts"]["missing_fair_yes_probability"],
+                1,
+            )
+
     def test_build_micro_prior_plans_skips_zero_cost_endpoint_quotes(self) -> None:
         enriched_rows = build_prior_rows(
             prior_rows=[
