@@ -833,6 +833,19 @@ class KalshiMicroPriorPlanTests(unittest.TestCase):
             self.assertEqual(summary["canonical_unmapped_counts_by_niche_guess"].get("companies_ipo"), 1)
             self.assertEqual(summary["skip_counts"]["canonical_unmapped"], 1)
             self.assertEqual(summary["skip_counts"]["canonical_unmapped_outside_allowed_niche_guess"], 1)
+            self.assertEqual(summary["production_live_allowed_canonical_niches"], [
+                "macro_release",
+                "weather_climate",
+                "weather_energy_transmission",
+            ])
+            self.assertEqual(summary["production_daily_weather_contract_families"], ["daily_rain", "daily_temperature"])
+            self.assertEqual(summary["allowed_universe_candidate_pool_size"], 1)
+            self.assertEqual(summary["daily_weather_candidate_pool_size"], 0)
+            self.assertEqual(summary["allowed_universe_skip_reason_dominant"], "canonical_evidence_below_min")
+            self.assertEqual(summary["allowed_universe_skip_reason_dominant_count"], 1)
+            self.assertEqual(summary["daily_weather_skip_counts_total"], 0)
+            self.assertEqual(summary["daily_weather_skip_counts_nonzero_total"], 0)
+            self.assertEqual(summary["daily_weather_skip_counts_top"], [])
 
 
 if __name__ == "__main__":

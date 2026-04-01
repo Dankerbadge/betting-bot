@@ -32,6 +32,7 @@ export BETBOT_DAILY_WEATHER_STALE_RECOVERY_MAX_RETRIES="${BETBOT_DAILY_WEATHER_S
 export BETBOT_DAILY_WEATHER_STALE_RECOVERY_SLEEP_SECONDS="${BETBOT_DAILY_WEATHER_STALE_RECOVERY_SLEEP_SECONDS:-2}"
 export BETBOT_DAILY_WEATHER_TICKER_REFRESH_ENABLED="${BETBOT_DAILY_WEATHER_TICKER_REFRESH_ENABLED:-1}"
 export BETBOT_DAILY_WEATHER_TICKER_REFRESH_MAX_MARKETS="${BETBOT_DAILY_WEATHER_TICKER_REFRESH_MAX_MARKETS:-20}"
+export BETBOT_DAILY_WEATHER_TICKER_REFRESH_ON_BASE_CAPTURE="${BETBOT_DAILY_WEATHER_TICKER_REFRESH_ON_BASE_CAPTURE:-1}"
 export BETBOT_DAILY_WEATHER_RECOVERY_ALERT_WINDOW_HOURS="${BETBOT_DAILY_WEATHER_RECOVERY_ALERT_WINDOW_HOURS:-6}"
 export BETBOT_DAILY_WEATHER_RECOVERY_ALERT_THRESHOLD="${BETBOT_DAILY_WEATHER_RECOVERY_ALERT_THRESHOLD:-3}"
 export BETBOT_DAILY_WEATHER_RECOVERY_ALERT_MAX_EVENTS="${BETBOT_DAILY_WEATHER_RECOVERY_ALERT_MAX_EVENTS:-500}"
@@ -933,6 +934,20 @@ def _plan_skip_diagnostics_from_summary(
         "plan_skip_reason_dominant": None,
         "plan_skip_reason_dominant_count": None,
         "plan_skip_reason_dominant_share": None,
+        "allowed_universe_candidate_pool_size": None,
+        "allowed_universe_skip_counts_total": 0,
+        "allowed_universe_skip_counts_nonzero_total": 0,
+        "allowed_universe_skip_counts_top": [],
+        "allowed_universe_skip_reason_dominant": None,
+        "allowed_universe_skip_reason_dominant_count": None,
+        "allowed_universe_skip_reason_dominant_share": None,
+        "daily_weather_candidate_pool_size": None,
+        "daily_weather_skip_counts_total": 0,
+        "daily_weather_skip_counts_nonzero_total": 0,
+        "daily_weather_skip_counts_top": [],
+        "daily_weather_skip_reason_dominant": None,
+        "daily_weather_skip_reason_dominant_count": None,
+        "daily_weather_skip_reason_dominant_share": None,
     }
     path_text = str(plan_summary_file or "").strip()
     diagnostics["plan_summary_file"] = path_text or None
@@ -956,47 +971,66 @@ def _plan_skip_diagnostics_from_summary(
     if isinstance(planned_orders_raw, (int, float)):
         diagnostics["plan_summary_planned_orders"] = int(planned_orders_raw)
 
-    skip_counts_raw = payload.get("skip_counts")
-    if not isinstance(skip_counts_raw, dict):
+    def _apply_skip_profile(
+        *,
+        counts_key: str,
+        output_prefix: str,
+    ) -> None:
+        raw_counts = payload.get(counts_key)
+        if not isinstance(raw_counts, dict):
+            return
+        normalized_counts: list[tuple[str, int]] = []
+        for raw_reason, raw_count in raw_counts.items():
+            reason = str(raw_reason or "").strip()
+            if not reason:
+                continue
+            count_value: int | None = None
+            if isinstance(raw_count, bool):
+                count_value = int(raw_count)
+            elif isinstance(raw_count, (int, float)):
+                count_value = int(raw_count)
+            else:
+                count_parsed = _parse_float(raw_count)
+                if isinstance(count_parsed, float):
+                    count_value = int(count_parsed)
+            if count_value is None:
+                continue
+            normalized_counts.append((reason, max(0, count_value)))
+
+        total = int(sum(count for _, count in normalized_counts))
+        nonzero = [(reason, count) for reason, count in normalized_counts if count > 0]
+        nonzero.sort(key=lambda item: (-item[1], item[0]))
+        top_limit = max(1, int(top_n))
+        diagnostics[f"{output_prefix}_skip_counts_total"] = total
+        diagnostics[f"{output_prefix}_skip_counts_nonzero_total"] = len(nonzero)
+        diagnostics[f"{output_prefix}_skip_counts_top"] = [
+            {"reason": reason, "count": count}
+            for reason, count in nonzero[:top_limit]
+        ]
+        if nonzero:
+            dominant_reason, dominant_count = nonzero[0]
+            diagnostics[f"{output_prefix}_skip_reason_dominant"] = dominant_reason
+            diagnostics[f"{output_prefix}_skip_reason_dominant_count"] = dominant_count
+            if total > 0:
+                diagnostics[f"{output_prefix}_skip_reason_dominant_share"] = round(
+                    float(dominant_count) / float(total),
+                    4,
+                )
+
+    _apply_skip_profile(counts_key="skip_counts", output_prefix="plan")
+    if diagnostics["plan_skip_counts_total"] == 0 and not isinstance(payload.get("skip_counts"), dict):
         diagnostics["plan_summary_error"] = "skip_counts_missing"
         return diagnostics
 
-    normalized_counts: list[tuple[str, int]] = []
-    for raw_reason, raw_count in skip_counts_raw.items():
-        reason = str(raw_reason or "").strip()
-        if not reason:
-            continue
-        count_value: int | None = None
-        if isinstance(raw_count, bool):
-            count_value = int(raw_count)
-        elif isinstance(raw_count, (int, float)):
-            count_value = int(raw_count)
-        else:
-            count_parsed = _parse_float(raw_count)
-            if isinstance(count_parsed, float):
-                count_value = int(count_parsed)
-        if count_value is None:
-            continue
-        normalized_counts.append((reason, max(0, count_value)))
+    allowed_pool = payload.get("allowed_universe_candidate_pool_size")
+    if isinstance(allowed_pool, (int, float)):
+        diagnostics["allowed_universe_candidate_pool_size"] = int(allowed_pool)
+    _apply_skip_profile(counts_key="allowed_universe_skip_counts", output_prefix="allowed_universe")
 
-    total = int(sum(count for _, count in normalized_counts))
-    nonzero = [(reason, count) for reason, count in normalized_counts if count > 0]
-    nonzero.sort(key=lambda item: (-item[1], item[0]))
-    top_limit = max(1, int(top_n))
-
-    diagnostics["plan_skip_counts_total"] = total
-    diagnostics["plan_skip_counts_nonzero_total"] = len(nonzero)
-    diagnostics["plan_skip_counts_top"] = [
-        {"reason": reason, "count": count}
-        for reason, count in nonzero[:top_limit]
-    ]
-
-    if nonzero:
-        dominant_reason, dominant_count = nonzero[0]
-        diagnostics["plan_skip_reason_dominant"] = dominant_reason
-        diagnostics["plan_skip_reason_dominant_count"] = dominant_count
-        if total > 0:
-            diagnostics["plan_skip_reason_dominant_share"] = round(float(dominant_count) / float(total), 4)
+    daily_pool = payload.get("daily_weather_candidate_pool_size")
+    if isinstance(daily_pool, (int, float)):
+        diagnostics["daily_weather_candidate_pool_size"] = int(daily_pool)
+    _apply_skip_profile(counts_key="daily_weather_skip_counts", output_prefix="daily_weather")
     return diagnostics
 
 
@@ -1239,6 +1273,36 @@ def _run_step(
             step["plan_skip_reason_dominant"] = skip_diagnostics.get("plan_skip_reason_dominant")
             step["plan_skip_reason_dominant_count"] = skip_diagnostics.get("plan_skip_reason_dominant_count")
             step["plan_skip_reason_dominant_share"] = skip_diagnostics.get("plan_skip_reason_dominant_share")
+            step["allowed_universe_candidate_pool_size"] = skip_diagnostics.get("allowed_universe_candidate_pool_size")
+            step["allowed_universe_skip_counts_total"] = skip_diagnostics.get("allowed_universe_skip_counts_total")
+            step["allowed_universe_skip_counts_nonzero_total"] = skip_diagnostics.get(
+                "allowed_universe_skip_counts_nonzero_total"
+            )
+            step["allowed_universe_skip_counts_top"] = skip_diagnostics.get("allowed_universe_skip_counts_top")
+            step["allowed_universe_skip_reason_dominant"] = skip_diagnostics.get(
+                "allowed_universe_skip_reason_dominant"
+            )
+            step["allowed_universe_skip_reason_dominant_count"] = skip_diagnostics.get(
+                "allowed_universe_skip_reason_dominant_count"
+            )
+            step["allowed_universe_skip_reason_dominant_share"] = skip_diagnostics.get(
+                "allowed_universe_skip_reason_dominant_share"
+            )
+            step["daily_weather_candidate_pool_size"] = skip_diagnostics.get("daily_weather_candidate_pool_size")
+            step["daily_weather_skip_counts_total"] = skip_diagnostics.get("daily_weather_skip_counts_total")
+            step["daily_weather_skip_counts_nonzero_total"] = skip_diagnostics.get(
+                "daily_weather_skip_counts_nonzero_total"
+            )
+            step["daily_weather_skip_counts_top"] = skip_diagnostics.get("daily_weather_skip_counts_top")
+            step["daily_weather_skip_reason_dominant"] = skip_diagnostics.get(
+                "daily_weather_skip_reason_dominant"
+            )
+            step["daily_weather_skip_reason_dominant_count"] = skip_diagnostics.get(
+                "daily_weather_skip_reason_dominant_count"
+            )
+            step["daily_weather_skip_reason_dominant_share"] = skip_diagnostics.get(
+                "daily_weather_skip_reason_dominant_share"
+            )
 
     return step
 
@@ -1756,6 +1820,20 @@ def _top_level_no_candidates_diagnostics(step: dict[str, Any] | None) -> dict[st
         "skip_counts_total": step.get("plan_skip_counts_total"),
         "skip_counts_nonzero_total": step.get("plan_skip_counts_nonzero_total"),
         "top_skip_counts": step.get("plan_skip_counts_top"),
+        "allowed_universe_candidate_pool_size": step.get("allowed_universe_candidate_pool_size"),
+        "allowed_universe_dominant_skip_reason": step.get("allowed_universe_skip_reason_dominant"),
+        "allowed_universe_dominant_skip_count": step.get("allowed_universe_skip_reason_dominant_count"),
+        "allowed_universe_dominant_skip_share": step.get("allowed_universe_skip_reason_dominant_share"),
+        "allowed_universe_skip_counts_total": step.get("allowed_universe_skip_counts_total"),
+        "allowed_universe_skip_counts_nonzero_total": step.get("allowed_universe_skip_counts_nonzero_total"),
+        "allowed_universe_top_skip_counts": step.get("allowed_universe_skip_counts_top"),
+        "daily_weather_candidate_pool_size": step.get("daily_weather_candidate_pool_size"),
+        "daily_weather_dominant_skip_reason": step.get("daily_weather_skip_reason_dominant"),
+        "daily_weather_dominant_skip_count": step.get("daily_weather_skip_reason_dominant_count"),
+        "daily_weather_dominant_skip_share": step.get("daily_weather_skip_reason_dominant_share"),
+        "daily_weather_skip_counts_total": step.get("daily_weather_skip_counts_total"),
+        "daily_weather_skip_counts_nonzero_total": step.get("daily_weather_skip_counts_nonzero_total"),
+        "daily_weather_top_skip_counts": step.get("daily_weather_skip_counts_top"),
     }
 
 
@@ -2051,6 +2129,55 @@ def main() -> int:
         )
     )
 
+    allowed_weather_contract_families = _parse_csv_list(
+        os.environ.get("BETBOT_WEATHER_ALLOWED_CONTRACT_FAMILIES")
+    )
+    if not allowed_weather_contract_families:
+        allowed_weather_contract_families = ["daily_rain", "daily_temperature"]
+    daily_weather_ticker_refresh_enabled = _is_enabled(
+        os.environ.get("BETBOT_DAILY_WEATHER_TICKER_REFRESH_ENABLED"),
+        default=True,
+    )
+    daily_weather_ticker_refresh_max_markets = max(
+        1,
+        int(os.environ.get("BETBOT_DAILY_WEATHER_TICKER_REFRESH_MAX_MARKETS", "20")),
+    )
+    daily_weather_ticker_refresh_on_base_capture = _is_enabled(
+        os.environ.get("BETBOT_DAILY_WEATHER_TICKER_REFRESH_ON_BASE_CAPTURE"),
+        default=True,
+    )
+    if daily_weather_ticker_refresh_enabled and daily_weather_ticker_refresh_on_base_capture:
+        base_refresh_step = _run_daily_weather_ticker_refresh(
+            env_values=env_file_values,
+            priors_csv=priors_csv,
+            history_csv=history_csv,
+            allowed_contract_families=allowed_weather_contract_families,
+            timeout_seconds=max(1.0, float(os.environ.get("BETBOT_TIMEOUT_SECONDS", "15"))),
+            max_markets=daily_weather_ticker_refresh_max_markets,
+            captured_at=datetime.now(timezone.utc),
+        )
+        base_refresh_step["name"] = "daily_weather_ticker_refresh_base"
+        base_refresh_step["base_capture_refresh"] = True
+        steps.append(base_refresh_step)
+    elif daily_weather_ticker_refresh_enabled:
+        steps.append(
+            _synthetic_step(
+                name="daily_weather_ticker_refresh_base",
+                status="skipped_base_refresh_disabled",
+                ok=True,
+                reason="daily_weather_ticker_refresh_on_base_capture_disabled",
+            )
+        )
+    else:
+        steps.append(
+            _synthetic_step(
+                name="daily_weather_ticker_refresh_base",
+                status="skipped_disabled",
+                ok=True,
+                reason="daily_weather_ticker_refresh_disabled",
+            )
+        )
+
     weather_cache = _weather_cache_state(
         output_dir=output_dir,
         max_age_hours=float(os.environ.get("BETBOT_WEATHER_CACHE_MAX_AGE_HOURS", "24")),
@@ -2091,11 +2218,6 @@ def main() -> int:
             )
         )
 
-    allowed_weather_contract_families = _parse_csv_list(
-        os.environ.get("BETBOT_WEATHER_ALLOWED_CONTRACT_FAMILIES")
-    )
-    if not allowed_weather_contract_families:
-        allowed_weather_contract_families = ["daily_rain", "daily_temperature"]
     weather_prior_state_before = _weather_prior_state(
         priors_csv=priors_csv,
         max_age_hours=float(os.environ.get("BETBOT_WEATHER_PRIOR_MAX_AGE_HOURS", "6")),
@@ -2253,14 +2375,6 @@ def main() -> int:
     stale_recovery_sleep_seconds = max(
         0.0,
         float(os.environ.get("BETBOT_DAILY_WEATHER_STALE_RECOVERY_SLEEP_SECONDS", "2")),
-    )
-    daily_weather_ticker_refresh_enabled = _is_enabled(
-        os.environ.get("BETBOT_DAILY_WEATHER_TICKER_REFRESH_ENABLED"),
-        default=True,
-    )
-    daily_weather_ticker_refresh_max_markets = max(
-        1,
-        int(os.environ.get("BETBOT_DAILY_WEATHER_TICKER_REFRESH_MAX_MARKETS", "20")),
     )
     stale_recovery_attempts = 0
     stale_recovery_triggered = False
@@ -2424,6 +2538,10 @@ def main() -> int:
         )
     )
     daily_weather_ticker_refresh_step = _latest_step_with_prefix(steps, "daily_weather_ticker_refresh")
+    daily_weather_ticker_refresh_base_step = next(
+        (step for step in steps if str(step.get("name") or "").strip() == "daily_weather_ticker_refresh_base"),
+        None,
+    )
 
     failed_steps = [step["name"] for step in steps if not bool(step.get("ok"))]
     degraded_reasons: list[str] = []
@@ -2639,6 +2757,76 @@ def main() -> int:
             if isinstance(prior_trader_step, dict)
             else None
         ),
+        "allowed_universe_candidate_pool_size": (
+            prior_trader_step.get("allowed_universe_candidate_pool_size")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        "allowed_universe_skip_reason_dominant": (
+            prior_trader_step.get("allowed_universe_skip_reason_dominant")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        "allowed_universe_skip_reason_dominant_count": (
+            prior_trader_step.get("allowed_universe_skip_reason_dominant_count")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        "allowed_universe_skip_reason_dominant_share": (
+            prior_trader_step.get("allowed_universe_skip_reason_dominant_share")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        "allowed_universe_skip_counts_total": (
+            prior_trader_step.get("allowed_universe_skip_counts_total")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        "allowed_universe_skip_counts_nonzero_total": (
+            prior_trader_step.get("allowed_universe_skip_counts_nonzero_total")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        "allowed_universe_skip_counts_top": (
+            prior_trader_step.get("allowed_universe_skip_counts_top")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        "daily_weather_candidate_pool_size": (
+            prior_trader_step.get("daily_weather_candidate_pool_size")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        "daily_weather_skip_reason_dominant": (
+            prior_trader_step.get("daily_weather_skip_reason_dominant")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        "daily_weather_skip_reason_dominant_count": (
+            prior_trader_step.get("daily_weather_skip_reason_dominant_count")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        "daily_weather_skip_reason_dominant_share": (
+            prior_trader_step.get("daily_weather_skip_reason_dominant_share")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        "daily_weather_skip_counts_total": (
+            prior_trader_step.get("daily_weather_skip_counts_total")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        "daily_weather_skip_counts_nonzero_total": (
+            prior_trader_step.get("daily_weather_skip_counts_nonzero_total")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        "daily_weather_skip_counts_top": (
+            prior_trader_step.get("daily_weather_skip_counts_top")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
         "top_market_ticker": decision_identity.get("top_market_ticker"),
         "top_market_contract_family": decision_identity.get("top_market_contract_family"),
         "fair_yes_probability_raw": decision_identity.get("fair_yes_probability_raw"),
@@ -2677,7 +2865,28 @@ def main() -> int:
         "daily_weather_stale_recovery_max_retries": stale_recovery_max_retries,
         "daily_weather_stale_recovery_sleep_seconds": stale_recovery_sleep_seconds,
         "daily_weather_ticker_refresh_enabled": daily_weather_ticker_refresh_enabled,
+        "daily_weather_ticker_refresh_on_base_capture": daily_weather_ticker_refresh_on_base_capture,
         "daily_weather_ticker_refresh_max_markets": daily_weather_ticker_refresh_max_markets,
+        "daily_weather_ticker_refresh_base_status": (
+            daily_weather_ticker_refresh_base_step.get("status")
+            if isinstance(daily_weather_ticker_refresh_base_step, dict)
+            else None
+        ),
+        "daily_weather_ticker_refresh_base_rows_appended": (
+            daily_weather_ticker_refresh_base_step.get("rows_appended")
+            if isinstance(daily_weather_ticker_refresh_base_step, dict)
+            else None
+        ),
+        "daily_weather_ticker_refresh_base_tickers_attempted_count": (
+            daily_weather_ticker_refresh_base_step.get("market_tickers_attempted_count")
+            if isinstance(daily_weather_ticker_refresh_base_step, dict)
+            else None
+        ),
+        "daily_weather_ticker_refresh_base_tickers_succeeded_count": (
+            daily_weather_ticker_refresh_base_step.get("market_tickers_succeeded_count")
+            if isinstance(daily_weather_ticker_refresh_base_step, dict)
+            else None
+        ),
         "daily_weather_ticker_refresh_status": (
             daily_weather_ticker_refresh_step.get("status")
             if isinstance(daily_weather_ticker_refresh_step, dict)

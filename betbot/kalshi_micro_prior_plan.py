@@ -25,6 +25,7 @@ from betbot.onboarding import _is_placeholder, _parse_env_file
 
 LIVE_ALLOWED_CANONICAL_NICHES = ("macro_release", "weather_energy_transmission", "weather_climate")
 _DAILY_WEATHER_CONTRACT_FAMILIES = {"daily_rain", "daily_temperature", "daily_snow"}
+_PRODUCTION_DAILY_WEATHER_CONTRACT_FAMILIES = {"daily_rain", "daily_temperature"}
 
 
 def _latest_market_rows(history_rows: list[dict[str, str]]) -> dict[str, dict[str, str]]:
@@ -586,6 +587,68 @@ def _summarize_unmapped_canonical_markets(
         "counts_by_niche_guess": dict(sorted(counts_by_guess.items(), key=lambda item: (-item[1], item[0]))),
         "top_markets": details[: max(0, int(max_rows))],
     }
+
+
+def _normalize_skip_counts(skip_counts: dict[str, Any] | None) -> dict[str, int]:
+    if not isinstance(skip_counts, dict):
+        return {}
+    normalized: dict[str, int] = {}
+    for raw_reason, raw_count in skip_counts.items():
+        reason = str(raw_reason or "").strip()
+        if not reason:
+            continue
+        count_value = _as_int(raw_count)
+        if count_value is None:
+            continue
+        normalized[reason] = max(0, int(count_value))
+    return normalized
+
+
+def _skip_counts_profile(skip_counts: dict[str, Any] | None, *, top_n: int = 10) -> dict[str, Any]:
+    normalized = _normalize_skip_counts(skip_counts)
+    total = int(sum(normalized.values()))
+    nonzero = [(reason, count) for reason, count in normalized.items() if count > 0]
+    nonzero.sort(key=lambda item: (-item[1], item[0]))
+    top = [
+        {"reason": reason, "count": count}
+        for reason, count in nonzero[: max(1, int(top_n))]
+    ]
+    dominant_reason: str | None = None
+    dominant_count: int | None = None
+    dominant_share: float | None = None
+    if nonzero:
+        dominant_reason, dominant_count = nonzero[0]
+        if total > 0:
+            dominant_share = round(float(dominant_count) / float(total), 4)
+    return {
+        "skip_counts": normalized,
+        "skip_counts_total": total,
+        "skip_counts_nonzero_total": len(nonzero),
+        "skip_counts_top": top,
+        "skip_reason_dominant": dominant_reason,
+        "skip_reason_dominant_count": dominant_count,
+        "skip_reason_dominant_share": dominant_share,
+    }
+
+
+def _row_canonical_niche(
+    *,
+    row: dict[str, Any],
+    canonical_policy_by_live_ticker: dict[str, dict[str, Any]] | None,
+    canonical_policy_alias_by_lookup_key: dict[str, dict[str, Any]] | None,
+) -> str | None:
+    market_ticker = str(row.get("market_ticker") or "").strip()
+    policy, _, _ = _resolve_canonical_policy_for_ticker(
+        market_ticker=market_ticker,
+        canonical_policy_by_live_ticker=canonical_policy_by_live_ticker,
+        canonical_policy_alias_by_lookup_key=canonical_policy_alias_by_lookup_key,
+    )
+    if isinstance(policy, dict):
+        niche_value = str(policy.get("niche") or "").strip().lower()
+        if niche_value:
+            return niche_value
+    fallback_niche = str(row.get("canonical_niche") or "").strip().lower()
+    return fallback_niche or None
 
 
 def build_micro_prior_plans(
@@ -1226,31 +1289,44 @@ def run_kalshi_micro_prior_plan(
             canonical_threshold_csv=canonical_threshold_csv,
             allowed_canonical_niches=normalized_allowed_niches,
         )
-    plans, skip_counts = build_micro_prior_plans(
-        enriched_rows=enriched_rows,
-        planning_bankroll_dollars=planning_bankroll_dollars,
-        daily_risk_cap_dollars=daily_risk_cap_dollars,
-        contracts_per_order=contracts_per_order,
-        max_orders=max_orders,
-        min_maker_edge=min_maker_edge,
-        min_maker_edge_net_fees=min_maker_edge_net_fees,
-        min_entry_price_dollars=min_entry_price_dollars,
-        max_entry_price_dollars=max_entry_price_dollars,
-        routine_max_hours_to_close=routine_max_hours_to_close,
-        max_hours_to_close_by_canonical_niche=max_hours_to_close_by_canonical_niche,
-        routine_longdated_allowed_niches=(
-            {value.strip().lower() for value in routine_longdated_allowed_niches if value.strip()}
-            if routine_longdated_allowed_niches
-            else None
-        ),
-        maker_fee_multiplier_override=maker_fee_multiplier_override,
-        conservative_fee_rounding=conservative_fee_rounding,
-        incentive_bonus_per_contract_by_ticker=incentive_bonus_per_contract_by_ticker,
-        canonical_policy_by_live_ticker=canonical_policy_by_live_ticker,
-        canonical_policy_alias_by_lookup_key=canonical_policy_alias_by_lookup_key,
-        require_canonical_mapping=require_canonical_mapping,
-        allowed_canonical_niches=normalized_allowed_niches,
-        require_weather_history_live_ready_for_daily_weather=require_weather_history_live_ready_for_daily_weather,
+
+    def _build_plans_for_rows(
+        rows: list[dict[str, Any]],
+        *,
+        incentive_map: dict[str, float],
+        max_orders_override: int | None = None,
+    ) -> tuple[list[dict[str, Any]], dict[str, int]]:
+        effective_max_orders = max_orders if max_orders_override is None else max(1, int(max_orders_override))
+        return build_micro_prior_plans(
+            enriched_rows=rows,
+            planning_bankroll_dollars=planning_bankroll_dollars,
+            daily_risk_cap_dollars=daily_risk_cap_dollars,
+            contracts_per_order=contracts_per_order,
+            max_orders=effective_max_orders,
+            min_maker_edge=min_maker_edge,
+            min_maker_edge_net_fees=min_maker_edge_net_fees,
+            min_entry_price_dollars=min_entry_price_dollars,
+            max_entry_price_dollars=max_entry_price_dollars,
+            routine_max_hours_to_close=routine_max_hours_to_close,
+            max_hours_to_close_by_canonical_niche=max_hours_to_close_by_canonical_niche,
+            routine_longdated_allowed_niches=(
+                {value.strip().lower() for value in routine_longdated_allowed_niches if value.strip()}
+                if routine_longdated_allowed_niches
+                else None
+            ),
+            maker_fee_multiplier_override=maker_fee_multiplier_override,
+            conservative_fee_rounding=conservative_fee_rounding,
+            incentive_bonus_per_contract_by_ticker=incentive_map,
+            canonical_policy_by_live_ticker=canonical_policy_by_live_ticker,
+            canonical_policy_alias_by_lookup_key=canonical_policy_alias_by_lookup_key,
+            require_canonical_mapping=require_canonical_mapping,
+            allowed_canonical_niches=normalized_allowed_niches,
+            require_weather_history_live_ready_for_daily_weather=require_weather_history_live_ready_for_daily_weather,
+        )
+
+    plans, skip_counts = _build_plans_for_rows(
+        enriched_rows,
+        incentive_map=incentive_bonus_per_contract_by_ticker,
     )
     live_balance_cents: int | None = None
     balance_error: str | None = None
@@ -1272,31 +1348,9 @@ def run_kalshi_micro_prior_plan(
             except Exception:
                 incentive_bonus_per_contract_by_ticker = {}
             if incentive_bonus_per_contract_by_ticker:
-                plans, skip_counts = build_micro_prior_plans(
-                    enriched_rows=enriched_rows,
-                    planning_bankroll_dollars=planning_bankroll_dollars,
-                    daily_risk_cap_dollars=daily_risk_cap_dollars,
-                    contracts_per_order=contracts_per_order,
-                    max_orders=max_orders,
-                    min_maker_edge=min_maker_edge,
-                    min_maker_edge_net_fees=min_maker_edge_net_fees,
-                    min_entry_price_dollars=min_entry_price_dollars,
-                    max_entry_price_dollars=max_entry_price_dollars,
-                    routine_max_hours_to_close=routine_max_hours_to_close,
-                    max_hours_to_close_by_canonical_niche=max_hours_to_close_by_canonical_niche,
-                    routine_longdated_allowed_niches=(
-                        {value.strip().lower() for value in routine_longdated_allowed_niches if value.strip()}
-                        if routine_longdated_allowed_niches
-                        else None
-                    ),
-                    maker_fee_multiplier_override=maker_fee_multiplier_override,
-                    conservative_fee_rounding=conservative_fee_rounding,
-                    incentive_bonus_per_contract_by_ticker=incentive_bonus_per_contract_by_ticker,
-                    canonical_policy_by_live_ticker=canonical_policy_by_live_ticker,
-                    canonical_policy_alias_by_lookup_key=canonical_policy_alias_by_lookup_key,
-                    require_canonical_mapping=require_canonical_mapping,
-                    allowed_canonical_niches=normalized_allowed_niches,
-                    require_weather_history_live_ready_for_daily_weather=require_weather_history_live_ready_for_daily_weather,
+                plans, skip_counts = _build_plans_for_rows(
+                    enriched_rows,
+                    incentive_map=incentive_bonus_per_contract_by_ticker,
                 )
         if not _is_placeholder(access_key_id) and not _is_placeholder(private_key_path):
             try:
@@ -1367,6 +1421,37 @@ def run_kalshi_micro_prior_plan(
         allowed_canonical_niches=normalized_allowed_niches,
         max_rows=25,
     )
+    live_allowed_niches = {
+        str(value).strip().lower()
+        for value in LIVE_ALLOWED_CANONICAL_NICHES
+        if str(value).strip()
+    }
+    allowed_universe_rows = [
+        row
+        for row in enriched_rows
+        if _row_canonical_niche(
+            row=row,
+            canonical_policy_by_live_ticker=canonical_policy_by_live_ticker,
+            canonical_policy_alias_by_lookup_key=canonical_policy_alias_by_lookup_key,
+        ) in live_allowed_niches
+    ]
+    daily_weather_rows = [
+        row
+        for row in allowed_universe_rows
+        if str(row.get("contract_family") or "").strip().lower() in _PRODUCTION_DAILY_WEATHER_CONTRACT_FAMILIES
+    ]
+    _, allowed_universe_skip_counts = _build_plans_for_rows(
+        allowed_universe_rows,
+        incentive_map=incentive_bonus_per_contract_by_ticker,
+        max_orders_override=max(1, len(allowed_universe_rows)),
+    )
+    _, daily_weather_skip_counts = _build_plans_for_rows(
+        daily_weather_rows,
+        incentive_map=incentive_bonus_per_contract_by_ticker,
+        max_orders_override=max(1, len(daily_weather_rows)),
+    )
+    allowed_universe_skip_profile = _skip_counts_profile(allowed_universe_skip_counts, top_n=10)
+    daily_weather_skip_profile = _skip_counts_profile(daily_weather_skip_counts, top_n=10)
     top_plan = plans[0] if plans else {}
     top_market_ticker = str(top_plan.get("market_ticker") or "").strip()
     top_enriched_row = {}
@@ -1515,6 +1600,34 @@ def run_kalshi_micro_prior_plan(
         "weather_history_daily_candidates_live_ready": daily_weather_candidates_live_ready,
         "weather_history_daily_candidates_unhealthy": daily_weather_candidates_unhealthy,
         "weather_history_unhealthy_filtered": int(skip_counts.get("weather_history_unhealthy", 0)),
+        "production_live_allowed_canonical_niches": sorted(live_allowed_niches),
+        "production_daily_weather_contract_families": sorted(_PRODUCTION_DAILY_WEATHER_CONTRACT_FAMILIES),
+        "allowed_universe_candidate_pool_size": len(allowed_universe_rows),
+        "daily_weather_candidate_pool_size": len(daily_weather_rows),
+        "allowed_universe_skip_counts": allowed_universe_skip_profile.get("skip_counts"),
+        "allowed_universe_skip_counts_total": allowed_universe_skip_profile.get("skip_counts_total"),
+        "allowed_universe_skip_counts_nonzero_total": allowed_universe_skip_profile.get(
+            "skip_counts_nonzero_total"
+        ),
+        "allowed_universe_skip_counts_top": allowed_universe_skip_profile.get("skip_counts_top"),
+        "allowed_universe_skip_reason_dominant": allowed_universe_skip_profile.get("skip_reason_dominant"),
+        "allowed_universe_skip_reason_dominant_count": allowed_universe_skip_profile.get(
+            "skip_reason_dominant_count"
+        ),
+        "allowed_universe_skip_reason_dominant_share": allowed_universe_skip_profile.get(
+            "skip_reason_dominant_share"
+        ),
+        "daily_weather_skip_counts": daily_weather_skip_profile.get("skip_counts"),
+        "daily_weather_skip_counts_total": daily_weather_skip_profile.get("skip_counts_total"),
+        "daily_weather_skip_counts_nonzero_total": daily_weather_skip_profile.get("skip_counts_nonzero_total"),
+        "daily_weather_skip_counts_top": daily_weather_skip_profile.get("skip_counts_top"),
+        "daily_weather_skip_reason_dominant": daily_weather_skip_profile.get("skip_reason_dominant"),
+        "daily_weather_skip_reason_dominant_count": daily_weather_skip_profile.get(
+            "skip_reason_dominant_count"
+        ),
+        "daily_weather_skip_reason_dominant_share": daily_weather_skip_profile.get(
+            "skip_reason_dominant_share"
+        ),
         "weather_history_next_live_ready_candidate_ticker": (
             str(next_live_ready_daily_weather_candidate.get("market_ticker") or "").strip() or None
         ),
