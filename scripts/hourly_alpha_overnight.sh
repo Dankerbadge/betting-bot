@@ -961,7 +961,16 @@ def _plan_skip_diagnostics_from_summary(
         "daily_weather_quote_orderability_counts": None,
         "daily_weather_quote_age_rows_with_timestamp": None,
         "daily_weather_quote_stale_max_age_seconds": None,
+        "daily_weather_shadow_taker_rows_total": None,
+        "daily_weather_shadow_taker_rows_with_orderable_yes_ask": None,
+        "daily_weather_shadow_taker_rows_with_orderable_no_ask": None,
+        "daily_weather_shadow_taker_rows_with_any_orderable_ask": None,
+        "daily_weather_shadow_taker_edge_above_min_count": None,
+        "daily_weather_shadow_taker_edge_net_fees_above_min_count": None,
+        "daily_weather_shadow_taker_endpoint_orderbook_rows": None,
+        "daily_weather_best_shadow_taker_candidate": None,
         "daily_weather_allowed_universe_rows_with_conservative_candidate": None,
+        "daily_weather_endpoint_orderbook_filtered": None,
         "daily_weather_conservative_candidate_failure_counts": None,
         "daily_weather_planned_orders": None,
     }
@@ -1103,11 +1112,38 @@ def _plan_skip_diagnostics_from_summary(
     daily_quote_stale_max_age = payload.get("daily_weather_quote_stale_max_age_seconds")
     if isinstance(daily_quote_stale_max_age, (int, float)):
         diagnostics["daily_weather_quote_stale_max_age_seconds"] = round(float(daily_quote_stale_max_age), 3)
+    daily_shadow_rows_total = payload.get("daily_weather_shadow_taker_rows_total")
+    if isinstance(daily_shadow_rows_total, (int, float)):
+        diagnostics["daily_weather_shadow_taker_rows_total"] = int(daily_shadow_rows_total)
+    daily_shadow_rows_yes_ask = payload.get("daily_weather_shadow_taker_rows_with_orderable_yes_ask")
+    if isinstance(daily_shadow_rows_yes_ask, (int, float)):
+        diagnostics["daily_weather_shadow_taker_rows_with_orderable_yes_ask"] = int(daily_shadow_rows_yes_ask)
+    daily_shadow_rows_no_ask = payload.get("daily_weather_shadow_taker_rows_with_orderable_no_ask")
+    if isinstance(daily_shadow_rows_no_ask, (int, float)):
+        diagnostics["daily_weather_shadow_taker_rows_with_orderable_no_ask"] = int(daily_shadow_rows_no_ask)
+    daily_shadow_rows_any_ask = payload.get("daily_weather_shadow_taker_rows_with_any_orderable_ask")
+    if isinstance(daily_shadow_rows_any_ask, (int, float)):
+        diagnostics["daily_weather_shadow_taker_rows_with_any_orderable_ask"] = int(daily_shadow_rows_any_ask)
+    daily_shadow_edge_count = payload.get("daily_weather_shadow_taker_edge_above_min_count")
+    if isinstance(daily_shadow_edge_count, (int, float)):
+        diagnostics["daily_weather_shadow_taker_edge_above_min_count"] = int(daily_shadow_edge_count)
+    daily_shadow_edge_net_count = payload.get("daily_weather_shadow_taker_edge_net_fees_above_min_count")
+    if isinstance(daily_shadow_edge_net_count, (int, float)):
+        diagnostics["daily_weather_shadow_taker_edge_net_fees_above_min_count"] = int(daily_shadow_edge_net_count)
+    daily_shadow_endpoint_rows = payload.get("daily_weather_shadow_taker_endpoint_orderbook_rows")
+    if isinstance(daily_shadow_endpoint_rows, (int, float)):
+        diagnostics["daily_weather_shadow_taker_endpoint_orderbook_rows"] = int(daily_shadow_endpoint_rows)
+    daily_shadow_best_candidate = payload.get("daily_weather_best_shadow_taker_candidate")
+    if isinstance(daily_shadow_best_candidate, dict):
+        diagnostics["daily_weather_best_shadow_taker_candidate"] = daily_shadow_best_candidate
     daily_allowed_conservative_rows = payload.get("daily_weather_allowed_universe_rows_with_conservative_candidate")
     if isinstance(daily_allowed_conservative_rows, (int, float)):
         diagnostics["daily_weather_allowed_universe_rows_with_conservative_candidate"] = int(
             daily_allowed_conservative_rows
         )
+    daily_endpoint_filtered = payload.get("daily_weather_endpoint_orderbook_filtered")
+    if isinstance(daily_endpoint_filtered, (int, float)):
+        diagnostics["daily_weather_endpoint_orderbook_filtered"] = int(daily_endpoint_filtered)
     daily_failure_counts_raw = payload.get("daily_weather_conservative_candidate_failure_counts")
     if isinstance(daily_failure_counts_raw, dict):
         normalized_daily_failure_counts: dict[str, int] = {}
@@ -1440,8 +1476,33 @@ def _run_step(
             step["daily_weather_quote_stale_max_age_seconds"] = skip_diagnostics.get(
                 "daily_weather_quote_stale_max_age_seconds"
             )
+            step["daily_weather_shadow_taker_rows_total"] = skip_diagnostics.get("daily_weather_shadow_taker_rows_total")
+            step["daily_weather_shadow_taker_rows_with_orderable_yes_ask"] = skip_diagnostics.get(
+                "daily_weather_shadow_taker_rows_with_orderable_yes_ask"
+            )
+            step["daily_weather_shadow_taker_rows_with_orderable_no_ask"] = skip_diagnostics.get(
+                "daily_weather_shadow_taker_rows_with_orderable_no_ask"
+            )
+            step["daily_weather_shadow_taker_rows_with_any_orderable_ask"] = skip_diagnostics.get(
+                "daily_weather_shadow_taker_rows_with_any_orderable_ask"
+            )
+            step["daily_weather_shadow_taker_edge_above_min_count"] = skip_diagnostics.get(
+                "daily_weather_shadow_taker_edge_above_min_count"
+            )
+            step["daily_weather_shadow_taker_edge_net_fees_above_min_count"] = skip_diagnostics.get(
+                "daily_weather_shadow_taker_edge_net_fees_above_min_count"
+            )
+            step["daily_weather_shadow_taker_endpoint_orderbook_rows"] = skip_diagnostics.get(
+                "daily_weather_shadow_taker_endpoint_orderbook_rows"
+            )
+            step["daily_weather_best_shadow_taker_candidate"] = skip_diagnostics.get(
+                "daily_weather_best_shadow_taker_candidate"
+            )
             step["daily_weather_allowed_universe_rows_with_conservative_candidate"] = skip_diagnostics.get(
                 "daily_weather_allowed_universe_rows_with_conservative_candidate"
+            )
+            step["daily_weather_endpoint_orderbook_filtered"] = skip_diagnostics.get(
+                "daily_weather_endpoint_orderbook_filtered"
             )
             step["daily_weather_conservative_candidate_failure_counts"] = skip_diagnostics.get(
                 "daily_weather_conservative_candidate_failure_counts"
@@ -1993,9 +2054,30 @@ def _top_level_no_candidates_diagnostics(step: dict[str, Any] | None) -> dict[st
         "daily_weather_quote_orderability_counts": step.get("daily_weather_quote_orderability_counts"),
         "daily_weather_quote_age_rows_with_timestamp": step.get("daily_weather_quote_age_rows_with_timestamp"),
         "daily_weather_quote_stale_max_age_seconds": step.get("daily_weather_quote_stale_max_age_seconds"),
+        "daily_weather_shadow_taker_rows_total": step.get("daily_weather_shadow_taker_rows_total"),
+        "daily_weather_shadow_taker_rows_with_orderable_yes_ask": step.get(
+            "daily_weather_shadow_taker_rows_with_orderable_yes_ask"
+        ),
+        "daily_weather_shadow_taker_rows_with_orderable_no_ask": step.get(
+            "daily_weather_shadow_taker_rows_with_orderable_no_ask"
+        ),
+        "daily_weather_shadow_taker_rows_with_any_orderable_ask": step.get(
+            "daily_weather_shadow_taker_rows_with_any_orderable_ask"
+        ),
+        "daily_weather_shadow_taker_edge_above_min_count": step.get(
+            "daily_weather_shadow_taker_edge_above_min_count"
+        ),
+        "daily_weather_shadow_taker_edge_net_fees_above_min_count": step.get(
+            "daily_weather_shadow_taker_edge_net_fees_above_min_count"
+        ),
+        "daily_weather_shadow_taker_endpoint_orderbook_rows": step.get(
+            "daily_weather_shadow_taker_endpoint_orderbook_rows"
+        ),
+        "daily_weather_best_shadow_taker_candidate": step.get("daily_weather_best_shadow_taker_candidate"),
         "daily_weather_allowed_universe_rows_with_conservative_candidate": step.get(
             "daily_weather_allowed_universe_rows_with_conservative_candidate"
         ),
+        "daily_weather_endpoint_orderbook_filtered": step.get("daily_weather_endpoint_orderbook_filtered"),
         "daily_weather_conservative_candidate_failure_counts": step.get(
             "daily_weather_conservative_candidate_failure_counts"
         ),
@@ -2034,7 +2116,16 @@ def _top_level_daily_weather_funnel(
             "daily_weather_quote_orderability_counts": None,
             "daily_weather_quote_age_rows_with_timestamp": None,
             "daily_weather_quote_stale_max_age_seconds": None,
+            "daily_weather_shadow_taker_rows_total": None,
+            "daily_weather_shadow_taker_rows_with_orderable_yes_ask": None,
+            "daily_weather_shadow_taker_rows_with_orderable_no_ask": None,
+            "daily_weather_shadow_taker_rows_with_any_orderable_ask": None,
+            "daily_weather_shadow_taker_edge_above_min_count": None,
+            "daily_weather_shadow_taker_edge_net_fees_above_min_count": None,
+            "daily_weather_shadow_taker_endpoint_orderbook_rows": None,
+            "daily_weather_best_shadow_taker_candidate": None,
             "daily_weather_allowed_universe_rows_with_conservative_candidate": None,
+            "daily_weather_endpoint_orderbook_filtered": None,
             "daily_weather_conservative_candidate_failure_counts": None,
             "daily_weather_skip_reason_dominant": None,
             "daily_weather_skip_counts_top": None,
@@ -2084,9 +2175,32 @@ def _top_level_daily_weather_funnel(
         "daily_weather_quote_stale_max_age_seconds": prior_trader_step.get(
             "daily_weather_quote_stale_max_age_seconds"
         ),
+        "daily_weather_shadow_taker_rows_total": prior_trader_step.get("daily_weather_shadow_taker_rows_total"),
+        "daily_weather_shadow_taker_rows_with_orderable_yes_ask": prior_trader_step.get(
+            "daily_weather_shadow_taker_rows_with_orderable_yes_ask"
+        ),
+        "daily_weather_shadow_taker_rows_with_orderable_no_ask": prior_trader_step.get(
+            "daily_weather_shadow_taker_rows_with_orderable_no_ask"
+        ),
+        "daily_weather_shadow_taker_rows_with_any_orderable_ask": prior_trader_step.get(
+            "daily_weather_shadow_taker_rows_with_any_orderable_ask"
+        ),
+        "daily_weather_shadow_taker_edge_above_min_count": prior_trader_step.get(
+            "daily_weather_shadow_taker_edge_above_min_count"
+        ),
+        "daily_weather_shadow_taker_edge_net_fees_above_min_count": prior_trader_step.get(
+            "daily_weather_shadow_taker_edge_net_fees_above_min_count"
+        ),
+        "daily_weather_shadow_taker_endpoint_orderbook_rows": prior_trader_step.get(
+            "daily_weather_shadow_taker_endpoint_orderbook_rows"
+        ),
+        "daily_weather_best_shadow_taker_candidate": prior_trader_step.get(
+            "daily_weather_best_shadow_taker_candidate"
+        ),
         "daily_weather_allowed_universe_rows_with_conservative_candidate": prior_trader_step.get(
             "daily_weather_allowed_universe_rows_with_conservative_candidate"
         ),
+        "daily_weather_endpoint_orderbook_filtered": prior_trader_step.get("daily_weather_endpoint_orderbook_filtered"),
         "daily_weather_conservative_candidate_failure_counts": prior_trader_step.get(
             "daily_weather_conservative_candidate_failure_counts"
         ),
@@ -3179,8 +3293,53 @@ def main() -> int:
             if isinstance(prior_trader_step, dict)
             else None
         ),
+        "daily_weather_shadow_taker_rows_total": (
+            prior_trader_step.get("daily_weather_shadow_taker_rows_total")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        "daily_weather_shadow_taker_rows_with_orderable_yes_ask": (
+            prior_trader_step.get("daily_weather_shadow_taker_rows_with_orderable_yes_ask")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        "daily_weather_shadow_taker_rows_with_orderable_no_ask": (
+            prior_trader_step.get("daily_weather_shadow_taker_rows_with_orderable_no_ask")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        "daily_weather_shadow_taker_rows_with_any_orderable_ask": (
+            prior_trader_step.get("daily_weather_shadow_taker_rows_with_any_orderable_ask")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        "daily_weather_shadow_taker_edge_above_min_count": (
+            prior_trader_step.get("daily_weather_shadow_taker_edge_above_min_count")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        "daily_weather_shadow_taker_edge_net_fees_above_min_count": (
+            prior_trader_step.get("daily_weather_shadow_taker_edge_net_fees_above_min_count")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        "daily_weather_shadow_taker_endpoint_orderbook_rows": (
+            prior_trader_step.get("daily_weather_shadow_taker_endpoint_orderbook_rows")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        "daily_weather_best_shadow_taker_candidate": (
+            prior_trader_step.get("daily_weather_best_shadow_taker_candidate")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
         "daily_weather_allowed_universe_rows_with_conservative_candidate": (
             prior_trader_step.get("daily_weather_allowed_universe_rows_with_conservative_candidate")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        "daily_weather_endpoint_orderbook_filtered": (
+            prior_trader_step.get("daily_weather_endpoint_orderbook_filtered")
             if isinstance(prior_trader_step, dict)
             else None
         ),

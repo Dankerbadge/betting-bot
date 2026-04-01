@@ -256,6 +256,23 @@ def _is_orderable_price(price: float | None) -> bool:
     return price is not None and 0.0 < price < 1.0
 
 
+def _is_endpoint_orderbook_row(row: dict[str, Any]) -> bool:
+    yes_bid = _as_float(row.get("latest_yes_bid_dollars"))
+    yes_ask = _as_float(row.get("latest_yes_ask_dollars"))
+    no_bid = _as_float(row.get("latest_no_bid_dollars"))
+    no_ask = _as_float(row.get("latest_no_ask_dollars"))
+    return (
+        isinstance(yes_bid, float)
+        and isinstance(yes_ask, float)
+        and isinstance(no_bid, float)
+        and isinstance(no_ask, float)
+        and yes_bid <= 0.0
+        and yes_ask <= 0.0
+        and no_bid >= 1.0
+        and no_ask >= 1.0
+    )
+
+
 def _normalize_market_ticker(value: Any) -> str:
     return str(value or "").strip().upper()
 
@@ -524,9 +541,12 @@ def _daily_weather_conservative_candidate_failure_analysis(
     rows: list[dict[str, Any]],
     contracts_per_order: int,
     maker_fee_multiplier_override: float | None,
+    taker_fee_multiplier_override: float | None,
     conservative_fee_rounding: bool,
     captured_at: datetime | None = None,
     quote_stale_max_age_seconds: float | None = None,
+    min_shadow_taker_edge: float = 0.0,
+    min_shadow_taker_edge_net_fees: float = 0.0,
 ) -> dict[str, Any]:
     failure_counts: dict[str, int] = {
         "missing_yes_bid": 0,
@@ -559,6 +579,13 @@ def _daily_weather_conservative_candidate_failure_analysis(
         "rows_with_any_orderable_bid": 0,
         "rows_with_any_orderable_ask": 0,
     }
+    shadow_taker_rows_with_orderable_yes_ask = 0
+    shadow_taker_rows_with_orderable_no_ask = 0
+    shadow_taker_rows_with_any_orderable_ask = 0
+    shadow_taker_edge_above_min_count = 0
+    shadow_taker_edge_net_fees_above_min_count = 0
+    shadow_taker_endpoint_orderbook_rows = 0
+    best_shadow_taker_candidate: dict[str, Any] | None = None
     quote_age_rows_with_timestamp = 0
     captured_at_effective = captured_at or datetime.now(timezone.utc)
     quote_stale_age_seconds = (
@@ -594,6 +621,24 @@ def _daily_weather_conservative_candidate_failure_analysis(
             quote_orderability_counts["has_yes_ask"] += 1
         if no_ask is not None:
             quote_orderability_counts["has_no_ask"] += 1
+        if yes_ask_orderable:
+            shadow_taker_rows_with_orderable_yes_ask += 1
+        if no_ask_orderable:
+            shadow_taker_rows_with_orderable_no_ask += 1
+        if yes_ask_orderable or no_ask_orderable:
+            shadow_taker_rows_with_any_orderable_ask += 1
+
+        if (
+            isinstance(yes_bid, float)
+            and isinstance(yes_ask, float)
+            and isinstance(no_bid, float)
+            and isinstance(no_ask, float)
+            and yes_bid <= 0.0
+            and yes_ask <= 0.0
+            and no_bid >= 1.0
+            and no_ask >= 1.0
+        ):
+            shadow_taker_endpoint_orderbook_rows += 1
 
         fair_yes_mid = _as_float(row.get("fair_yes_probability"))
         fair_no_mid = _as_float(row.get("fair_no_probability"))
@@ -632,6 +677,81 @@ def _daily_weather_conservative_candidate_failure_analysis(
                 quote_age_seconds = max(0.0, (captured_at_effective - latest_capture_dt).total_seconds())
                 if quote_age_seconds > quote_stale_age_seconds:
                     quote_orderability_counts["quote_age_stale"] += 1
+
+        shadow_taker_candidates: list[dict[str, Any]] = []
+        if yes_ask_orderable and fair_yes_mid is not None:
+            yes_edge = _as_float(row.get("edge_to_yes_ask"))
+            yes_edge_net = _as_float(row.get("edge_to_yes_ask_net_fees"))
+            if yes_edge is None:
+                yes_edge = round(float(fair_yes_mid) - float(yes_ask), 6)
+            if yes_edge_net is None:
+                yes_fee = estimate_trade_fee(
+                    price_dollars=float(yes_ask),
+                    contract_count=max(1, contracts_per_order),
+                    is_maker=False,
+                    market_ticker=str(row.get("market_ticker") or "").strip(),
+                    fee_multiplier_override=taker_fee_multiplier_override,
+                    conservative_rounding=conservative_fee_rounding,
+                ).fee_per_contract_dollars
+                yes_edge_net = round(float(yes_edge) - float(yes_fee), 6)
+            shadow_taker_candidates.append(
+                {
+                    "side": "yes",
+                    "ask_price_dollars": round(float(yes_ask), 6),
+                    "edge": round(float(yes_edge), 6),
+                    "edge_net_fees": round(float(yes_edge_net), 6),
+                }
+            )
+        if no_ask_orderable and fair_no_mid is not None:
+            no_edge = _as_float(row.get("edge_to_no_ask"))
+            no_edge_net = _as_float(row.get("edge_to_no_ask_net_fees"))
+            if no_edge is None:
+                no_edge = round(float(fair_no_mid) - float(no_ask), 6)
+            if no_edge_net is None:
+                no_fee = estimate_trade_fee(
+                    price_dollars=float(no_ask),
+                    contract_count=max(1, contracts_per_order),
+                    is_maker=False,
+                    market_ticker=str(row.get("market_ticker") or "").strip(),
+                    fee_multiplier_override=taker_fee_multiplier_override,
+                    conservative_rounding=conservative_fee_rounding,
+                ).fee_per_contract_dollars
+                no_edge_net = round(float(no_edge) - float(no_fee), 6)
+            shadow_taker_candidates.append(
+                {
+                    "side": "no",
+                    "ask_price_dollars": round(float(no_ask), 6),
+                    "edge": round(float(no_edge), 6),
+                    "edge_net_fees": round(float(no_edge_net), 6),
+                }
+            )
+        if shadow_taker_candidates:
+            best_shadow_for_row = max(
+                shadow_taker_candidates,
+                key=lambda item: (float(item.get("edge_net_fees") or -999.0), float(item.get("edge") or -999.0)),
+            )
+            if float(best_shadow_for_row.get("edge") or -999.0) >= float(min_shadow_taker_edge):
+                shadow_taker_edge_above_min_count += 1
+            if float(best_shadow_for_row.get("edge_net_fees") or -999.0) >= float(min_shadow_taker_edge_net_fees):
+                shadow_taker_edge_net_fees_above_min_count += 1
+            best_candidate_rank = (
+                float(best_shadow_for_row.get("edge_net_fees") or -999.0),
+                float(best_shadow_for_row.get("edge") or -999.0),
+            )
+            current_best_rank = (
+                float((best_shadow_taker_candidate or {}).get("edge_net_fees") or -999.0),
+                float((best_shadow_taker_candidate or {}).get("edge") or -999.0),
+            )
+            if best_shadow_taker_candidate is None or best_candidate_rank > current_best_rank:
+                best_shadow_taker_candidate = {
+                    "market_ticker": str(row.get("market_ticker") or "").strip(),
+                    "contract_family": str(row.get("contract_family") or "").strip().lower(),
+                    "side": str(best_shadow_for_row.get("side") or "").strip(),
+                    "ask_price_dollars": best_shadow_for_row.get("ask_price_dollars"),
+                    "edge": best_shadow_for_row.get("edge"),
+                    "edge_net_fees": best_shadow_for_row.get("edge_net_fees"),
+                    "hours_to_close": _as_float(row.get("hours_to_close")),
+                }
 
         yes_candidate = _conservative_maker_candidate_for_side(
             row=row,
@@ -672,6 +792,14 @@ def _daily_weather_conservative_candidate_failure_analysis(
         "quote_orderability_counts": quote_orderability_counts,
         "quote_age_rows_with_timestamp": quote_age_rows_with_timestamp,
         "quote_stale_max_age_seconds": quote_stale_age_seconds,
+        "shadow_taker_rows_total": len(rows),
+        "shadow_taker_rows_with_orderable_yes_ask": shadow_taker_rows_with_orderable_yes_ask,
+        "shadow_taker_rows_with_orderable_no_ask": shadow_taker_rows_with_orderable_no_ask,
+        "shadow_taker_rows_with_any_orderable_ask": shadow_taker_rows_with_any_orderable_ask,
+        "shadow_taker_edge_above_min_count": shadow_taker_edge_above_min_count,
+        "shadow_taker_edge_net_fees_above_min_count": shadow_taker_edge_net_fees_above_min_count,
+        "shadow_taker_endpoint_orderbook_rows": shadow_taker_endpoint_orderbook_rows,
+        "best_shadow_taker_candidate": best_shadow_taker_candidate or {},
     }
 
 
@@ -851,6 +979,7 @@ def build_micro_prior_plans(
         "entry_price_above_max": 0,
         "routine_hours_to_close_above_max": 0,
         "budget_too_small": 0,
+        "daily_weather_endpoint_orderbook": 0,
         "canonical_unmapped": 0,
         "canonical_unmapped_in_allowed_niche_guess": 0,
         "canonical_unmapped_outside_allowed_niche_guess": 0,
@@ -927,10 +1056,16 @@ def build_micro_prior_plans(
         if not row.get("matched_live_market"):
             skip_counts["not_live_matched"] += 1
             continue
+        contract_family = str(row.get("contract_family") or "").strip().lower()
+        if (
+            contract_family in _PRODUCTION_DAILY_WEATHER_CONTRACT_FAMILIES
+            and _is_endpoint_orderbook_row(row)
+        ):
+            skip_counts["daily_weather_endpoint_orderbook"] += 1
+            continue
         if not isinstance(conservative_candidate, dict):
             skip_counts["missing_maker_side"] += 1
             continue
-        contract_family = str(row.get("contract_family") or "").strip().lower()
         weather_station_history_sample_years = _as_int(row.get("weather_station_history_sample_years"))
         weather_station_history_min_sample_years_required = _as_int(
             row.get("weather_station_history_min_sample_years_required")
@@ -1606,9 +1741,12 @@ def run_kalshi_micro_prior_plan(
         rows=daily_weather_rows_all,
         contracts_per_order=contracts_per_order,
         maker_fee_multiplier_override=maker_fee_multiplier_override,
+        taker_fee_multiplier_override=taker_fee_multiplier_override,
         conservative_fee_rounding=conservative_fee_rounding,
         captured_at=captured_at,
         quote_stale_max_age_seconds=_DAILY_WEATHER_QUOTE_STALE_MAX_AGE_SECONDS,
+        min_shadow_taker_edge=min_maker_edge,
+        min_shadow_taker_edge_net_fees=min_maker_edge_net_fees,
     )
     daily_weather_allowed_universe_rows_with_conservative_candidate = sum(
         1
@@ -1831,12 +1969,37 @@ def run_kalshi_micro_prior_plan(
         "daily_weather_quote_stale_max_age_seconds": daily_weather_conservative_candidate_analysis.get(
             "quote_stale_max_age_seconds"
         ),
+        "daily_weather_shadow_taker_rows_total": daily_weather_conservative_candidate_analysis.get(
+            "shadow_taker_rows_total"
+        ),
+        "daily_weather_shadow_taker_rows_with_orderable_yes_ask": daily_weather_conservative_candidate_analysis.get(
+            "shadow_taker_rows_with_orderable_yes_ask"
+        ),
+        "daily_weather_shadow_taker_rows_with_orderable_no_ask": daily_weather_conservative_candidate_analysis.get(
+            "shadow_taker_rows_with_orderable_no_ask"
+        ),
+        "daily_weather_shadow_taker_rows_with_any_orderable_ask": daily_weather_conservative_candidate_analysis.get(
+            "shadow_taker_rows_with_any_orderable_ask"
+        ),
+        "daily_weather_shadow_taker_edge_above_min_count": daily_weather_conservative_candidate_analysis.get(
+            "shadow_taker_edge_above_min_count"
+        ),
+        "daily_weather_shadow_taker_edge_net_fees_above_min_count": daily_weather_conservative_candidate_analysis.get(
+            "shadow_taker_edge_net_fees_above_min_count"
+        ),
+        "daily_weather_shadow_taker_endpoint_orderbook_rows": daily_weather_conservative_candidate_analysis.get(
+            "shadow_taker_endpoint_orderbook_rows"
+        ),
+        "daily_weather_best_shadow_taker_candidate": daily_weather_conservative_candidate_analysis.get(
+            "best_shadow_taker_candidate"
+        ),
         "daily_weather_conservative_candidate_failure_counts": daily_weather_conservative_candidate_analysis.get(
             "failure_counts"
         ),
         "daily_weather_allowed_universe_rows_with_conservative_candidate": (
             daily_weather_allowed_universe_rows_with_conservative_candidate
         ),
+        "daily_weather_endpoint_orderbook_filtered": int(skip_counts.get("daily_weather_endpoint_orderbook", 0)),
         "daily_weather_planned_orders": daily_weather_planned_orders,
         "allowed_universe_skip_counts": allowed_universe_skip_profile.get("skip_counts"),
         "allowed_universe_skip_counts_total": allowed_universe_skip_profile.get("skip_counts_total"),

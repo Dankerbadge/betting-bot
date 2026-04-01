@@ -327,6 +327,18 @@ class KalshiMicroPriorPlanTests(unittest.TestCase):
             self.assertEqual(summary["daily_weather_quote_orderability_counts"]["has_no_ask"], 1)
             self.assertEqual(summary["daily_weather_quote_orderability_counts"]["rows_with_any_orderable_bid"], 1)
             self.assertEqual(summary["daily_weather_quote_orderability_counts"]["rows_with_any_orderable_ask"], 1)
+            self.assertEqual(summary["daily_weather_shadow_taker_rows_total"], 2)
+            self.assertEqual(summary["daily_weather_shadow_taker_rows_with_orderable_yes_ask"], 1)
+            self.assertEqual(summary["daily_weather_shadow_taker_rows_with_orderable_no_ask"], 1)
+            self.assertEqual(summary["daily_weather_shadow_taker_rows_with_any_orderable_ask"], 1)
+            self.assertEqual(summary["daily_weather_shadow_taker_edge_above_min_count"], 1)
+            self.assertEqual(summary["daily_weather_shadow_taker_edge_net_fees_above_min_count"], 1)
+            self.assertEqual(summary["daily_weather_shadow_taker_endpoint_orderbook_rows"], 0)
+            self.assertEqual(summary["daily_weather_endpoint_orderbook_filtered"], 0)
+            self.assertEqual(
+                summary["daily_weather_best_shadow_taker_candidate"]["market_ticker"],
+                "KXRAINNYC-26MAR30A",
+            )
             self.assertEqual(
                 summary["daily_weather_conservative_candidate_failure_counts"]["missing_yes_bid"],
                 1,
@@ -437,6 +449,42 @@ class KalshiMicroPriorPlanTests(unittest.TestCase):
         self.assertEqual(len(plans), 1)
         self.assertEqual(plans[0]["market_ticker"], "KXRAIN-HEALTHY")
         self.assertEqual(skip_counts["weather_history_unhealthy"], 1)
+
+    def test_build_micro_prior_plans_filters_endpoint_daily_weather_orderbooks(self) -> None:
+        plans, skip_counts = build_micro_prior_plans(
+            enriched_rows=[
+                {
+                    "market_ticker": "KXRAIN-ENDPOINT",
+                    "market_title": "Endpoint Daily Rain",
+                    "category": "Climate and Weather",
+                    "close_time": "2026-04-01T03:59:00Z",
+                    "hours_to_close": 8.0,
+                    "contract_family": "daily_rain",
+                    "matched_live_market": True,
+                    "latest_yes_bid_dollars": 0.0,
+                    "latest_yes_ask_dollars": 0.0,
+                    "latest_no_bid_dollars": 1.0,
+                    "latest_no_ask_dollars": 1.0,
+                    "fair_yes_probability": 0.51,
+                    "fair_yes_probability_conservative": 0.51,
+                    "fair_no_probability": 0.49,
+                    "fair_no_probability_conservative": 0.49,
+                    "confidence": 0.74,
+                    "evidence_count": 5,
+                    "thesis": "Should be filtered before maker-side checks.",
+                },
+            ],
+            planning_bankroll_dollars=40.0,
+            daily_risk_cap_dollars=3.0,
+            contracts_per_order=1,
+            max_orders=1,
+            min_maker_edge=0.005,
+            max_entry_price_dollars=0.99,
+        )
+
+        self.assertEqual(plans, [])
+        self.assertEqual(skip_counts["daily_weather_endpoint_orderbook"], 1)
+        self.assertEqual(skip_counts["missing_maker_side"], 0)
 
     def test_build_micro_prior_plans_ranks_by_maker_edge_not_taker_edge(self) -> None:
         plans, _ = build_micro_prior_plans(
