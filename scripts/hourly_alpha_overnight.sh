@@ -633,6 +633,8 @@ def _load_daily_weather_tickers_from_priors(
             "selected_tickers": [],
             "tradable_tickers": [],
             "watch_tickers": [],
+            "ranked_watch_tickers": [],
+            "watch_hours_to_close_by_ticker": {},
             "watch_tickers_selected": [],
             "lane_by_ticker": {},
             "has_orderable_side_by_ticker": {},
@@ -766,6 +768,12 @@ def _load_daily_weather_tickers_from_priors(
         "selected_tickers": selected_tickers,
         "tradable_tickers": tradable_tickers,
         "watch_tickers": watch_tickers,
+        "ranked_watch_tickers": ranked_watch_tickers,
+        "watch_hours_to_close_by_ticker": {
+            ticker: prior_hours_to_close_by_ticker.get(ticker)
+            for ticker in ranked_watch_tickers
+            if ticker in prior_hours_to_close_by_ticker
+        },
         "watch_tickers_selected": selected_watch_tickers,
         "lane_by_ticker": lane_by_ticker,
         "has_orderable_side_by_ticker": has_orderable_side_by_ticker,
@@ -1127,6 +1135,145 @@ def _run_daily_weather_ticker_refresh(
         "rows_appended": rows_appended,
         "append_error": append_error,
         "fetch_errors": fetch_errors[:20],
+    }
+
+
+def _run_daily_weather_micro_watch(
+    *,
+    env_values: dict[str, str],
+    priors_csv: Path,
+    history_csv: Path,
+    allowed_contract_families: list[str],
+    timeout_seconds: float,
+    max_markets: int,
+    captured_at: datetime,
+    poll_interval_seconds: float,
+    max_polls: int,
+    active_hours_to_close: float,
+    include_unknown_hours_to_close: bool,
+) -> dict[str, Any]:
+    watch_plan = _load_daily_weather_tickers_from_priors(
+        priors_csv=priors_csv,
+        allowed_contract_families=allowed_contract_families,
+        max_markets=max_markets,
+    )
+    ranked_watch_tickers = list(watch_plan.get("ranked_watch_tickers") or watch_plan.get("watch_tickers") or [])
+    watch_hours_to_close_by_ticker_raw = dict(watch_plan.get("watch_hours_to_close_by_ticker") or {})
+    ticker_stats_by_ticker = dict(watch_plan.get("ticker_stats_by_ticker") or {})
+    watch_hours_to_close_by_ticker = {
+        str(ticker).strip().upper(): _parse_float(value)
+        for ticker, value in watch_hours_to_close_by_ticker_raw.items()
+        if str(ticker).strip()
+    }
+    watch_hours_effective_by_ticker: dict[str, float | None] = {}
+    for ticker in ranked_watch_tickers:
+        ticker_key = str(ticker or "").strip().upper()
+        if not ticker_key:
+            continue
+        ticker_hours = watch_hours_to_close_by_ticker.get(ticker_key)
+        if not isinstance(ticker_hours, float):
+            ticker_hours = _parse_float(
+                dict(ticker_stats_by_ticker.get(ticker_key) or {}).get("last_hours_to_close")
+            )
+        watch_hours_effective_by_ticker[ticker_key] = ticker_hours
+    watch_total = len(ranked_watch_tickers)
+    active_watch_tickers: list[str] = []
+    for ticker in ranked_watch_tickers:
+        ticker_hours = watch_hours_effective_by_ticker.get(ticker)
+        if isinstance(ticker_hours, float):
+            if ticker_hours < 0.0:
+                continue
+            if ticker_hours <= max(0.0, float(active_hours_to_close)):
+                active_watch_tickers.append(ticker)
+            continue
+        if include_unknown_hours_to_close:
+            active_watch_tickers.append(ticker)
+
+    selected_watch_tickers = active_watch_tickers[: max(1, int(max_markets))]
+    polls_planned = max(1, int(max_polls))
+    poll_steps: list[dict[str, Any]] = []
+    wakeup_transition_tickers: list[str] = []
+    wakeup_transition_seen: set[str] = set()
+    wakeup_detected_at_poll: int | None = None
+
+    for poll_index, _ in enumerate(range(polls_planned), start=1):
+        if not selected_watch_tickers:
+            break
+        poll_step = _run_daily_weather_ticker_refresh(
+            env_values=env_values,
+            priors_csv=priors_csv,
+            history_csv=history_csv,
+            allowed_contract_families=allowed_contract_families,
+            timeout_seconds=timeout_seconds,
+            max_markets=max(1, len(selected_watch_tickers)),
+            captured_at=captured_at,
+            explicit_market_tickers=selected_watch_tickers,
+        )
+        poll_step["name"] = f"daily_weather_ticker_refresh_micro_watch_{poll_index}"
+        poll_step["micro_watch_poll_index"] = poll_index
+        poll_step["micro_watch_poll_total"] = polls_planned
+        poll_step["micro_watch_selected_tickers"] = selected_watch_tickers
+        poll_steps.append(poll_step)
+
+        for value in poll_step.get("endpoint_to_orderable_transition_tickers") or []:
+            ticker = str(value or "").strip().upper()
+            if not ticker or ticker in wakeup_transition_seen:
+                continue
+            wakeup_transition_seen.add(ticker)
+            wakeup_transition_tickers.append(ticker)
+        if wakeup_transition_tickers and wakeup_detected_at_poll is None:
+            wakeup_detected_at_poll = poll_index
+            break
+
+        if poll_index < polls_planned and float(poll_interval_seconds) > 0.0:
+            time.sleep(float(poll_interval_seconds))
+
+    status = "ready_no_wakeup"
+    reason = "micro_watch_completed_without_wakeup"
+    if watch_total == 0:
+        status = "skipped_no_watch_tickers"
+        reason = "no_watch_tickers_available"
+    elif not active_watch_tickers:
+        status = "skipped_no_active_window"
+        reason = "watch_tickers_outside_active_window"
+    elif wakeup_transition_tickers:
+        status = "wakeup_detected"
+        reason = "endpoint_to_orderable_transition_detected"
+    elif poll_steps and all(str(step.get("status") or "").strip().lower() == "upstream_error" for step in poll_steps):
+        status = "upstream_error"
+        reason = "micro_watch_all_polls_upstream_error"
+
+    summary_step = _synthetic_step(
+        name="daily_weather_micro_watch",
+        status=status,
+        ok=True,
+        reason=reason,
+        payload={
+            "watch_total": watch_total,
+            "active_watch_tickers_count": len(active_watch_tickers),
+            "active_watch_tickers": active_watch_tickers[:30],
+            "selected_watch_tickers_count": len(selected_watch_tickers),
+            "selected_watch_tickers": selected_watch_tickers,
+            "polls_planned": polls_planned,
+            "polls_completed": len(poll_steps),
+            "poll_interval_seconds": round(float(poll_interval_seconds), 3),
+            "active_hours_to_close": round(float(active_hours_to_close), 6),
+            "include_unknown_hours_to_close": bool(include_unknown_hours_to_close),
+            "watch_hours_to_close_by_ticker": {
+                ticker: watch_hours_effective_by_ticker.get(ticker)
+                for ticker in selected_watch_tickers
+            },
+            "watch_priority_candidates": list(watch_plan.get("watch_priority_candidates") or []),
+            "wakeup_transition_count": len(wakeup_transition_tickers),
+            "wakeup_transition_tickers": wakeup_transition_tickers[:25],
+            "wakeup_detected_at_poll": wakeup_detected_at_poll,
+        },
+    )
+    return {
+        "poll_steps": poll_steps,
+        "summary_step": summary_step,
+        "wakeup_transition_tickers": wakeup_transition_tickers,
+        "watch_plan": watch_plan,
     }
 
 
@@ -3142,11 +3289,37 @@ def main() -> int:
         os.environ.get("BETBOT_DAILY_WEATHER_WAKEUP_REPRIORITIZE_ENABLED"),
         default=True,
     )
+    daily_weather_micro_watch_enabled = _is_enabled(
+        os.environ.get("BETBOT_DAILY_WEATHER_MICRO_WATCH_ENABLED"),
+        default=True,
+    )
+    daily_weather_micro_watch_interval_seconds = max(
+        0.0,
+        float(os.environ.get("BETBOT_DAILY_WEATHER_MICRO_WATCH_INTERVAL_SECONDS", "180")),
+    )
+    daily_weather_micro_watch_max_polls = max(
+        1,
+        int(os.environ.get("BETBOT_DAILY_WEATHER_MICRO_WATCH_MAX_POLLS", "4")),
+    )
+    daily_weather_micro_watch_active_hours_to_close = max(
+        0.0,
+        float(os.environ.get("BETBOT_DAILY_WEATHER_MICRO_WATCH_ACTIVE_HOURS_TO_CLOSE", "2")),
+    )
+    daily_weather_micro_watch_max_markets = max(
+        1,
+        int(os.environ.get("BETBOT_DAILY_WEATHER_MICRO_WATCH_MAX_MARKETS", "12")),
+    )
+    daily_weather_micro_watch_include_unknown_hours_to_close = _is_enabled(
+        os.environ.get("BETBOT_DAILY_WEATHER_MICRO_WATCH_INCLUDE_UNKNOWN_HOURS_TO_CLOSE"),
+        default=False,
+    )
     daily_weather_ticker_refresh_on_base_capture = _is_enabled(
         os.environ.get("BETBOT_DAILY_WEATHER_TICKER_REFRESH_ON_BASE_CAPTURE"),
         default=True,
     )
     base_refresh_step: dict[str, Any] | None = None
+    micro_watch_step: dict[str, Any] | None = None
+    micro_watch_poll_steps: list[dict[str, Any]] = []
     wakeup_burst_step: dict[str, Any] | None = None
     if daily_weather_ticker_refresh_enabled and daily_weather_ticker_refresh_on_base_capture:
         base_refresh_step = _run_daily_weather_ticker_refresh(
@@ -3180,21 +3353,56 @@ def main() -> int:
             )
         )
 
-    base_wakeup_transition_tickers: list[str] = []
-    if isinstance(base_refresh_step, dict):
-        base_wakeup_transition_tickers = [
-            str(value or "").strip().upper()
-            for value in (base_refresh_step.get("endpoint_to_orderable_transition_tickers") or [])
-            if str(value or "").strip()
-        ]
+    if daily_weather_micro_watch_enabled and daily_weather_ticker_refresh_enabled:
+        micro_watch_result = _run_daily_weather_micro_watch(
+            env_values=env_file_values,
+            priors_csv=priors_csv,
+            history_csv=history_csv,
+            allowed_contract_families=allowed_weather_contract_families,
+            timeout_seconds=max(1.0, float(os.environ.get("BETBOT_TIMEOUT_SECONDS", "15"))),
+            max_markets=daily_weather_micro_watch_max_markets,
+            captured_at=datetime.now(timezone.utc),
+            poll_interval_seconds=daily_weather_micro_watch_interval_seconds,
+            max_polls=daily_weather_micro_watch_max_polls,
+            active_hours_to_close=daily_weather_micro_watch_active_hours_to_close,
+            include_unknown_hours_to_close=daily_weather_micro_watch_include_unknown_hours_to_close,
+        )
+        micro_watch_poll_steps = list(micro_watch_result.get("poll_steps") or [])
+        for poll_step in micro_watch_poll_steps:
+            steps.append(poll_step)
+        micro_watch_step = (
+            micro_watch_result.get("summary_step")
+            if isinstance(micro_watch_result.get("summary_step"), dict)
+            else None
+        )
+        if isinstance(micro_watch_step, dict):
+            steps.append(micro_watch_step)
+    elif daily_weather_micro_watch_enabled:
+        micro_watch_step = _synthetic_step(
+            name="daily_weather_micro_watch",
+            status="skipped_daily_weather_ticker_refresh_disabled",
+            ok=True,
+            reason="daily_weather_ticker_refresh_disabled",
+        )
+        steps.append(micro_watch_step)
+    else:
+        micro_watch_step = _synthetic_step(
+            name="daily_weather_micro_watch",
+            status="skipped_disabled",
+            ok=True,
+            reason="daily_weather_micro_watch_disabled",
+        )
+        steps.append(micro_watch_step)
+
+    wakeup_transition_tickers_before_burst = _collect_wakeup_transition_tickers(steps)
     if (
         daily_weather_wakeup_burst_enabled
         and daily_weather_ticker_refresh_enabled
-        and base_wakeup_transition_tickers
+        and wakeup_transition_tickers_before_burst
     ):
         if daily_weather_wakeup_burst_sleep_seconds > 0:
             time.sleep(daily_weather_wakeup_burst_sleep_seconds)
-        wakeup_burst_tickers = base_wakeup_transition_tickers[:daily_weather_wakeup_burst_max_markets]
+        wakeup_burst_tickers = wakeup_transition_tickers_before_burst[:daily_weather_wakeup_burst_max_markets]
         wakeup_burst_step = _run_daily_weather_ticker_refresh(
             env_values=env_file_values,
             priors_csv=priors_csv,
@@ -3662,6 +3870,10 @@ def main() -> int:
     )
     daily_weather_ticker_refresh_base_step = next(
         (step for step in steps if str(step.get("name") or "").strip() == "daily_weather_ticker_refresh_base"),
+        None,
+    )
+    micro_watch_step = next(
+        (step for step in reversed(steps) if str(step.get("name") or "").strip() == "daily_weather_micro_watch"),
         None,
     )
     wakeup_burst_step = next(
@@ -4157,10 +4369,68 @@ def main() -> int:
         "daily_weather_wakeup_burst_max_markets": daily_weather_wakeup_burst_max_markets,
         "daily_weather_wakeup_burst_sleep_seconds": daily_weather_wakeup_burst_sleep_seconds,
         "daily_weather_wakeup_reprioritize_enabled": daily_weather_wakeup_reprioritize_enabled,
+        "daily_weather_micro_watch_enabled": daily_weather_micro_watch_enabled,
+        "daily_weather_micro_watch_interval_seconds": daily_weather_micro_watch_interval_seconds,
+        "daily_weather_micro_watch_max_polls": daily_weather_micro_watch_max_polls,
+        "daily_weather_micro_watch_active_hours_to_close": daily_weather_micro_watch_active_hours_to_close,
+        "daily_weather_micro_watch_max_markets": daily_weather_micro_watch_max_markets,
+        "daily_weather_micro_watch_include_unknown_hours_to_close": (
+            daily_weather_micro_watch_include_unknown_hours_to_close
+        ),
         "daily_weather_watch_wakeup_count": len(wakeup_transition_tickers),
         "daily_weather_watch_wakeup_tickers": wakeup_transition_tickers[:25],
         "daily_weather_watch_wakeup_to_candidate_count": wakeup_to_candidate_count,
         "daily_weather_watch_wakeup_to_planned_order_count": wakeup_to_planned_order_count,
+        "daily_weather_micro_watch_status": (
+            micro_watch_step.get("status")
+            if isinstance(micro_watch_step, dict)
+            else None
+        ),
+        "daily_weather_micro_watch_reason": (
+            micro_watch_step.get("reason")
+            if isinstance(micro_watch_step, dict)
+            else None
+        ),
+        "daily_weather_micro_watch_watch_total": (
+            micro_watch_step.get("watch_total")
+            if isinstance(micro_watch_step, dict)
+            else None
+        ),
+        "daily_weather_micro_watch_active_watch_tickers_count": (
+            micro_watch_step.get("active_watch_tickers_count")
+            if isinstance(micro_watch_step, dict)
+            else None
+        ),
+        "daily_weather_micro_watch_selected_watch_tickers_count": (
+            micro_watch_step.get("selected_watch_tickers_count")
+            if isinstance(micro_watch_step, dict)
+            else None
+        ),
+        "daily_weather_micro_watch_selected_watch_tickers": (
+            micro_watch_step.get("selected_watch_tickers")
+            if isinstance(micro_watch_step, dict)
+            else None
+        ),
+        "daily_weather_micro_watch_polls_planned": (
+            micro_watch_step.get("polls_planned")
+            if isinstance(micro_watch_step, dict)
+            else None
+        ),
+        "daily_weather_micro_watch_polls_completed": (
+            micro_watch_step.get("polls_completed")
+            if isinstance(micro_watch_step, dict)
+            else None
+        ),
+        "daily_weather_micro_watch_wakeup_transition_count": (
+            micro_watch_step.get("wakeup_transition_count")
+            if isinstance(micro_watch_step, dict)
+            else None
+        ),
+        "daily_weather_micro_watch_wakeup_transition_tickers": (
+            micro_watch_step.get("wakeup_transition_tickers")
+            if isinstance(micro_watch_step, dict)
+            else None
+        ),
         "daily_weather_ticker_refresh_base_status": (
             daily_weather_ticker_refresh_base_step.get("status")
             if isinstance(daily_weather_ticker_refresh_base_step, dict)
