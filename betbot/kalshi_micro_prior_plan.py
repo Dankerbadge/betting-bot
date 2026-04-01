@@ -256,21 +256,25 @@ def _is_orderable_price(price: float | None) -> bool:
     return price is not None and 0.0 < price < 1.0
 
 
+def _is_endpoint_quote(price: float | None) -> bool:
+    return price is not None and (price <= 0.0 or price >= 1.0)
+
+
 def _is_endpoint_orderbook_row(row: dict[str, Any]) -> bool:
     yes_bid = _as_float(row.get("latest_yes_bid_dollars"))
     yes_ask = _as_float(row.get("latest_yes_ask_dollars"))
     no_bid = _as_float(row.get("latest_no_bid_dollars"))
     no_ask = _as_float(row.get("latest_no_ask_dollars"))
-    return (
-        isinstance(yes_bid, float)
-        and isinstance(yes_ask, float)
-        and isinstance(no_bid, float)
-        and isinstance(no_ask, float)
-        and yes_bid <= 0.0
-        and yes_ask <= 0.0
-        and no_bid >= 1.0
-        and no_ask >= 1.0
-    )
+    quotes_present = [
+        value
+        for value in (yes_bid, yes_ask, no_bid, no_ask)
+        if isinstance(value, float)
+    ]
+    if not quotes_present:
+        return False
+    if any(_is_orderable_price(value) for value in quotes_present):
+        return False
+    return all(_is_endpoint_quote(value) for value in quotes_present)
 
 
 def _normalize_market_ticker(value: Any) -> str:
@@ -628,16 +632,7 @@ def _daily_weather_conservative_candidate_failure_analysis(
         if yes_ask_orderable or no_ask_orderable:
             shadow_taker_rows_with_any_orderable_ask += 1
 
-        if (
-            isinstance(yes_bid, float)
-            and isinstance(yes_ask, float)
-            and isinstance(no_bid, float)
-            and isinstance(no_ask, float)
-            and yes_bid <= 0.0
-            and yes_ask <= 0.0
-            and no_bid >= 1.0
-            and no_ask >= 1.0
-        ):
+        if _is_endpoint_orderbook_row(row):
             shadow_taker_endpoint_orderbook_rows += 1
 
         fair_yes_mid = _as_float(row.get("fair_yes_probability"))

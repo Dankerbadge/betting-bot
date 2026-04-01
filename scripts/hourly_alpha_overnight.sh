@@ -33,6 +33,9 @@ export BETBOT_DAILY_WEATHER_STALE_RECOVERY_SLEEP_SECONDS="${BETBOT_DAILY_WEATHER
 export BETBOT_DAILY_WEATHER_TICKER_REFRESH_ENABLED="${BETBOT_DAILY_WEATHER_TICKER_REFRESH_ENABLED:-1}"
 export BETBOT_DAILY_WEATHER_TICKER_REFRESH_MAX_MARKETS="${BETBOT_DAILY_WEATHER_TICKER_REFRESH_MAX_MARKETS:-20}"
 export BETBOT_DAILY_WEATHER_TICKER_REFRESH_ON_BASE_CAPTURE="${BETBOT_DAILY_WEATHER_TICKER_REFRESH_ON_BASE_CAPTURE:-1}"
+export BETBOT_DAILY_WEATHER_TICKER_REFRESH_WATCH_MAX_MARKETS="${BETBOT_DAILY_WEATHER_TICKER_REFRESH_WATCH_MAX_MARKETS:-4}"
+export BETBOT_DAILY_WEATHER_TICKER_REFRESH_WATCH_INTERVAL_RUNS="${BETBOT_DAILY_WEATHER_TICKER_REFRESH_WATCH_INTERVAL_RUNS:-3}"
+export BETBOT_DAILY_WEATHER_TICKER_REFRESH_STATE_FILE="${BETBOT_DAILY_WEATHER_TICKER_REFRESH_STATE_FILE:-$BETBOT_OUTPUT_DIR/overnight_alpha/daily_weather_ticker_refresh_state.json}"
 export BETBOT_DAILY_WEATHER_RECOVERY_ALERT_WINDOW_HOURS="${BETBOT_DAILY_WEATHER_RECOVERY_ALERT_WINDOW_HOURS:-6}"
 export BETBOT_DAILY_WEATHER_RECOVERY_ALERT_THRESHOLD="${BETBOT_DAILY_WEATHER_RECOVERY_ALERT_THRESHOLD:-3}"
 export BETBOT_DAILY_WEATHER_RECOVERY_ALERT_MAX_EVENTS="${BETBOT_DAILY_WEATHER_RECOVERY_ALERT_MAX_EVENTS:-500}"
@@ -434,16 +437,138 @@ def _http_get_json_url(url: str, timeout_seconds: float) -> tuple[int, Any]:
         return status, {"raw_text": payload_text[:400]}
 
 
+def _is_orderable_price(price: float | None) -> bool:
+    return isinstance(price, float) and 0.0 < price < 1.0
+
+
+def _is_endpoint_quote(price: float | None) -> bool:
+    return isinstance(price, float) and (price <= 0.0 or price >= 1.0)
+
+
+def _classify_daily_weather_lane_from_quotes(
+    *,
+    yes_bid: float | None,
+    no_bid: float | None,
+    yes_ask: float | None,
+    no_ask: float | None,
+) -> dict[str, Any]:
+    quotes_present = [value for value in (yes_bid, no_bid, yes_ask, no_ask) if isinstance(value, float)]
+    has_orderable_bid = _is_orderable_price(yes_bid) or _is_orderable_price(no_bid)
+    has_orderable_ask = _is_orderable_price(yes_ask) or _is_orderable_price(no_ask)
+    has_orderable_side = has_orderable_bid or has_orderable_ask
+    endpoint_only = (
+        bool(quotes_present)
+        and not has_orderable_side
+        and all(_is_endpoint_quote(value) for value in quotes_present)
+    )
+    lane = "watch_endpoint_only" if endpoint_only else "tradable"
+    return {
+        "lane": lane,
+        "quotes_present_count": len(quotes_present),
+        "has_orderable_bid": has_orderable_bid,
+        "has_orderable_ask": has_orderable_ask,
+        "has_orderable_side": has_orderable_side,
+        "endpoint_only": endpoint_only,
+    }
+
+
+def _load_daily_weather_refresh_state(path: Path) -> dict[str, Any]:
+    payload = _load_json(path)
+    if not isinstance(payload, dict):
+        return {
+            "run_counter": 0,
+            "watch_cursor": 0,
+            "lane_by_ticker": {},
+            "has_orderable_side_by_ticker": {},
+        }
+    lane_by_ticker = payload.get("lane_by_ticker")
+    if not isinstance(lane_by_ticker, dict):
+        lane_by_ticker = {}
+    has_orderable_side_by_ticker = payload.get("has_orderable_side_by_ticker")
+    if not isinstance(has_orderable_side_by_ticker, dict):
+        has_orderable_side_by_ticker = {}
+    run_counter_raw = payload.get("run_counter")
+    watch_cursor_raw = payload.get("watch_cursor")
+    run_counter = int(run_counter_raw) if isinstance(run_counter_raw, (int, float)) else 0
+    watch_cursor = int(watch_cursor_raw) if isinstance(watch_cursor_raw, (int, float)) else 0
+    return {
+        "run_counter": max(0, run_counter),
+        "watch_cursor": max(0, watch_cursor),
+        "lane_by_ticker": lane_by_ticker,
+        "has_orderable_side_by_ticker": has_orderable_side_by_ticker,
+    }
+
+
+def _write_daily_weather_refresh_state(path: Path, payload: dict[str, Any]) -> str | None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        return None
+    except Exception as exc:  # pragma: no cover - best effort persistence
+        return str(exc)
+
+
+def _classify_daily_weather_lane_from_prior_row(row: dict[str, Any]) -> dict[str, Any]:
+    yes_bid = _parse_float(row.get("latest_yes_bid_dollars"))
+    no_bid = _parse_float(row.get("latest_no_bid_dollars"))
+    yes_ask = _parse_float(row.get("latest_yes_ask_dollars"))
+    no_ask = _parse_float(row.get("latest_no_ask_dollars"))
+    return _classify_daily_weather_lane_from_quotes(
+        yes_bid=yes_bid,
+        no_bid=no_bid,
+        yes_ask=yes_ask,
+        no_ask=no_ask,
+    )
+
+
 def _load_daily_weather_tickers_from_priors(
     *,
     priors_csv: Path,
     allowed_contract_families: list[str],
     max_markets: int,
-) -> list[str]:
+) -> dict[str, Any]:
     if not priors_csv.exists():
-        return []
+        return {
+            "selected_tickers": [],
+            "tradable_tickers": [],
+            "watch_tickers": [],
+            "watch_tickers_selected": [],
+            "lane_by_ticker": {},
+            "has_orderable_side_by_ticker": {},
+            "lane_counts": {},
+            "watch_refresh_due": False,
+            "watch_refresh_reason": "priors_missing",
+            "watch_refresh_interval_runs": 1,
+            "watch_max_markets": 0,
+            "watch_cursor_before": 0,
+            "watch_cursor_after": 0,
+            "state_run_counter": 0,
+            "state_write_error": None,
+            "endpoint_to_orderable_transition_count": 0,
+            "endpoint_to_orderable_transition_tickers": [],
+        }
     allowed_set = {str(value or "").strip().lower() for value in allowed_contract_families if str(value or "").strip()}
-    tickers: list[str] = []
+    max_markets_effective = max(1, int(max_markets))
+    max_watch_markets = max(0, int(os.environ.get("BETBOT_DAILY_WEATHER_TICKER_REFRESH_WATCH_MAX_MARKETS", "4")))
+    watch_interval_runs = max(1, int(os.environ.get("BETBOT_DAILY_WEATHER_TICKER_REFRESH_WATCH_INTERVAL_RUNS", "3")))
+    state_path = Path(
+        str(
+            os.environ.get("BETBOT_DAILY_WEATHER_TICKER_REFRESH_STATE_FILE")
+            or (Path(os.environ["BETBOT_OUTPUT_DIR"]) / "overnight_alpha" / "daily_weather_ticker_refresh_state.json")
+        )
+    )
+    state_before = _load_daily_weather_refresh_state(state_path)
+    state_run_counter = int(state_before.get("run_counter") or 0) + 1
+    watch_cursor_before = int(state_before.get("watch_cursor") or 0)
+    prev_lane_by_ticker = dict(state_before.get("lane_by_ticker") or {})
+    prev_has_orderable_side_by_ticker = dict(state_before.get("has_orderable_side_by_ticker") or {})
+
+    tradable_tickers: list[str] = []
+    watch_tickers: list[str] = []
+    lane_by_ticker: dict[str, str] = {}
+    has_orderable_side_by_ticker: dict[str, bool] = {}
+    lane_counts: dict[str, int] = {}
+    endpoint_to_orderable_tickers: list[str] = []
     seen: set[str] = set()
     with priors_csv.open("r", newline="", encoding="utf-8") as handle:
         for row in csv.DictReader(handle):
@@ -454,10 +579,74 @@ def _load_daily_weather_tickers_from_priors(
             if not ticker or ticker in seen:
                 continue
             seen.add(ticker)
-            tickers.append(ticker)
-            if len(tickers) >= max(1, int(max_markets)):
-                break
-    return tickers
+            lane_info = _classify_daily_weather_lane_from_prior_row(row)
+            lane = str(lane_info.get("lane") or "tradable")
+            has_orderable_side = bool(lane_info.get("has_orderable_side"))
+            quotes_present_count = int(lane_info.get("quotes_present_count") or 0)
+            if (
+                quotes_present_count == 0
+                and not has_orderable_side
+                and str(prev_lane_by_ticker.get(ticker) or "").strip()
+            ):
+                lane = str(prev_lane_by_ticker.get(ticker) or lane)
+                has_orderable_side = bool(prev_has_orderable_side_by_ticker.get(ticker))
+            lane_by_ticker[ticker] = lane
+            has_orderable_side_by_ticker[ticker] = has_orderable_side
+            lane_counts[lane] = int(lane_counts.get(lane, 0)) + 1
+            if lane == "watch_endpoint_only":
+                watch_tickers.append(ticker)
+            else:
+                tradable_tickers.append(ticker)
+            if (
+                str(prev_lane_by_ticker.get(ticker) or "") == "watch_endpoint_only"
+                and bool(prev_has_orderable_side_by_ticker.get(ticker))
+                is False
+                and has_orderable_side
+            ):
+                endpoint_to_orderable_tickers.append(ticker)
+
+    watch_refresh_due = (state_run_counter % watch_interval_runs == 0) or not tradable_tickers
+    watch_refresh_reason = "interval_due" if (state_run_counter % watch_interval_runs == 0) else "interval_not_due"
+    if not tradable_tickers:
+        watch_refresh_reason = "no_tradable_tickers"
+    selected_watch_tickers: list[str] = []
+    watch_cursor_after = watch_cursor_before
+    if watch_refresh_due and watch_tickers and max_watch_markets > 0:
+        watch_take = min(max_watch_markets, max_markets_effective)
+        start = watch_cursor_before % len(watch_tickers)
+        for index in range(watch_take):
+            selected_watch_tickers.append(watch_tickers[(start + index) % len(watch_tickers)])
+        watch_cursor_after = (start + len(selected_watch_tickers)) % len(watch_tickers)
+
+    selected_tickers = list(tradable_tickers[:max_markets_effective])
+    remaining_slots = max(0, max_markets_effective - len(selected_tickers))
+    if remaining_slots > 0 and selected_watch_tickers:
+        selected_tickers.extend(selected_watch_tickers[:remaining_slots])
+    selected_tickers = selected_tickers[:max_markets_effective]
+
+    state_write_error = None
+    return {
+        "selected_tickers": selected_tickers,
+        "tradable_tickers": tradable_tickers,
+        "watch_tickers": watch_tickers,
+        "watch_tickers_selected": selected_watch_tickers,
+        "lane_by_ticker": lane_by_ticker,
+        "has_orderable_side_by_ticker": has_orderable_side_by_ticker,
+        "lane_counts": lane_counts,
+        "watch_refresh_due": watch_refresh_due,
+        "watch_refresh_reason": watch_refresh_reason,
+        "watch_refresh_interval_runs": watch_interval_runs,
+        "watch_max_markets": max_watch_markets,
+        "watch_cursor_before": watch_cursor_before,
+        "watch_cursor_after": watch_cursor_after,
+        "state_run_counter": state_run_counter,
+        "state_file": str(state_path),
+        "state_write_error": state_write_error,
+        "previous_lane_by_ticker": prev_lane_by_ticker,
+        "previous_has_orderable_side_by_ticker": prev_has_orderable_side_by_ticker,
+        "endpoint_to_orderable_transition_count": len(endpoint_to_orderable_tickers),
+        "endpoint_to_orderable_transition_tickers": endpoint_to_orderable_tickers[:25],
+    }
 
 
 def _append_history_rows(path: Path, rows: list[dict[str, Any]]) -> None:
@@ -563,11 +752,12 @@ def _run_daily_weather_ticker_refresh(
     started_at = _now_iso()
     started_monotonic = time.monotonic()
     api_roots = _kalshi_api_roots_for_env(env_values)
-    tickers = _load_daily_weather_tickers_from_priors(
+    ticker_plan = _load_daily_weather_tickers_from_priors(
         priors_csv=priors_csv,
         allowed_contract_families=allowed_contract_families,
         max_markets=max_markets,
     )
+    tickers = list(ticker_plan.get("selected_tickers") or [])
     rows: list[dict[str, Any]] = []
     fetch_errors: list[dict[str, Any]] = []
     tickers_succeeded = 0
@@ -617,6 +807,56 @@ def _run_daily_weather_ticker_refresh(
         except Exception as exc:
             append_error = str(exc)
 
+    lane_by_ticker = dict(ticker_plan.get("lane_by_ticker") or {})
+    has_orderable_side_by_ticker = dict(ticker_plan.get("has_orderable_side_by_ticker") or {})
+    for row in rows:
+        ticker = str(row.get("market_ticker") or "").strip().upper()
+        if not ticker:
+            continue
+        observed_lane = _classify_daily_weather_lane_from_quotes(
+            yes_bid=_parse_float(row.get("yes_bid_dollars")),
+            no_bid=_parse_float(row.get("no_bid_dollars")),
+            yes_ask=_parse_float(row.get("yes_ask_dollars")),
+            no_ask=_parse_float(row.get("no_ask_dollars")),
+        )
+        lane_by_ticker[ticker] = str(observed_lane.get("lane") or "tradable")
+        has_orderable_side_by_ticker[ticker] = bool(observed_lane.get("has_orderable_side"))
+    lane_counts: dict[str, int] = {}
+    for lane in lane_by_ticker.values():
+        lane_text = str(lane or "").strip() or "unknown"
+        lane_counts[lane_text] = int(lane_counts.get(lane_text, 0)) + 1
+    prev_lane_by_ticker = dict(ticker_plan.get("previous_lane_by_ticker") or {})
+    prev_has_orderable_side_by_ticker = dict(ticker_plan.get("previous_has_orderable_side_by_ticker") or {})
+    endpoint_to_orderable_transition_tickers: list[str] = []
+    for ticker, has_orderable_side in has_orderable_side_by_ticker.items():
+        if (
+            str(prev_lane_by_ticker.get(ticker) or "") == "watch_endpoint_only"
+            and bool(prev_has_orderable_side_by_ticker.get(ticker)) is False
+            and bool(has_orderable_side)
+        ):
+            endpoint_to_orderable_transition_tickers.append(ticker)
+    endpoint_to_orderable_transition_tickers = sorted(set(endpoint_to_orderable_transition_tickers))
+    endpoint_to_orderable_transition_count = len(endpoint_to_orderable_transition_tickers)
+
+    state_file_text = str(ticker_plan.get("state_file") or "").strip()
+    state_write_error = None
+    if state_file_text:
+        state_write_error = _write_daily_weather_refresh_state(
+            Path(state_file_text),
+            {
+                "run_counter": int(ticker_plan.get("state_run_counter") or 0),
+                "watch_cursor": int(ticker_plan.get("watch_cursor_after") or 0),
+                "watch_interval_runs": int(ticker_plan.get("watch_refresh_interval_runs") or 1),
+                "watch_max_markets": int(ticker_plan.get("watch_max_markets") or 0),
+                "lane_by_ticker": lane_by_ticker,
+                "has_orderable_side_by_ticker": has_orderable_side_by_ticker,
+                "lane_counts": lane_counts,
+                "updated_at_utc": _now_iso(),
+                "endpoint_to_orderable_transition_count_last": endpoint_to_orderable_transition_count,
+                "endpoint_to_orderable_transition_tickers_last": endpoint_to_orderable_transition_tickers[:25],
+            },
+        )
+
     if not tickers:
         status = "skipped_no_daily_weather_tickers"
         reason = "no_daily_weather_tickers_in_priors"
@@ -652,6 +892,24 @@ def _run_daily_weather_ticker_refresh(
         "market_tickers_attempted": tickers,
         "market_tickers_attempted_count": len(tickers),
         "market_tickers_succeeded_count": tickers_succeeded,
+        "market_tickers_tradable": list(ticker_plan.get("tradable_tickers") or []),
+        "market_tickers_tradable_count": len(list(ticker_plan.get("tradable_tickers") or [])),
+        "market_tickers_watch": list(ticker_plan.get("watch_tickers") or []),
+        "market_tickers_watch_count": len(list(ticker_plan.get("watch_tickers") or [])),
+        "market_tickers_watch_selected": list(ticker_plan.get("watch_tickers_selected") or []),
+        "market_tickers_watch_selected_count": len(list(ticker_plan.get("watch_tickers_selected") or [])),
+        "ticker_refresh_lane_counts": dict(lane_counts),
+        "ticker_refresh_watch_due": bool(ticker_plan.get("watch_refresh_due")),
+        "ticker_refresh_watch_reason": str(ticker_plan.get("watch_refresh_reason") or "").strip() or None,
+        "ticker_refresh_watch_interval_runs": ticker_plan.get("watch_refresh_interval_runs"),
+        "ticker_refresh_watch_max_markets": ticker_plan.get("watch_max_markets"),
+        "ticker_refresh_watch_cursor_before": ticker_plan.get("watch_cursor_before"),
+        "ticker_refresh_watch_cursor_after": ticker_plan.get("watch_cursor_after"),
+        "ticker_refresh_state_run_counter": ticker_plan.get("state_run_counter"),
+        "ticker_refresh_state_file": ticker_plan.get("state_file"),
+        "ticker_refresh_state_write_error": state_write_error,
+        "endpoint_to_orderable_transition_count": endpoint_to_orderable_transition_count,
+        "endpoint_to_orderable_transition_tickers": endpoint_to_orderable_transition_tickers[:25],
         "requests_total": requests_total,
         "rows_appended": rows_appended,
         "append_error": append_error,
@@ -2529,6 +2787,18 @@ def main() -> int:
         1,
         int(os.environ.get("BETBOT_DAILY_WEATHER_TICKER_REFRESH_MAX_MARKETS", "20")),
     )
+    daily_weather_ticker_refresh_watch_max_markets = max(
+        0,
+        int(os.environ.get("BETBOT_DAILY_WEATHER_TICKER_REFRESH_WATCH_MAX_MARKETS", "4")),
+    )
+    daily_weather_ticker_refresh_watch_interval_runs = max(
+        1,
+        int(os.environ.get("BETBOT_DAILY_WEATHER_TICKER_REFRESH_WATCH_INTERVAL_RUNS", "3")),
+    )
+    daily_weather_ticker_refresh_state_file = str(
+        os.environ.get("BETBOT_DAILY_WEATHER_TICKER_REFRESH_STATE_FILE")
+        or (output_dir / "overnight_alpha" / "daily_weather_ticker_refresh_state.json")
+    )
     daily_weather_ticker_refresh_on_base_capture = _is_enabled(
         os.environ.get("BETBOT_DAILY_WEATHER_TICKER_REFRESH_ON_BASE_CAPTURE"),
         default=True,
@@ -3398,6 +3668,9 @@ def main() -> int:
         "daily_weather_ticker_refresh_enabled": daily_weather_ticker_refresh_enabled,
         "daily_weather_ticker_refresh_on_base_capture": daily_weather_ticker_refresh_on_base_capture,
         "daily_weather_ticker_refresh_max_markets": daily_weather_ticker_refresh_max_markets,
+        "daily_weather_ticker_refresh_watch_max_markets": daily_weather_ticker_refresh_watch_max_markets,
+        "daily_weather_ticker_refresh_watch_interval_runs": daily_weather_ticker_refresh_watch_interval_runs,
+        "daily_weather_ticker_refresh_state_file": daily_weather_ticker_refresh_state_file,
         "daily_weather_ticker_refresh_base_status": (
             daily_weather_ticker_refresh_base_step.get("status")
             if isinstance(daily_weather_ticker_refresh_base_step, dict)
@@ -3418,6 +3691,41 @@ def main() -> int:
             if isinstance(daily_weather_ticker_refresh_base_step, dict)
             else None
         ),
+        "daily_weather_ticker_refresh_base_tradable_tickers_count": (
+            daily_weather_ticker_refresh_base_step.get("market_tickers_tradable_count")
+            if isinstance(daily_weather_ticker_refresh_base_step, dict)
+            else None
+        ),
+        "daily_weather_ticker_refresh_base_watch_tickers_count": (
+            daily_weather_ticker_refresh_base_step.get("market_tickers_watch_count")
+            if isinstance(daily_weather_ticker_refresh_base_step, dict)
+            else None
+        ),
+        "daily_weather_ticker_refresh_base_watch_selected_count": (
+            daily_weather_ticker_refresh_base_step.get("market_tickers_watch_selected_count")
+            if isinstance(daily_weather_ticker_refresh_base_step, dict)
+            else None
+        ),
+        "daily_weather_ticker_refresh_base_watch_due": (
+            daily_weather_ticker_refresh_base_step.get("ticker_refresh_watch_due")
+            if isinstance(daily_weather_ticker_refresh_base_step, dict)
+            else None
+        ),
+        "daily_weather_ticker_refresh_base_watch_reason": (
+            daily_weather_ticker_refresh_base_step.get("ticker_refresh_watch_reason")
+            if isinstance(daily_weather_ticker_refresh_base_step, dict)
+            else None
+        ),
+        "daily_weather_ticker_refresh_base_endpoint_to_orderable_transition_count": (
+            daily_weather_ticker_refresh_base_step.get("endpoint_to_orderable_transition_count")
+            if isinstance(daily_weather_ticker_refresh_base_step, dict)
+            else None
+        ),
+        "daily_weather_ticker_refresh_base_endpoint_to_orderable_transition_tickers": (
+            daily_weather_ticker_refresh_base_step.get("endpoint_to_orderable_transition_tickers")
+            if isinstance(daily_weather_ticker_refresh_base_step, dict)
+            else None
+        ),
         "daily_weather_ticker_refresh_status": (
             daily_weather_ticker_refresh_step.get("status")
             if isinstance(daily_weather_ticker_refresh_step, dict)
@@ -3435,6 +3743,41 @@ def main() -> int:
         ),
         "daily_weather_ticker_refresh_tickers_succeeded_count": (
             daily_weather_ticker_refresh_step.get("market_tickers_succeeded_count")
+            if isinstance(daily_weather_ticker_refresh_step, dict)
+            else None
+        ),
+        "daily_weather_ticker_refresh_tradable_tickers_count": (
+            daily_weather_ticker_refresh_step.get("market_tickers_tradable_count")
+            if isinstance(daily_weather_ticker_refresh_step, dict)
+            else None
+        ),
+        "daily_weather_ticker_refresh_watch_tickers_count": (
+            daily_weather_ticker_refresh_step.get("market_tickers_watch_count")
+            if isinstance(daily_weather_ticker_refresh_step, dict)
+            else None
+        ),
+        "daily_weather_ticker_refresh_watch_selected_count": (
+            daily_weather_ticker_refresh_step.get("market_tickers_watch_selected_count")
+            if isinstance(daily_weather_ticker_refresh_step, dict)
+            else None
+        ),
+        "daily_weather_ticker_refresh_watch_due": (
+            daily_weather_ticker_refresh_step.get("ticker_refresh_watch_due")
+            if isinstance(daily_weather_ticker_refresh_step, dict)
+            else None
+        ),
+        "daily_weather_ticker_refresh_watch_reason": (
+            daily_weather_ticker_refresh_step.get("ticker_refresh_watch_reason")
+            if isinstance(daily_weather_ticker_refresh_step, dict)
+            else None
+        ),
+        "daily_weather_ticker_refresh_endpoint_to_orderable_transition_count": (
+            daily_weather_ticker_refresh_step.get("endpoint_to_orderable_transition_count")
+            if isinstance(daily_weather_ticker_refresh_step, dict)
+            else None
+        ),
+        "daily_weather_ticker_refresh_endpoint_to_orderable_transition_tickers": (
+            daily_weather_ticker_refresh_step.get("endpoint_to_orderable_transition_tickers")
             if isinstance(daily_weather_ticker_refresh_step, dict)
             else None
         ),
