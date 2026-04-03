@@ -3605,7 +3605,7 @@ def _paper_live_update(
             return
         merged = dict(existing)
         for field, value in payload.items():
-            if merged.get(field) in {None, "", []} and value not in {None, "", []}:
+            if merged.get(field) in (None, "", []) and value not in (None, "", []):
                 merged[field] = value
         merged["status"] = str(status or merged.get("status") or "unknown").strip().lower()
         if payload["order_id"] and not merged.get("order_id"):
@@ -9479,6 +9479,10 @@ def main() -> int:
         prior_trader_step=prior_trader_step if isinstance(prior_trader_step, dict) else None,
         weather_prior_state_after=weather_prior_state_after,
         weather_history_state=weather_history_state,
+    )
+    daily_weather_availability_lookback_days = max(
+        1.0,
+        float(os.environ.get("BETBOT_DAILY_WEATHER_AVAILABILITY_LOOKBACK_DAYS", "7") or 7.0),
     )
     daily_weather_market_availability = _build_daily_weather_market_availability_study(
         prior_trader_step=prior_trader_step if isinstance(prior_trader_step, dict) else None,
