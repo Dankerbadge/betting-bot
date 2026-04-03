@@ -291,6 +291,56 @@ payload = {
     "probe_reason": None,
     "prior_trade_gate_status": None,
     "prior_trade_gate_blockers": None,
+    "lane_comparison": {
+        "status": "not_run",
+        "reason": "skipped_locked",
+        "comparison_basis": "same_snapshot_same_filters",
+        "executed_lane": "maker_edge",
+        "maker_edge": {
+            "picked_ticker": None,
+            "picked_side": None,
+            "selected_fair_probability": None,
+            "selected_fair_probability_conservative": None,
+            "maker_entry_edge": None,
+            "maker_entry_edge_net_fees": None,
+            "expected_value_dollars": None,
+            "expected_value_per_cost": None,
+            "estimated_entry_cost_dollars": None,
+            "estimated_max_loss_dollars": None,
+            "estimated_max_profit_dollars": None,
+            "expected_value_per_max_loss": None,
+            "gate_status": None,
+            "gate_blockers": None,
+            "summary_file": None,
+        },
+        "probability_first": {
+            "picked_ticker": None,
+            "picked_side": None,
+            "selected_fair_probability": None,
+            "selected_fair_probability_conservative": None,
+            "maker_entry_edge": None,
+            "maker_entry_edge_net_fees": None,
+            "expected_value_dollars": None,
+            "expected_value_per_cost": None,
+            "estimated_entry_cost_dollars": None,
+            "estimated_max_loss_dollars": None,
+            "estimated_max_profit_dollars": None,
+            "expected_value_per_max_loss": None,
+            "gate_status": None,
+            "gate_blockers": None,
+            "summary_file": None,
+        },
+        "delta": {
+            "same_pick": None,
+            "selected_fair_probability_delta": None,
+            "maker_entry_edge_delta": None,
+            "expected_value_dollars_delta": None,
+            "expected_value_per_cost_delta": None,
+            "estimated_max_loss_dollars_delta": None,
+            "expected_value_per_max_loss_delta": None,
+        },
+        "errors": [],
+    },
     "no_candidates_diagnostics": None,
     "probe_policy": {
         "enable_untrusted_bucket_probe_exploration": None,
@@ -6507,6 +6557,186 @@ def _pilot_execution_report_fields(pilot_execution_evidence: dict[str, Any] | No
     }
 
 
+def _default_lane_comparison_lane() -> dict[str, Any]:
+    return {
+        "picked_ticker": None,
+        "picked_side": None,
+        "selected_fair_probability": None,
+        "selected_fair_probability_conservative": None,
+        "maker_entry_edge": None,
+        "maker_entry_edge_net_fees": None,
+        "expected_value_dollars": None,
+        "expected_value_per_cost": None,
+        "estimated_entry_cost_dollars": None,
+        "estimated_max_loss_dollars": None,
+        "estimated_max_profit_dollars": None,
+        "expected_value_per_max_loss": None,
+        "gate_status": None,
+        "gate_blockers": None,
+        "summary_file": None,
+    }
+
+
+def _default_lane_comparison(
+    *,
+    status: str = "not_run",
+    reason: str | None = None,
+    executed_lane: str = "maker_edge",
+    comparison_basis: str = "same_snapshot_same_filters",
+) -> dict[str, Any]:
+    return {
+        "status": status,
+        "reason": reason,
+        "comparison_basis": comparison_basis,
+        "executed_lane": executed_lane,
+        "maker_edge": _default_lane_comparison_lane(),
+        "probability_first": _default_lane_comparison_lane(),
+        "delta": {
+            "same_pick": None,
+            "selected_fair_probability_delta": None,
+            "maker_entry_edge_delta": None,
+            "expected_value_dollars_delta": None,
+            "expected_value_per_cost_delta": None,
+            "estimated_max_loss_dollars_delta": None,
+            "expected_value_per_max_loss_delta": None,
+        },
+        "errors": [],
+    }
+
+
+def _safe_lane_float(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    return _parse_float(value)
+
+
+def _lane_value_delta(probability_first_value: Any, maker_edge_value: Any) -> float | None:
+    probability_first_number = _safe_lane_float(probability_first_value)
+    maker_edge_number = _safe_lane_float(maker_edge_value)
+    if not isinstance(probability_first_number, float) or not isinstance(maker_edge_number, float):
+        return None
+    return round(float(probability_first_number) - float(maker_edge_number), 6)
+
+
+def _lane_snapshot_from_execute_summary(summary: dict[str, Any] | None) -> dict[str, Any]:
+    lane = _default_lane_comparison_lane()
+    if not isinstance(summary, dict):
+        return lane
+
+    prior_gate = summary.get("prior_trade_gate_summary")
+    if not isinstance(prior_gate, dict):
+        prior_gate = {}
+
+    expected_value_dollars = _safe_lane_float(summary.get("top_market_expected_value_dollars"))
+    estimated_entry_cost_dollars = _safe_lane_float(summary.get("top_market_estimated_entry_cost_dollars"))
+    expected_value_per_cost = _safe_lane_float(summary.get("top_market_expected_roi_on_cost"))
+    if not isinstance(expected_value_per_cost, float):
+        if isinstance(expected_value_dollars, float) and isinstance(estimated_entry_cost_dollars, float) and (
+            estimated_entry_cost_dollars > 0.0
+        ):
+            expected_value_per_cost = round(expected_value_dollars / estimated_entry_cost_dollars, 6)
+        else:
+            expected_value_per_cost = None
+
+    estimated_max_loss_dollars = _safe_lane_float(summary.get("top_market_estimated_max_loss_dollars"))
+    expected_value_per_max_loss = None
+    if isinstance(expected_value_dollars, float) and isinstance(estimated_max_loss_dollars, float) and (
+        estimated_max_loss_dollars > 0.0
+    ):
+        expected_value_per_max_loss = round(expected_value_dollars / estimated_max_loss_dollars, 6)
+
+    lane.update(
+        {
+            "picked_ticker": str(summary.get("top_market_ticker") or "").strip() or None,
+            "picked_side": str(summary.get("top_market_side") or "").strip().lower() or None,
+            "selected_fair_probability": _safe_lane_float(summary.get("top_market_fair_probability")),
+            "selected_fair_probability_conservative": _safe_lane_float(
+                summary.get("top_market_fair_probability_conservative")
+            ),
+            "maker_entry_edge": _safe_lane_float(summary.get("top_market_maker_entry_edge")),
+            "maker_entry_edge_net_fees": _safe_lane_float(summary.get("top_market_maker_entry_edge_net_fees")),
+            "expected_value_dollars": expected_value_dollars,
+            "expected_value_per_cost": expected_value_per_cost,
+            "estimated_entry_cost_dollars": estimated_entry_cost_dollars,
+            "estimated_max_loss_dollars": estimated_max_loss_dollars,
+            "estimated_max_profit_dollars": _safe_lane_float(summary.get("top_market_estimated_max_profit_dollars")),
+            "expected_value_per_max_loss": expected_value_per_max_loss,
+            "gate_status": (
+                str(prior_gate.get("gate_status") or "").strip()
+                or str(summary.get("prior_trade_gate_status") or "").strip()
+                or None
+            ),
+            "gate_blockers": (
+                prior_gate.get("gate_blockers")
+                if isinstance(prior_gate.get("gate_blockers"), list)
+                else summary.get("prior_trade_gate_blockers")
+            ),
+            "summary_file": str(summary.get("output_file") or "").strip() or None,
+        }
+    )
+    return lane
+
+
+def _build_lane_comparison(
+    *,
+    maker_edge_summary: dict[str, Any] | None,
+    probability_first_summary: dict[str, Any] | None,
+    executed_lane: str = "maker_edge",
+    comparison_basis: str = "same_snapshot_same_filters",
+    reason: str | None = None,
+    errors: list[str] | None = None,
+) -> dict[str, Any]:
+    payload = _default_lane_comparison(
+        status="ready",
+        reason=reason,
+        executed_lane=executed_lane,
+        comparison_basis=comparison_basis,
+    )
+    payload["maker_edge"] = _lane_snapshot_from_execute_summary(maker_edge_summary)
+    payload["probability_first"] = _lane_snapshot_from_execute_summary(probability_first_summary)
+    payload["delta"] = {
+        "same_pick": (
+            bool(payload["maker_edge"].get("picked_ticker"))
+            and bool(payload["probability_first"].get("picked_ticker"))
+            and str(payload["maker_edge"].get("picked_ticker") or "").strip().upper()
+            == str(payload["probability_first"].get("picked_ticker") or "").strip().upper()
+            and str(payload["maker_edge"].get("picked_side") or "").strip().lower()
+            == str(payload["probability_first"].get("picked_side") or "").strip().lower()
+        ),
+        "selected_fair_probability_delta": _lane_value_delta(
+            payload["probability_first"].get("selected_fair_probability"),
+            payload["maker_edge"].get("selected_fair_probability"),
+        ),
+        "maker_entry_edge_delta": _lane_value_delta(
+            payload["probability_first"].get("maker_entry_edge"),
+            payload["maker_edge"].get("maker_entry_edge"),
+        ),
+        "expected_value_dollars_delta": _lane_value_delta(
+            payload["probability_first"].get("expected_value_dollars"),
+            payload["maker_edge"].get("expected_value_dollars"),
+        ),
+        "expected_value_per_cost_delta": _lane_value_delta(
+            payload["probability_first"].get("expected_value_per_cost"),
+            payload["maker_edge"].get("expected_value_per_cost"),
+        ),
+        "estimated_max_loss_dollars_delta": _lane_value_delta(
+            payload["probability_first"].get("estimated_max_loss_dollars"),
+            payload["maker_edge"].get("estimated_max_loss_dollars"),
+        ),
+        "expected_value_per_max_loss_delta": _lane_value_delta(
+            payload["probability_first"].get("expected_value_per_max_loss"),
+            payload["maker_edge"].get("expected_value_per_max_loss"),
+        ),
+    }
+    payload_errors = [str(item).strip() for item in (errors or []) if str(item).strip()]
+    payload["errors"] = payload_errors
+    if payload_errors:
+        payload["status"] = "observer_degraded"
+        if not payload.get("reason"):
+            payload["reason"] = "lane_comparison_observer_degraded"
+    return payload
+
+
 def _top_level_no_candidates_diagnostics(step: dict[str, Any] | None) -> dict[str, Any] | None:
     if not isinstance(step, dict):
         return None
@@ -7760,6 +7990,10 @@ def main() -> int:
                     "execution_frontier": _top_level_execution_frontier(None),
                     "decision_identity": _top_level_decision_identity(None),
                     "probe_policy": _top_level_probe_policy(None),
+                    "lane_comparison": _default_lane_comparison(
+                        status="not_run",
+                        reason="skipped_recent_run",
+                    ),
                     "no_candidates_diagnostics": None,
                     "daily_weather_funnel": _top_level_daily_weather_funnel(
                         prior_trader_step=None,
@@ -7887,6 +8121,10 @@ def main() -> int:
             "execution_frontier": _top_level_execution_frontier(None),
             "decision_identity": _top_level_decision_identity(None),
             "probe_policy": _top_level_probe_policy(None),
+            "lane_comparison": _default_lane_comparison(
+                status="not_run",
+                reason="preflight_failed",
+            ),
             "no_candidates_diagnostics": None,
             "daily_weather_funnel": _top_level_daily_weather_funnel(
                 prior_trader_step=None,
@@ -8921,6 +9159,176 @@ def main() -> int:
         )
     steps.append(alpha_scoreboard_step)
 
+    lane_comparison_errors: list[str] = []
+    lane_comparison = _default_lane_comparison(
+        status="not_run",
+        reason="lane_comparison_observer_not_run",
+    )
+    lane_comparison_enabled = _is_enabled(
+        os.environ.get("BETBOT_LANE_COMPARISON_ENABLED"),
+        default=True,
+    )
+    if lane_comparison_enabled:
+        lane_compare_execute_common_args = [
+            "kalshi-micro-prior-execute",
+            "--env-file",
+            str(env_file),
+            "--priors-csv",
+            str(priors_csv),
+            "--history-csv",
+            str(history_csv),
+            "--output-dir",
+            str(output_dir),
+            "--timeout-seconds",
+            str(float(os.environ.get("BETBOT_TIMEOUT_SECONDS", "15"))),
+            "--enforce-ws-state-authority",
+            "--daily-weather-board-max-age-seconds",
+            str(max(0.0, float(os.environ.get("BETBOT_DAILY_WEATHER_BOARD_MAX_AGE_SECONDS", "900")))),
+        ]
+        if disable_daily_weather_live_only:
+            lane_compare_execute_common_args.append("--disable-daily-weather-live-only")
+        if climate_router_pilot_enabled:
+            lane_compare_execute_common_args.append("--climate-router-pilot-enabled")
+        if climate_router_pilot_enabled and climate_router_pilot_policy_scope_override_enabled:
+            lane_compare_execute_common_args.append("--climate-router-pilot-policy-scope-override-enabled")
+        if climate_router_pilot_summary_json:
+            lane_compare_execute_common_args.extend(["--climate-router-summary-json", climate_router_pilot_summary_json])
+        lane_compare_execute_common_args.extend(
+            [
+                "--climate-router-pilot-max-orders-per-run",
+                str(max(0, int(os.environ.get("BETBOT_CLIMATE_ROUTER_PILOT_MAX_ORDERS_PER_RUN", "1")))),
+                "--climate-router-pilot-contracts-cap",
+                str(max(1, int(os.environ.get("BETBOT_CLIMATE_ROUTER_PILOT_CONTRACTS_CAP", "1")))),
+                "--climate-router-pilot-required-ev-dollars",
+                str(max(0.0, float(os.environ.get("BETBOT_CLIMATE_ROUTER_PILOT_REQUIRED_EV_DOLLARS", "0.05")))),
+            ]
+        )
+        if climate_router_pilot_allowed_classes:
+            lane_compare_execute_common_args.extend(
+                ["--climate-router-pilot-allowed-classes", climate_router_pilot_allowed_classes]
+            )
+        if climate_router_pilot_allowed_families:
+            lane_compare_execute_common_args.extend(
+                ["--climate-router-pilot-allowed-families", climate_router_pilot_allowed_families]
+            )
+        if climate_router_pilot_excluded_families:
+            lane_compare_execute_common_args.extend(
+                ["--climate-router-pilot-excluded-families", climate_router_pilot_excluded_families]
+            )
+        if bool(frontier_refresh_step.get("ok")) and frontier_report_path and Path(frontier_report_path).exists():
+            lane_compare_execute_common_args.extend(
+                [
+                    "--execution-frontier-report-json",
+                    frontier_report_path,
+                    "--execution-frontier-max-report-age-seconds",
+                    str(max(0.0, float(os.environ.get("BETBOT_FRONTIER_MAX_AGE_SECONDS", "10800")))),
+                ]
+            )
+
+        configured_min_selected_probability = _parse_float(
+            os.environ.get("BETBOT_MIN_SELECTED_FAIR_PROBABILITY")
+        )
+        configured_min_live_selected_probability = _parse_float(
+            os.environ.get("BETBOT_MIN_LIVE_SELECTED_FAIR_PROBABILITY")
+        )
+        if isinstance(configured_min_selected_probability, float):
+            lane_compare_execute_common_args.extend(
+                ["--min-selected-fair-probability", str(configured_min_selected_probability)]
+            )
+        if isinstance(configured_min_live_selected_probability, float):
+            lane_compare_execute_common_args.extend(
+                ["--min-live-selected-fair-probability", str(configured_min_live_selected_probability)]
+            )
+
+        lane_compare_maker_step = _run_step(
+            name="lane_compare_execute_maker_edge",
+            launcher=launcher,
+            args=lane_compare_execute_common_args + ["--selection-lane", "maker_edge"],
+            cwd=repo_root,
+            run_dir=run_logs,
+            env_overrides=env_file_values,
+        )
+        lane_compare_maker_step["diagnostic_only"] = True
+        if not bool(lane_compare_maker_step.get("ok")):
+            lane_compare_maker_step["status"] = (
+                str(lane_compare_maker_step.get("status") or "").strip() or "observer_failed"
+            )
+            lane_compare_maker_step["reason"] = (
+                str(lane_compare_maker_step.get("reason") or "").strip() or "lane_compare_maker_edge_failed"
+            )
+            lane_compare_maker_step["observer_failure"] = True
+            lane_compare_maker_step["ok"] = True
+            lane_comparison_errors.append("maker_edge_lane_compare_execute_failed")
+        else:
+            lane_compare_maker_step["status"] = (
+                str(lane_compare_maker_step.get("status") or "").strip() or "observer_ready"
+            )
+        steps.append(lane_compare_maker_step)
+
+        lane_compare_probability_step = _run_step(
+            name="lane_compare_execute_probability_first",
+            launcher=launcher,
+            args=lane_compare_execute_common_args + ["--selection-lane", "probability_first"],
+            cwd=repo_root,
+            run_dir=run_logs,
+            env_overrides=env_file_values,
+        )
+        lane_compare_probability_step["diagnostic_only"] = True
+        if not bool(lane_compare_probability_step.get("ok")):
+            lane_compare_probability_step["status"] = (
+                str(lane_compare_probability_step.get("status") or "").strip() or "observer_failed"
+            )
+            lane_compare_probability_step["reason"] = (
+                str(lane_compare_probability_step.get("reason") or "").strip()
+                or "lane_compare_probability_first_execute_failed"
+            )
+            lane_compare_probability_step["observer_failure"] = True
+            lane_compare_probability_step["ok"] = True
+            lane_comparison_errors.append("probability_first_lane_compare_execute_failed")
+        else:
+            lane_compare_probability_step["status"] = (
+                str(lane_compare_probability_step.get("status") or "").strip() or "observer_ready"
+            )
+        steps.append(lane_compare_probability_step)
+
+        lane_compare_maker_summary: dict[str, Any] | None = None
+        maker_summary_file = str(lane_compare_maker_step.get("output_file") or "").strip()
+        if maker_summary_file:
+            lane_compare_maker_summary = _load_json(Path(maker_summary_file))
+            if not isinstance(lane_compare_maker_summary, dict):
+                lane_compare_maker_summary = None
+                lane_comparison_errors.append("maker_edge_lane_compare_summary_parse_failed")
+        else:
+            lane_comparison_errors.append("maker_edge_lane_compare_missing_output_file")
+
+        lane_compare_probability_summary: dict[str, Any] | None = None
+        probability_summary_file = str(lane_compare_probability_step.get("output_file") or "").strip()
+        if probability_summary_file:
+            lane_compare_probability_summary = _load_json(Path(probability_summary_file))
+            if not isinstance(lane_compare_probability_summary, dict):
+                lane_compare_probability_summary = None
+                lane_comparison_errors.append("probability_first_lane_compare_summary_parse_failed")
+        else:
+            lane_comparison_errors.append("probability_first_lane_compare_missing_output_file")
+
+        executed_lane = "maker_edge"
+        if isinstance(lane_compare_maker_summary, dict):
+            executed_lane_candidate = str(lane_compare_maker_summary.get("selection_lane") or "").strip().lower()
+            if executed_lane_candidate:
+                executed_lane = executed_lane_candidate
+        lane_comparison = _build_lane_comparison(
+            maker_edge_summary=lane_compare_maker_summary,
+            probability_first_summary=lane_compare_probability_summary,
+            executed_lane=executed_lane,
+            comparison_basis="same_snapshot_same_filters",
+            errors=lane_comparison_errors,
+        )
+    else:
+        lane_comparison = _default_lane_comparison(
+            status="skipped_disabled",
+            reason="lane_comparison_disabled",
+        )
+
     failed_steps = [step["name"] for step in steps if not bool(step.get("ok"))]
     degraded_reasons: list[str] = []
 
@@ -9327,6 +9735,7 @@ def main() -> int:
             else None
         ),
         "execution_frontier": top_level_frontier,
+        "lane_comparison": lane_comparison,
         "climate_router_enabled": climate_router_enabled,
         "climate_router_skip_realtime_collect": climate_router_skip_realtime_collect,
         "climate_router_run_seconds": max(1.0, float(os.environ.get("BETBOT_CLIMATE_ROUTER_RUN_SECONDS", "20"))),
