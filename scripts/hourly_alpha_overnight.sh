@@ -398,6 +398,7 @@ import json
 import math
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -9169,14 +9170,39 @@ def main() -> int:
         default=True,
     )
     if lane_comparison_enabled:
+        lane_compare_priors_csv = priors_csv
+        lane_compare_history_csv = history_csv
+        lane_compare_snapshot_frozen = False
+        lane_compare_snapshot_dir = run_logs / "lane_comparison_snapshot"
+        try:
+            lane_compare_snapshot_dir.mkdir(parents=True, exist_ok=True)
+            lane_compare_priors_snapshot = lane_compare_snapshot_dir / "kalshi_nonsports_priors.snapshot.csv"
+            lane_compare_history_snapshot = lane_compare_snapshot_dir / "kalshi_nonsports_history.snapshot.csv"
+            if priors_csv.exists():
+                shutil.copy2(priors_csv, lane_compare_priors_snapshot)
+                lane_compare_priors_csv = lane_compare_priors_snapshot
+            else:
+                lane_comparison_errors.append("lane_compare_priors_snapshot_missing_source")
+            if history_csv.exists():
+                shutil.copy2(history_csv, lane_compare_history_snapshot)
+                lane_compare_history_csv = lane_compare_history_snapshot
+            else:
+                lane_comparison_errors.append("lane_compare_history_snapshot_missing_source")
+            lane_compare_snapshot_frozen = (
+                lane_compare_priors_csv == lane_compare_priors_snapshot
+                and lane_compare_history_csv == lane_compare_history_snapshot
+            )
+        except Exception as exc:
+            lane_comparison_errors.append(f"lane_compare_snapshot_copy_failed:{exc}")
+
         lane_compare_execute_common_args = [
             "kalshi-micro-prior-execute",
             "--env-file",
             str(env_file),
             "--priors-csv",
-            str(priors_csv),
+            str(lane_compare_priors_csv),
             "--history-csv",
-            str(history_csv),
+            str(lane_compare_history_csv),
             "--output-dir",
             str(output_dir),
             "--timeout-seconds",
@@ -9248,6 +9274,9 @@ def main() -> int:
             run_dir=run_logs,
             env_overrides=env_file_values,
         )
+        lane_compare_maker_step["snapshot_frozen"] = lane_compare_snapshot_frozen
+        lane_compare_maker_step["snapshot_priors_csv"] = str(lane_compare_priors_csv)
+        lane_compare_maker_step["snapshot_history_csv"] = str(lane_compare_history_csv)
         lane_compare_maker_step["diagnostic_only"] = True
         if not bool(lane_compare_maker_step.get("ok")):
             lane_compare_maker_step["status"] = (
@@ -9273,6 +9302,9 @@ def main() -> int:
             run_dir=run_logs,
             env_overrides=env_file_values,
         )
+        lane_compare_probability_step["snapshot_frozen"] = lane_compare_snapshot_frozen
+        lane_compare_probability_step["snapshot_priors_csv"] = str(lane_compare_priors_csv)
+        lane_compare_probability_step["snapshot_history_csv"] = str(lane_compare_history_csv)
         lane_compare_probability_step["diagnostic_only"] = True
         if not bool(lane_compare_probability_step.get("ok")):
             lane_compare_probability_step["status"] = (
