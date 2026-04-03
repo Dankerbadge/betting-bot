@@ -26,6 +26,20 @@ from betbot.onboarding import _parse_env_file
 
 
 _DAILY_WEATHER_CONTRACT_FAMILIES = {"daily_rain", "daily_temperature", "daily_snow"}
+_CLIMATE_ROUTER_PILOT_DEFAULT_ALLOWED_CLASSES = ("tradable_positive", "hot_positive")
+
+
+def _normalize_contract_family_filters(values: tuple[str, ...] | None) -> tuple[str, ...]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    if values:
+        for raw_value in values:
+            token = str(raw_value or "").strip().lower()
+            if not token or token in seen:
+                continue
+            normalized.append(token)
+            seen.add(token)
+    return tuple(normalized)
 
 
 def _as_bool(value: Any) -> bool | None:
@@ -39,6 +53,541 @@ def _as_bool(value: Any) -> bool | None:
     if text in {"0", "false", "no", "n", "f"}:
         return False
     return None
+
+
+def _as_float(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def _is_orderable_price(value: Any) -> bool:
+    parsed = _as_float(value)
+    return isinstance(parsed, float) and 0.0 < parsed < 1.0
+
+
+def _build_order_payload_preview(*, ticker: str, count: int, side: str, price_dollars: float) -> dict[str, Any]:
+    normalized_side = side.strip().lower()
+    payload: dict[str, Any] = {
+        "ticker": ticker,
+        "count": max(1, int(count)),
+        "side": "no" if normalized_side == "no" else "yes",
+        "type": "limit",
+    }
+    if payload["side"] == "no":
+        payload["no_price_dollars"] = round(float(price_dollars), 6)
+    else:
+        payload["yes_price_dollars"] = round(float(price_dollars), 6)
+    return payload
+
+
+def _latest_climate_router_summary_path(output_dir: str) -> Path | None:
+    directory = Path(output_dir)
+    candidates = sorted(
+        directory.glob("kalshi_climate_router_summary_*.json"),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    for path in candidates:
+        if path.is_file():
+            return path
+    return None
+
+
+def _load_climate_router_summary(
+    *,
+    output_dir: str,
+    explicit_path: str | None = None,
+) -> tuple[dict[str, Any] | None, str | None, str]:
+    summary_path: Path | None = None
+    selection_mode = "missing"
+    if explicit_path:
+        summary_path = Path(explicit_path)
+        selection_mode = "explicit_path"
+    else:
+        summary_path = _latest_climate_router_summary_path(output_dir)
+        selection_mode = "latest_mtime"
+    if summary_path is None:
+        return None, None, selection_mode
+    if not summary_path.exists() or not summary_path.is_file():
+        return None, str(summary_path), selection_mode
+    try:
+        payload = json.loads(summary_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None, str(summary_path), selection_mode
+    if not isinstance(payload, dict):
+        return None, str(summary_path), selection_mode
+    return payload, str(summary_path), selection_mode
+
+
+def _normalize_climate_router_allowed_classes(values: tuple[str, ...] | None) -> tuple[str, ...]:
+    normalized: set[str] = set()
+    if values:
+        for raw_value in values:
+            token = str(raw_value or "").strip().lower()
+            if not token:
+                continue
+            if token == "tradable":
+                normalized.update({"tradable_positive", "hot_positive"})
+            elif token == "hot":
+                normalized.add("hot_positive")
+            else:
+                normalized.add(token)
+    if not normalized:
+        normalized = set(_CLIMATE_ROUTER_PILOT_DEFAULT_ALLOWED_CLASSES)
+    return tuple(sorted(normalized))
+
+
+def _build_climate_router_pilot_plan_row(
+    *,
+    candidate: dict[str, Any],
+    contracts: int,
+    planning_bankroll_dollars: float,
+    shadow_rank: int,
+) -> dict[str, Any] | None:
+    ticker = str(candidate.get("market_ticker") or "").strip()
+    side = str(candidate.get("theoretical_side") or "").strip().lower()
+    reference_price = _as_float(candidate.get("theoretical_reference_price"))
+    theoretical_edge = _as_float(candidate.get("theoretical_edge_net"))
+    fair_yes = _as_float(candidate.get("fair_yes_probability"))
+    fair_no = _as_float(candidate.get("fair_no_probability"))
+    if not ticker or side not in {"yes", "no"}:
+        return None
+    if not isinstance(reference_price, float) or not _is_orderable_price(reference_price):
+        return None
+    if not isinstance(theoretical_edge, float):
+        return None
+
+    fair_probability = fair_yes if side == "yes" else fair_no
+    if not isinstance(fair_probability, float):
+        fair_probability = fair_yes if isinstance(fair_yes, float) else fair_no
+    estimated_entry_cost = round(float(reference_price) * max(1, int(contracts)), 4)
+    expected_value_dollars = round(float(theoretical_edge) * max(1, int(contracts)), 4)
+    expected_roi_on_cost: float | str = ""
+    if estimated_entry_cost > 0:
+        expected_roi_on_cost = round(expected_value_dollars / estimated_entry_cost, 6)
+    hours_to_close = _as_float(candidate.get("hours_to_close"))
+    expected_value_per_day_dollars: float | str = ""
+    expected_roi_per_day: float | str = ""
+    if isinstance(hours_to_close, float) and hours_to_close > 0:
+        days_to_close = hours_to_close / 24.0
+        if days_to_close > 0:
+            expected_value_per_day_dollars = round(expected_value_dollars / days_to_close, 6)
+            if isinstance(expected_roi_on_cost, float):
+                expected_roi_per_day = round(expected_roi_on_cost / days_to_close, 6)
+    estimated_max_profit_dollars = round((1.0 - float(reference_price)) * max(1, int(contracts)), 4)
+    max_profit_roi_on_cost: float | str = ""
+    if estimated_entry_cost > 0:
+        max_profit_roi_on_cost = round(estimated_max_profit_dollars / estimated_entry_cost, 6)
+    confidence_value = _as_float(candidate.get("confidence"))
+    contract_family = str(candidate.get("contract_family") or "").strip().lower()
+    canonical_niche = "weather_climate"
+    reference_source = str(candidate.get("theoretical_reference_source") or "").strip()
+    strip_key = str(candidate.get("strip_key") or "").strip()
+    opportunity_class = str(candidate.get("opportunity_class") or "").strip().lower()
+    suggested_risk_dollars = _as_float(candidate.get("risk_dollars"))
+    if suggested_risk_dollars is None:
+        suggested_risk_dollars = _as_float(candidate.get("allocator_suggested_risk_dollars"))
+    if suggested_risk_dollars is None:
+        suggested_risk_dollars = estimated_entry_cost
+    router_true_probability = fair_probability if isinstance(fair_probability, float) else None
+    router_break_even_probability: float | str = ""
+    if isinstance(reference_price, float):
+        if side == "no":
+            router_break_even_probability = round(max(0.0, min(1.0, 1.0 - reference_price)), 6)
+        else:
+            router_break_even_probability = round(max(0.0, min(1.0, reference_price)), 6)
+    thesis = (
+        str(candidate.get("thesis") or "").strip()
+        or f"Climate router pilot candidate ({str(candidate.get('opportunity_class') or '').strip() or 'tradable'})."
+    )
+
+    return {
+        "plan_rank": "",
+        "category": "Climate Router Pilot",
+        "market_ticker": ticker,
+        "market_title": candidate.get("market_title"),
+        "close_time": candidate.get("close_time"),
+        "hours_to_close": hours_to_close if isinstance(hours_to_close, float) else "",
+        "contract_family": contract_family,
+        "weather_station_history_status": "",
+        "weather_station_history_sample_years": "",
+        "weather_station_history_min_sample_years_required": "",
+        "weather_station_history_live_ready": "",
+        "weather_station_history_live_ready_reason": "",
+        "side": side,
+        "canonical_ticker": str(candidate.get("canonical_ticker") or ticker),
+        "canonical_niche": canonical_niche,
+        "canonical_release_cluster": "",
+        "canonical_policy_applied": True,
+        "canonical_mapping_match_type": "climate_router_pilot",
+        "canonical_mapping_match_key": str(candidate.get("strip_key") or ticker),
+        "maker_entry_price_dollars": round(float(reference_price), 6),
+        "maker_entry_edge": round(float(theoretical_edge), 6),
+        "maker_entry_edge_net_fees": round(float(theoretical_edge), 6),
+        "maker_entry_edge_net_total": round(float(theoretical_edge), 6),
+        "maker_entry_edge_conservative": round(float(theoretical_edge), 6),
+        "maker_entry_edge_conservative_net_fees": round(float(theoretical_edge), 6),
+        "maker_entry_edge_conservative_net_total": round(float(theoretical_edge), 6),
+        "effective_min_maker_edge": "",
+        "effective_min_maker_edge_net_fees": "",
+        "effective_min_entry_price_dollars": "",
+        "effective_max_entry_price_dollars": "",
+        "effective_max_spread_dollars": "",
+        "effective_min_confidence": "",
+        "effective_min_evidence_count": "",
+        "effective_per_market_risk_cap_dollars": "",
+        "effective_release_cluster_risk_cap_dollars": "",
+        "effective_same_day_correlated_risk_cap_dollars": "",
+        "incentive_bonus_per_contract_dollars": 0.0,
+        "fair_probability": fair_probability if isinstance(fair_probability, float) else "",
+        "fair_probability_conservative": fair_probability if isinstance(fair_probability, float) else "",
+        "confidence": confidence_value if isinstance(confidence_value, float) else "",
+        "contracts_per_order": max(1, int(contracts)),
+        "estimated_entry_cost_dollars": estimated_entry_cost,
+        "estimated_entry_fee_dollars": 0.0,
+        "estimated_entry_fee_per_contract_dollars": 0.0,
+        "expected_incentive_value_dollars": 0.0,
+        "expected_value_dollars": expected_value_dollars,
+        "expected_value_net_dollars": expected_value_dollars,
+        "expected_value_conservative_dollars": expected_value_dollars,
+        "expected_value_conservative_net_dollars": expected_value_dollars,
+        "expected_roi_on_cost": expected_roi_on_cost,
+        "expected_roi_on_cost_net": expected_roi_on_cost,
+        "expected_roi_on_cost_conservative": expected_roi_on_cost,
+        "expected_roi_on_cost_conservative_net": expected_roi_on_cost,
+        "expected_value_per_day_dollars": expected_value_per_day_dollars,
+        "expected_value_per_day_net_dollars": expected_value_per_day_dollars,
+        "expected_value_per_day_conservative_dollars": expected_value_per_day_dollars,
+        "expected_value_per_day_conservative_net_dollars": expected_value_per_day_dollars,
+        "expected_roi_per_day": expected_roi_per_day,
+        "expected_roi_per_day_net": expected_roi_per_day,
+        "expected_roi_per_day_conservative": expected_roi_per_day,
+        "expected_roi_per_day_conservative_net": expected_roi_per_day,
+        "estimated_max_loss_dollars": estimated_entry_cost,
+        "estimated_max_profit_dollars": estimated_max_profit_dollars,
+        "max_profit_roi_on_cost": max_profit_roi_on_cost,
+        "planning_bankroll_fraction": (
+            round(estimated_entry_cost / planning_bankroll_dollars, 6)
+            if planning_bankroll_dollars > 0
+            else ""
+        ),
+        "thesis": thesis,
+        "order_payload_preview": _build_order_payload_preview(
+            ticker=ticker,
+            count=max(1, int(contracts)),
+            side=side,
+            price_dollars=float(reference_price),
+        ),
+        "climate_router_pilot_candidate": True,
+        "source_strategy": "climate_router_pilot",
+        "router_opportunity_class": opportunity_class,
+        "router_expected_value_dollars": expected_value_dollars,
+        "router_reference_price": round(float(reference_price), 6),
+        "router_reference_price_source": reference_source,
+        "router_true_probability": router_true_probability if isinstance(router_true_probability, float) else "",
+        "router_break_even_probability": router_break_even_probability,
+        "router_suggested_risk_dollars": round(float(suggested_risk_dollars), 6),
+        "router_shadow_rank": max(1, int(shadow_rank)),
+        "router_family": contract_family,
+        "router_strip_id": strip_key,
+        "climate_router_opportunity_class": opportunity_class,
+        "climate_router_availability_state": str(candidate.get("availability_state") or "").strip().lower(),
+        "climate_router_reference_source": reference_source,
+        "climate_router_required_ev_dollars": "",
+    }
+
+
+def _prepare_plan_with_climate_router_pilot(
+    *,
+    plan_summary: dict[str, Any],
+    output_dir: str,
+    planning_bankroll_dollars: float,
+    max_orders: int,
+    contracts_per_order: int,
+    climate_router_pilot_enabled: bool,
+    climate_router_summary_json: str | None,
+    climate_router_pilot_max_orders_per_run: int,
+    climate_router_pilot_contracts_cap: int,
+    climate_router_pilot_required_ev_dollars: float,
+    climate_router_pilot_allowed_classes: tuple[str, ...] | None,
+    climate_router_pilot_allowed_families: tuple[str, ...] | None,
+    climate_router_pilot_excluded_families: tuple[str, ...] | None,
+    climate_router_pilot_policy_scope_override_enabled: bool,
+    daily_weather_live_only_effective: bool,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    telemetry: dict[str, Any] = {
+        "climate_router_pilot_enabled": bool(climate_router_pilot_enabled),
+        "climate_router_pilot_status": "disabled",
+        "climate_router_pilot_reason": "disabled",
+        "climate_router_pilot_summary_file": None,
+        "climate_router_pilot_selection_mode": "missing",
+        "climate_router_pilot_summary_status": None,
+        "climate_router_pilot_allowed_classes": list(
+            _normalize_climate_router_allowed_classes(climate_router_pilot_allowed_classes)
+        ),
+        "climate_router_pilot_allowed_families": list(
+            _normalize_contract_family_filters(climate_router_pilot_allowed_families)
+        ),
+        "climate_router_pilot_excluded_families": list(
+            _normalize_contract_family_filters(climate_router_pilot_excluded_families)
+        ),
+        "climate_router_pilot_max_orders_per_run": max(0, int(climate_router_pilot_max_orders_per_run)),
+        "climate_router_pilot_contracts_cap": max(1, int(climate_router_pilot_contracts_cap)),
+        "climate_router_pilot_required_ev_dollars": round(max(0.0, float(climate_router_pilot_required_ev_dollars)), 6),
+        "climate_router_pilot_policy_scope_override_enabled": bool(
+            climate_router_pilot_policy_scope_override_enabled
+        ),
+        "climate_router_pilot_policy_scope_override_attempts": 0,
+        "climate_router_pilot_policy_scope_override_submissions": 0,
+        "climate_router_pilot_policy_scope_override_blocked_reason_counts": {},
+        "climate_router_pilot_considered_rows": 0,
+        "climate_router_pilot_submitted_rows": 0,
+        "climate_router_pilot_expected_value_dollars": 0.0,
+        "climate_router_pilot_blocked_reason_counts": {},
+        "climate_router_pilot_selected_tickers": [],
+    }
+    effective_summary = dict(plan_summary)
+    existing_orders = [dict(row) for row in plan_summary.get("orders", []) if isinstance(row, dict)]
+    effective_summary["orders"] = existing_orders
+    if not bool(climate_router_pilot_enabled):
+        return effective_summary, telemetry
+
+    router_summary, summary_path, selection_mode = _load_climate_router_summary(
+        output_dir=output_dir,
+        explicit_path=climate_router_summary_json,
+    )
+    telemetry["climate_router_pilot_selection_mode"] = selection_mode
+    telemetry["climate_router_pilot_summary_file"] = summary_path
+    if not isinstance(router_summary, dict):
+        telemetry["climate_router_pilot_status"] = "missing_router_summary"
+        telemetry["climate_router_pilot_reason"] = "missing_router_summary"
+        return effective_summary, telemetry
+
+    telemetry["climate_router_pilot_summary_status"] = str(router_summary.get("status") or "").strip().lower() or None
+    top_tradable = [row for row in router_summary.get("top_tradable_candidates", []) if isinstance(row, dict)]
+    telemetry["climate_router_pilot_considered_rows"] = len(top_tradable)
+    if not top_tradable:
+        telemetry["climate_router_pilot_status"] = "no_router_tradable_rows"
+        telemetry["climate_router_pilot_reason"] = "no_router_tradable_rows"
+        return effective_summary, telemetry
+
+    allowed_classes = set(_normalize_climate_router_allowed_classes(climate_router_pilot_allowed_classes))
+    allowed_families = set(_normalize_contract_family_filters(climate_router_pilot_allowed_families))
+    excluded_families = set(_normalize_contract_family_filters(climate_router_pilot_excluded_families))
+    existing_tickers = {str(row.get("market_ticker") or "").strip().upper() for row in existing_orders}
+    blocked_reason_counts: dict[str, int] = {}
+
+    max_orders_total = max(1, int(max_orders))
+    max_pilot_orders = max(0, int(climate_router_pilot_max_orders_per_run))
+    if max_pilot_orders <= 0:
+        telemetry["climate_router_pilot_status"] = "disabled_by_max_orders"
+        telemetry["climate_router_pilot_reason"] = "disabled_by_max_orders"
+        return effective_summary, telemetry
+    available_slots = max(0, max_orders_total - len(existing_orders))
+    if available_slots <= 0:
+        telemetry["climate_router_pilot_status"] = "max_orders_already_allocated"
+        telemetry["climate_router_pilot_reason"] = "max_orders_already_allocated"
+        return effective_summary, telemetry
+
+    effective_pilot_limit = min(max_pilot_orders, available_slots)
+    contracts_cap = max(1, int(climate_router_pilot_contracts_cap))
+    required_ev = max(0.0, float(climate_router_pilot_required_ev_dollars))
+    selected_rows: list[dict[str, Any]] = []
+    total_expected_value = 0.0
+    policy_scope_override_attempts = 0
+    policy_scope_override_submissions = 0
+    policy_scope_override_blocked_reason_counts: dict[str, int] = {}
+
+    for candidate_index, candidate in enumerate(top_tradable, start=1):
+        if len(selected_rows) >= effective_pilot_limit:
+            blocked_reason_counts["pilot_limit_reached"] = blocked_reason_counts.get("pilot_limit_reached", 0) + 1
+            continue
+        ticker = str(candidate.get("market_ticker") or "").strip().upper()
+        if not ticker:
+            blocked_reason_counts["missing_market_ticker"] = blocked_reason_counts.get("missing_market_ticker", 0) + 1
+            continue
+        if ticker in existing_tickers:
+            blocked_reason_counts["duplicate_ticker_existing_plan"] = (
+                blocked_reason_counts.get("duplicate_ticker_existing_plan", 0) + 1
+            )
+            continue
+        opportunity_class = str(candidate.get("opportunity_class") or "").strip().lower()
+        if opportunity_class and opportunity_class not in allowed_classes:
+            blocked_reason_counts["opportunity_class_not_allowed"] = (
+                blocked_reason_counts.get("opportunity_class_not_allowed", 0) + 1
+            )
+            continue
+        contract_family = str(candidate.get("contract_family") or "").strip().lower()
+        if allowed_families and contract_family not in allowed_families:
+            blocked_reason_counts["contract_family_not_allowed"] = (
+                blocked_reason_counts.get("contract_family_not_allowed", 0) + 1
+            )
+            continue
+        if excluded_families and contract_family in excluded_families:
+            blocked_reason_counts["contract_family_excluded"] = (
+                blocked_reason_counts.get("contract_family_excluded", 0) + 1
+            )
+            continue
+        policy_scope_override_used = False
+        policy_scope_override_reason = ""
+        if daily_weather_live_only_effective and contract_family not in _DAILY_WEATHER_CONTRACT_FAMILIES:
+            policy_scope_override_attempts += 1
+            if not bool(climate_router_pilot_policy_scope_override_enabled):
+                blocked_reason_counts["daily_weather_only_mode"] = blocked_reason_counts.get("daily_weather_only_mode", 0) + 1
+                policy_scope_override_blocked_reason_counts["override_disabled"] = (
+                    policy_scope_override_blocked_reason_counts.get("override_disabled", 0) + 1
+                )
+                continue
+            if max_pilot_orders > 1:
+                blocked_reason_counts["policy_scope_override_requires_max_orders_per_run_le_1"] = (
+                    blocked_reason_counts.get("policy_scope_override_requires_max_orders_per_run_le_1", 0) + 1
+                )
+                policy_scope_override_blocked_reason_counts["max_orders_per_run_gt_1"] = (
+                    policy_scope_override_blocked_reason_counts.get("max_orders_per_run_gt_1", 0) + 1
+                )
+                continue
+            if contracts_cap > 1:
+                blocked_reason_counts["policy_scope_override_requires_contracts_cap_le_1"] = (
+                    blocked_reason_counts.get("policy_scope_override_requires_contracts_cap_le_1", 0) + 1
+                )
+                policy_scope_override_blocked_reason_counts["contracts_cap_gt_1"] = (
+                    policy_scope_override_blocked_reason_counts.get("contracts_cap_gt_1", 0) + 1
+                )
+                continue
+            policy_scope_override_used = True
+            policy_scope_override_reason = "daily_weather_live_only_override_for_climate_router_pilot"
+        contracts = min(max(1, int(contracts_per_order)), contracts_cap)
+        plan_row = _build_climate_router_pilot_plan_row(
+            candidate=candidate,
+            contracts=contracts,
+            planning_bankroll_dollars=float(planning_bankroll_dollars),
+            shadow_rank=candidate_index,
+        )
+        if not isinstance(plan_row, dict):
+            blocked_reason_counts["candidate_shape_invalid"] = blocked_reason_counts.get("candidate_shape_invalid", 0) + 1
+            continue
+        expected_value_dollars = _as_float(plan_row.get("expected_value_dollars"))
+        if not isinstance(expected_value_dollars, float):
+            expected_value_dollars = 0.0
+        if expected_value_dollars + 1e-9 < required_ev:
+            blocked_reason_counts["expected_value_below_required"] = (
+                blocked_reason_counts.get("expected_value_below_required", 0) + 1
+            )
+            continue
+        plan_row["pilot_policy_scope_override_used"] = bool(policy_scope_override_used)
+        plan_row["pilot_policy_scope_override_enabled"] = bool(climate_router_pilot_policy_scope_override_enabled)
+        plan_row["pilot_policy_scope_override_applicable"] = bool(
+            daily_weather_live_only_effective
+            and contract_family not in _DAILY_WEATHER_CONTRACT_FAMILIES
+        )
+        plan_row["pilot_policy_scope_override_reason"] = (
+            policy_scope_override_reason if policy_scope_override_used else ""
+        )
+        plan_row["pilot_policy_scope_override_family"] = (
+            contract_family if policy_scope_override_used else ""
+        )
+        plan_row["pilot_policy_scope_override_ticker"] = (
+            ticker if policy_scope_override_used else ""
+        )
+        plan_row["climate_router_required_ev_dollars"] = required_ev
+        selected_rows.append(plan_row)
+        existing_tickers.add(ticker)
+        total_expected_value += expected_value_dollars
+        if policy_scope_override_used:
+            policy_scope_override_submissions += 1
+
+    telemetry["climate_router_pilot_policy_scope_override_attempts"] = int(policy_scope_override_attempts)
+    telemetry["climate_router_pilot_policy_scope_override_submissions"] = int(policy_scope_override_submissions)
+    telemetry["climate_router_pilot_policy_scope_override_blocked_reason_counts"] = dict(
+        sorted(policy_scope_override_blocked_reason_counts.items(), key=lambda item: (-item[1], item[0]))
+    )
+    telemetry["climate_router_pilot_submitted_rows"] = len(selected_rows)
+    telemetry["climate_router_pilot_expected_value_dollars"] = round(total_expected_value, 6)
+    telemetry["climate_router_pilot_blocked_reason_counts"] = dict(
+        sorted(blocked_reason_counts.items(), key=lambda item: (-item[1], item[0]))
+    )
+    telemetry["climate_router_pilot_selected_tickers"] = [
+        str(row.get("market_ticker") or "").strip() for row in selected_rows
+    ]
+
+    if not selected_rows:
+        telemetry["climate_router_pilot_status"] = "no_router_pilot_candidates"
+        telemetry["climate_router_pilot_reason"] = "no_router_pilot_candidates"
+        return effective_summary, telemetry
+
+    merged_orders = list(existing_orders) + selected_rows
+    for plan_rank, row in enumerate(merged_orders, start=1):
+        row["plan_rank"] = plan_rank
+    effective_summary["orders"] = merged_orders
+    effective_summary["planned_orders"] = len(merged_orders)
+    if str(effective_summary.get("status") or "").strip().lower() in {"", "no_candidates"}:
+        effective_summary["status"] = "ready"
+
+    positive_orders = [
+        row
+        for row in merged_orders
+        if isinstance(_as_float(row.get("maker_entry_edge")), float) and _as_float(row.get("maker_entry_edge")) > 0
+    ]
+    positive_policy_orders = [
+        row
+        for row in positive_orders
+        if _as_bool(row.get("canonical_policy_applied")) is True or bool(row.get("canonical_policy_applied"))
+    ]
+    effective_summary["positive_maker_entry_markets"] = max(
+        int(effective_summary.get("positive_maker_entry_markets") or 0),
+        len(positive_orders),
+    )
+    effective_summary["positive_maker_entry_markets_with_canonical_policy"] = max(
+        int(effective_summary.get("positive_maker_entry_markets_with_canonical_policy") or 0),
+        len(positive_policy_orders),
+    )
+
+    if not existing_orders and merged_orders:
+        top = merged_orders[0]
+        effective_summary["top_market_ticker"] = top.get("market_ticker")
+        effective_summary["top_market_title"] = top.get("market_title")
+        effective_summary["top_market_close_time"] = top.get("close_time")
+        effective_summary["top_market_hours_to_close"] = top.get("hours_to_close")
+        effective_summary["top_market_side"] = top.get("side")
+        effective_summary["top_market_canonical_ticker"] = top.get("canonical_ticker")
+        effective_summary["top_market_canonical_niche"] = top.get("canonical_niche")
+        effective_summary["top_market_canonical_policy_applied"] = top.get("canonical_policy_applied")
+        effective_summary["top_market_contract_family"] = top.get("contract_family")
+        effective_summary["top_market_maker_entry_price_dollars"] = top.get("maker_entry_price_dollars")
+        effective_summary["top_market_maker_entry_edge"] = top.get("maker_entry_edge")
+        effective_summary["top_market_maker_entry_edge_net_fees"] = top.get("maker_entry_edge_net_fees")
+        effective_summary["top_market_estimated_entry_cost_dollars"] = top.get("estimated_entry_cost_dollars")
+        effective_summary["top_market_estimated_entry_fee_dollars"] = top.get("estimated_entry_fee_dollars")
+        effective_summary["top_market_expected_value_dollars"] = top.get("expected_value_dollars")
+        effective_summary["top_market_expected_value_net_dollars"] = top.get("expected_value_net_dollars")
+        effective_summary["top_market_expected_roi_on_cost"] = top.get("expected_roi_on_cost")
+        effective_summary["top_market_expected_roi_on_cost_net"] = top.get("expected_roi_on_cost_net")
+        effective_summary["top_market_expected_value_per_day_dollars"] = top.get("expected_value_per_day_dollars")
+        effective_summary["top_market_expected_value_per_day_net_dollars"] = top.get(
+            "expected_value_per_day_net_dollars"
+        )
+        effective_summary["top_market_expected_roi_per_day"] = top.get("expected_roi_per_day")
+        effective_summary["top_market_expected_roi_per_day_net"] = top.get("expected_roi_per_day_net")
+        effective_summary["top_market_estimated_max_profit_dollars"] = top.get("estimated_max_profit_dollars")
+        effective_summary["top_market_estimated_max_loss_dollars"] = top.get("estimated_max_loss_dollars")
+        effective_summary["top_market_max_profit_roi_on_cost"] = top.get("max_profit_roi_on_cost")
+        effective_summary["top_market_fair_probability"] = top.get("fair_probability")
+        effective_summary["top_market_fair_probability_conservative"] = top.get("fair_probability_conservative")
+        effective_summary["top_market_confidence"] = top.get("confidence")
+        effective_summary["top_market_thesis"] = top.get("thesis")
+
+    telemetry["climate_router_pilot_status"] = "ready"
+    telemetry["climate_router_pilot_reason"] = "router_candidates_promoted"
+    return effective_summary, telemetry
 
 
 def _latest_history_rows(history_rows: list[dict[str, str]]) -> dict[str, dict[str, str]]:
@@ -182,6 +731,7 @@ def build_prior_trade_gate_decision(
     enforce_weather_history_live_ready: bool = False,
     daily_weather_board_summary: dict[str, Any] | None = None,
     enforce_daily_weather_live_only: bool = False,
+    climate_router_pilot_policy_scope_override_active: bool = False,
     require_daily_weather_board_coverage: bool = False,
     require_daily_weather_board_freshness: bool = False,
 ) -> dict[str, Any]:
@@ -247,12 +797,15 @@ def build_prior_trade_gate_decision(
         else None
     )
     daily_weather_candidates_total = int(plan_summary.get("weather_history_daily_candidates_total") or 0)
+    daily_weather_live_only_enforced_effective = bool(
+        enforce_daily_weather_live_only and not climate_router_pilot_policy_scope_override_active
+    )
     stale_daily_weather_board = (
         require_daily_weather_board_freshness
         and daily_weather_markets_total > 0
         and daily_weather_board_capture_fresh is not True
         and (
-            enforce_daily_weather_live_only
+            daily_weather_live_only_enforced_effective
             or top_market_contract_family_normalized in _DAILY_WEATHER_CONTRACT_FAMILIES
             or daily_weather_candidates_total > 0
         )
@@ -315,7 +868,7 @@ def build_prior_trade_gate_decision(
             f"({freshness_label}, {max_age_label})."
         )
     if (
-        enforce_daily_weather_live_only
+        daily_weather_live_only_enforced_effective
         and planned_orders > 0
         and top_market_contract_family_normalized not in _DAILY_WEATHER_CONTRACT_FAMILIES
     ):
@@ -365,7 +918,7 @@ def build_prior_trade_gate_decision(
         elif stale_daily_weather_board:
             gate_status = "daily_weather_board_stale"
         elif (
-            enforce_daily_weather_live_only
+            daily_weather_live_only_enforced_effective
             and planned_orders > 0
             and top_market_contract_family_normalized not in _DAILY_WEATHER_CONTRACT_FAMILIES
         ):
@@ -426,7 +979,11 @@ def build_prior_trade_gate_decision(
         "top_market_contract_family": top_market_contract_family_normalized or None,
         "top_market_canonical_policy_applied": top_market_canonical_policy_applied,
         "allowed_canonical_niches": sorted(normalized_allowed_niches) if normalized_allowed_niches else None,
-        "daily_weather_live_only_enforced": bool(enforce_daily_weather_live_only),
+        "daily_weather_live_only_enforced": bool(daily_weather_live_only_enforced_effective),
+        "daily_weather_live_only_requested": bool(enforce_daily_weather_live_only),
+        "climate_router_pilot_policy_scope_override_active": bool(
+            climate_router_pilot_policy_scope_override_active
+        ),
         "weather_history_live_gate_enforced": bool(enforce_weather_history_live_ready),
         "weather_history_unhealthy_filtered": weather_history_unhealthy_filtered_count,
         "daily_weather_board_coverage_required": bool(require_daily_weather_board_coverage),
@@ -518,6 +1075,15 @@ def run_kalshi_micro_prior_execute(
     enforce_daily_weather_live_only: bool = False,
     require_daily_weather_board_coverage_for_live: bool = False,
     daily_weather_board_max_age_seconds: float = 900.0,
+    climate_router_pilot_enabled: bool = False,
+    climate_router_summary_json: str | None = None,
+    climate_router_pilot_max_orders_per_run: int = 1,
+    climate_router_pilot_contracts_cap: int = 1,
+    climate_router_pilot_required_ev_dollars: float = 0.01,
+    climate_router_pilot_allowed_classes: tuple[str, ...] = ("tradable",),
+    climate_router_pilot_allowed_families: tuple[str, ...] = (),
+    climate_router_pilot_excluded_families: tuple[str, ...] = (),
+    climate_router_pilot_policy_scope_override_enabled: bool = False,
     http_request_json: AuthenticatedRequester = _http_request_json,
     http_get_json: HttpGetter = _http_get_json,
     sign_request: KalshiSigner = _kalshi_sign_request,
@@ -620,6 +1186,42 @@ def run_kalshi_micro_prior_execute(
         sign_request=sign_request,
         now=captured_at,
     )
+    plan_summary, climate_router_pilot_summary = _prepare_plan_with_climate_router_pilot(
+        plan_summary=plan_summary,
+        output_dir=output_dir,
+        planning_bankroll_dollars=float(planning_bankroll_dollars),
+        max_orders=max_orders,
+        contracts_per_order=contracts_per_order,
+        climate_router_pilot_enabled=bool(climate_router_pilot_enabled),
+        climate_router_summary_json=climate_router_summary_json,
+        climate_router_pilot_max_orders_per_run=max(0, int(climate_router_pilot_max_orders_per_run)),
+        climate_router_pilot_contracts_cap=max(1, int(climate_router_pilot_contracts_cap)),
+        climate_router_pilot_required_ev_dollars=max(0.0, float(climate_router_pilot_required_ev_dollars)),
+        climate_router_pilot_allowed_classes=tuple(climate_router_pilot_allowed_classes or ()),
+        climate_router_pilot_allowed_families=tuple(climate_router_pilot_allowed_families or ()),
+        climate_router_pilot_excluded_families=tuple(climate_router_pilot_excluded_families or ()),
+        climate_router_pilot_policy_scope_override_enabled=bool(
+            climate_router_pilot_policy_scope_override_enabled
+        ),
+        daily_weather_live_only_effective=daily_weather_live_only_effective,
+    )
+    climate_router_pilot_policy_scope_override_attempts = max(
+        0,
+        int(climate_router_pilot_summary.get("climate_router_pilot_policy_scope_override_attempts") or 0),
+    )
+    climate_router_pilot_policy_scope_override_submissions = max(
+        0,
+        int(climate_router_pilot_summary.get("climate_router_pilot_policy_scope_override_submissions") or 0),
+    )
+    climate_router_pilot_policy_scope_override_gate_active = bool(
+        daily_weather_live_only_effective
+        and bool(climate_router_pilot_policy_scope_override_enabled)
+        and climate_router_pilot_policy_scope_override_submissions > 0
+    )
+    climate_router_pilot_policy_scope_override_applicable = bool(
+        daily_weather_live_only_effective
+        and climate_router_pilot_policy_scope_override_attempts > 0
+    )
     top_market_ticker = str(plan_summary.get("top_market_ticker") or "").strip()
     contract_family_by_ticker = dict(weather_board_summary_raw.get("contract_family_by_ticker") or {})
     top_market_contract_family = str(contract_family_by_ticker.get(top_market_ticker) or "").strip().lower()
@@ -664,6 +1266,7 @@ def run_kalshi_micro_prior_execute(
         enforce_weather_history_live_ready=weather_history_live_gate_effective,
         daily_weather_board_summary=weather_board_summary,
         enforce_daily_weather_live_only=daily_weather_live_only_effective,
+        climate_router_pilot_policy_scope_override_active=climate_router_pilot_policy_scope_override_gate_active,
         require_daily_weather_board_coverage=require_daily_weather_board_coverage_effective,
         require_daily_weather_board_freshness=enforce_live_quality_filters,
     )
@@ -672,6 +1275,18 @@ def run_kalshi_micro_prior_execute(
         return dict(plan_summary)
 
     effective_allow_live_orders = allow_live_orders and bool(prior_trade_gate_summary.get("gate_pass"))
+    if not bool(climate_router_pilot_policy_scope_override_enabled):
+        climate_router_pilot_policy_scope_override_status = "inactive_disabled"
+    elif climate_router_pilot_policy_scope_override_submissions > 0 and effective_allow_live_orders:
+        climate_router_pilot_policy_scope_override_status = "active"
+    elif climate_router_pilot_policy_scope_override_applicable and not effective_allow_live_orders:
+        climate_router_pilot_policy_scope_override_status = "enabled_pending_live_mode"
+    else:
+        climate_router_pilot_policy_scope_override_status = "inactive_not_applicable"
+    climate_router_pilot_policy_scope_override_active = (
+        climate_router_pilot_policy_scope_override_status == "active"
+    )
+
     execute_kwargs: dict[str, Any] = {
         "env_file": env_file,
         "output_dir": output_dir,
@@ -777,6 +1392,122 @@ def run_kalshi_micro_prior_execute(
         "require_daily_weather_board_coverage_for_live": bool(require_daily_weather_board_coverage_for_live),
         "require_daily_weather_board_coverage_effective": require_daily_weather_board_coverage_effective,
         "daily_weather_board_max_age_seconds": max(0.0, float(daily_weather_board_max_age_seconds)),
+        "climate_router_pilot_enabled": bool(climate_router_pilot_enabled),
+        "climate_router_pilot_summary_json": climate_router_summary_json,
+        "climate_router_pilot_policy_scope_override_enabled": bool(
+            climate_router_pilot_policy_scope_override_enabled
+        ),
+        "climate_router_pilot_policy_scope_override_active": climate_router_pilot_policy_scope_override_active,
+        "climate_router_pilot_policy_scope_override_status": climate_router_pilot_policy_scope_override_status,
+        "climate_router_pilot_policy_scope_override_gate_active": (
+            climate_router_pilot_policy_scope_override_gate_active
+        ),
+        "climate_router_pilot_policy_scope_override_applicable": (
+            climate_router_pilot_policy_scope_override_applicable
+        ),
+        "climate_router_pilot_max_orders_per_run": max(0, int(climate_router_pilot_max_orders_per_run)),
+        "climate_router_pilot_contracts_cap": max(1, int(climate_router_pilot_contracts_cap)),
+        "climate_router_pilot_required_ev_dollars": round(max(0.0, float(climate_router_pilot_required_ev_dollars)), 6),
+        "climate_router_pilot_allowed_classes": list(
+            _normalize_climate_router_allowed_classes(tuple(climate_router_pilot_allowed_classes or ()))
+        ),
+        "climate_router_pilot_allowed_families": list(
+            _normalize_contract_family_filters(tuple(climate_router_pilot_allowed_families or ()))
+        ),
+        "climate_router_pilot_excluded_families": list(
+            _normalize_contract_family_filters(tuple(climate_router_pilot_excluded_families or ()))
+        ),
+        "climate_router_pilot_status": climate_router_pilot_summary.get("climate_router_pilot_status"),
+        "climate_router_pilot_reason": climate_router_pilot_summary.get("climate_router_pilot_reason"),
+        "climate_router_pilot_summary_file": climate_router_pilot_summary.get("climate_router_pilot_summary_file"),
+        "climate_router_pilot_selection_mode": climate_router_pilot_summary.get("climate_router_pilot_selection_mode"),
+        "climate_router_pilot_summary_status": climate_router_pilot_summary.get("climate_router_pilot_summary_status"),
+        "climate_router_pilot_considered_rows": climate_router_pilot_summary.get("climate_router_pilot_considered_rows"),
+        "climate_router_pilot_promoted_rows": climate_router_pilot_summary.get("climate_router_pilot_submitted_rows"),
+        "climate_router_pilot_submitted_rows": climate_router_pilot_summary.get("climate_router_pilot_submitted_rows"),
+        "climate_router_pilot_expected_value_dollars": climate_router_pilot_summary.get(
+            "climate_router_pilot_expected_value_dollars"
+        ),
+        "climate_router_pilot_blocked_reason_counts": climate_router_pilot_summary.get(
+            "climate_router_pilot_blocked_reason_counts"
+        ),
+        "climate_router_pilot_selected_tickers": climate_router_pilot_summary.get(
+            "climate_router_pilot_selected_tickers"
+        ),
+        "climate_router_pilot_policy_scope_override_attempts": climate_router_pilot_policy_scope_override_attempts,
+        "climate_router_pilot_policy_scope_override_submissions": climate_router_pilot_policy_scope_override_submissions,
+        "climate_router_pilot_policy_scope_override_blocked_reason_counts": climate_router_pilot_summary.get(
+            "climate_router_pilot_policy_scope_override_blocked_reason_counts"
+        ),
+        "climate_router_pilot_allowed_families_effective": climate_router_pilot_summary.get(
+            "climate_router_pilot_allowed_families"
+        ),
+        "climate_router_pilot_excluded_families_effective": climate_router_pilot_summary.get(
+            "climate_router_pilot_excluded_families"
+        ),
+        "climate_router_pilot_execute_considered_rows": execute_summary.get("climate_router_pilot_execute_considered_rows"),
+        "climate_router_pilot_live_mode_enabled": execute_summary.get("climate_router_pilot_live_mode_enabled"),
+        "climate_router_pilot_live_eligible_rows": execute_summary.get("climate_router_pilot_live_eligible_rows"),
+        "climate_router_pilot_would_attempt_live_if_enabled": execute_summary.get(
+            "climate_router_pilot_would_attempt_live_if_enabled"
+        ),
+        "climate_router_pilot_blocked_dry_run_only_rows": execute_summary.get(
+            "climate_router_pilot_blocked_dry_run_only_rows"
+        ),
+        "climate_router_pilot_blocked_research_dry_run_only_reason_counts": execute_summary.get(
+            "climate_router_pilot_blocked_research_dry_run_only_reason_counts"
+        ),
+        "climate_router_pilot_non_policy_gates_passed_rows": execute_summary.get(
+            "climate_router_pilot_non_policy_gates_passed_rows"
+        ),
+        "climate_router_pilot_attempted_orders": execute_summary.get("climate_router_pilot_attempted_orders"),
+        "climate_router_pilot_acked_orders": execute_summary.get("climate_router_pilot_acked_orders"),
+        "climate_router_pilot_resting_orders": execute_summary.get("climate_router_pilot_resting_orders"),
+        "climate_router_pilot_filled_orders": execute_summary.get("climate_router_pilot_filled_orders"),
+        "climate_router_pilot_blocked_post_promotion_reason_counts": execute_summary.get(
+            "climate_router_pilot_blocked_post_promotion_reason_counts"
+        ),
+        "climate_router_pilot_blocked_frontier_insufficient_data": execute_summary.get(
+            "climate_router_pilot_blocked_frontier_insufficient_data"
+        ),
+        "climate_router_pilot_blocked_balance": execute_summary.get("climate_router_pilot_blocked_balance"),
+        "climate_router_pilot_blocked_board_stale": execute_summary.get("climate_router_pilot_blocked_board_stale"),
+        "climate_router_pilot_blocked_weather_history": execute_summary.get(
+            "climate_router_pilot_blocked_weather_history"
+        ),
+        "climate_router_pilot_blocked_duplicate_ticker": execute_summary.get(
+            "climate_router_pilot_blocked_duplicate_ticker"
+        ),
+        "climate_router_pilot_blocked_no_orderable_side_on_recheck": execute_summary.get(
+            "climate_router_pilot_blocked_no_orderable_side_on_recheck"
+        ),
+        "climate_router_pilot_blocked_ev_below_threshold": execute_summary.get(
+            "climate_router_pilot_blocked_ev_below_threshold"
+        ),
+        "climate_router_pilot_blocked_research_dry_run_only": execute_summary.get(
+            "climate_router_pilot_blocked_research_dry_run_only"
+        ),
+        "climate_router_pilot_blocked_live_disabled": execute_summary.get(
+            "climate_router_pilot_blocked_live_disabled"
+        ),
+        "climate_router_pilot_blocked_policy_scope": execute_summary.get(
+            "climate_router_pilot_blocked_policy_scope"
+        ),
+        "climate_router_pilot_blocked_family_filter": execute_summary.get(
+            "climate_router_pilot_blocked_family_filter"
+        ),
+        "climate_router_pilot_blocked_contract_cap": execute_summary.get(
+            "climate_router_pilot_blocked_contract_cap"
+        ),
+        "climate_router_pilot_frontier_bootstrap_submitted_attempts": execute_summary.get(
+            "climate_router_pilot_frontier_bootstrap_submitted_attempts"
+        ),
+        "climate_router_pilot_frontier_bootstrap_blocked_attempts": execute_summary.get(
+            "climate_router_pilot_frontier_bootstrap_blocked_attempts"
+        ),
+        "climate_router_pilot_policy_scope_override_status_execute": execute_summary.get(
+            "climate_router_pilot_policy_scope_override_status"
+        ),
         "allowed_live_canonical_niches": list(allowed_live_canonical_niches) if allowed_live_canonical_niches else None,
         "weather_board_summary": weather_board_summary,
         "history_csv_path": str(history_csv),

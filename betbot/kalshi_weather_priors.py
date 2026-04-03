@@ -21,15 +21,25 @@ from betbot.runtime_version import (
 )
 from betbot.kalshi_weather_ingest import (
     fetch_ncei_cdo_station_daily_history,
+    fetch_ncei_normals_station_day,
+    fetch_noaa_mrms_qpe_latest_metadata,
+    fetch_noaa_nbm_latest_snapshot,
     fetch_noaa_global_land_ocean_anomaly_series,
+    fetch_nws_active_alerts_for_point,
     fetch_nws_station_hourly_forecast,
+    fetch_nws_station_recent_observations,
 )
 from betbot.kalshi_weather_settlement import build_weather_settlement_spec
 
 
 WeatherStationForecastFetcher = Callable[..., dict[str, Any]]
+WeatherStationObservationFetcher = Callable[..., dict[str, Any]]
+WeatherPointAlertsFetcher = Callable[..., dict[str, Any]]
 NoaaAnomalySeriesFetcher = Callable[..., dict[str, Any]]
 StationHistoryFetcher = Callable[..., dict[str, Any]]
+StationNormalsFetcher = Callable[..., dict[str, Any]]
+MrmsSnapshotFetcher = Callable[..., dict[str, Any]]
+NbmSnapshotFetcher = Callable[..., dict[str, Any]]
 
 
 _DEFAULT_ALLOWED_FAMILIES = (
@@ -563,6 +573,128 @@ def _infer_station_id(row: dict[str, str], settlement_station: str) -> str:
     return ""
 
 
+def _fetch_station_forecast(
+    *,
+    station_forecast_fetcher: WeatherStationForecastFetcher,
+    station_id: str,
+    timeout_seconds: float,
+    include_gridpoint_data: bool,
+) -> dict[str, Any]:
+    fetch_signature = inspect.signature(station_forecast_fetcher)
+    fetch_kwargs: dict[str, Any] = {
+        "station_id": station_id,
+        "timeout_seconds": timeout_seconds,
+    }
+    if "include_gridpoint_data" in fetch_signature.parameters:
+        fetch_kwargs["include_gridpoint_data"] = bool(include_gridpoint_data)
+    return station_forecast_fetcher(**fetch_kwargs)
+
+
+def _parse_valid_time_start(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if "/" in text:
+        text = text.split("/", 1)[0].strip()
+    if not text:
+        return None
+    return _parse_datetime(text)
+
+
+def _observation_window_local_minutes(
+    *,
+    observation_window_local_start: str | None,
+    observation_window_local_end: str | None,
+) -> tuple[int | None, int | None, bool]:
+    def _minutes_from_clock(value: str | None) -> int | None:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        match = re.match(r"^(\d{1,2}):(\d{2})$", text)
+        if not match:
+            return None
+        hours = int(match.group(1))
+        minutes = int(match.group(2))
+        if hours < 0 or hours > 23 or minutes < 0 or minutes > 59:
+            return None
+        return (hours * 60) + minutes
+
+    start_minutes = _minutes_from_clock(observation_window_local_start)
+    end_minutes = _minutes_from_clock(observation_window_local_end)
+    overnight_window = (
+        start_minutes is not None
+        and end_minutes is not None
+        and start_minutes > end_minutes
+    )
+    return start_minutes, end_minutes, overnight_window
+
+
+def _gridpoint_numeric_values_for_target_window(
+    *,
+    values: list[dict[str, Any]],
+    settlement_timezone_name: str,
+    target_settlement_date: date | None,
+    observation_window_local_start: str | None,
+    observation_window_local_end: str | None,
+) -> list[float]:
+    if not values:
+        return []
+
+    try:
+        settlement_zone = ZoneInfo(settlement_timezone_name)
+    except ZoneInfoNotFoundError:
+        settlement_zone = timezone.utc
+
+    start_minutes, end_minutes, overnight_window = _observation_window_local_minutes(
+        observation_window_local_start=observation_window_local_start,
+        observation_window_local_end=observation_window_local_end,
+    )
+    has_explicit_window = start_minutes is not None and end_minutes is not None
+    next_settlement_date = (
+        target_settlement_date + timedelta(days=1)
+        if isinstance(target_settlement_date, date)
+        else None
+    )
+
+    selected: list[float] = []
+    for item in values:
+        if not isinstance(item, dict):
+            continue
+        raw_value = _parse_float(item.get("value"))
+        if raw_value is None:
+            continue
+        valid_time_start = _parse_valid_time_start(item.get("validTime"))
+        if valid_time_start is None:
+            continue
+        local_start = valid_time_start.astimezone(settlement_zone)
+        local_date = local_start.date()
+        minute_of_day = (local_start.hour * 60) + local_start.minute
+
+        if isinstance(target_settlement_date, date):
+            if not has_explicit_window:
+                if local_date != target_settlement_date:
+                    continue
+            elif not overnight_window:
+                if local_date != target_settlement_date:
+                    continue
+                if minute_of_day < int(start_minutes) or minute_of_day > int(end_minutes):
+                    continue
+            else:
+                in_target_day_segment = (
+                    local_date == target_settlement_date
+                    and minute_of_day >= int(start_minutes)
+                )
+                in_next_day_segment = (
+                    isinstance(next_settlement_date, date)
+                    and local_date == next_settlement_date
+                    and minute_of_day <= int(end_minutes)
+                )
+                if not in_target_day_segment and not in_next_day_segment:
+                    continue
+        selected.append(float(raw_value))
+    return selected
+
+
 def _period_window(
     periods: list[dict[str, Any]],
     *,
@@ -885,15 +1017,28 @@ def _build_daily_rain_prior(
     row: dict[str, str],
     settlement: dict[str, Any],
     history_payload: dict[str, Any] | None,
+    normals_payload: dict[str, Any] | None,
+    mrms_payload: dict[str, Any] | None,
+    nbm_payload: dict[str, Any] | None,
     now: datetime,
     timeout_seconds: float,
+    include_nws_gridpoint_data: bool,
+    include_nws_observations: bool,
+    include_nws_alerts: bool,
     station_forecast_fetcher: WeatherStationForecastFetcher,
+    station_observations_fetcher: WeatherStationObservationFetcher,
+    point_alerts_fetcher: WeatherPointAlertsFetcher,
 ) -> tuple[dict[str, Any] | None, str | None]:
     station_id = _infer_station_id(row, str(settlement.get("settlement_station") or ""))
     if not station_id:
         return None, "missing_settlement_station"
 
-    forecast = station_forecast_fetcher(station_id=station_id, timeout_seconds=timeout_seconds)
+    forecast = _fetch_station_forecast(
+        station_forecast_fetcher=station_forecast_fetcher,
+        station_id=station_id,
+        timeout_seconds=timeout_seconds,
+        include_gridpoint_data=include_nws_gridpoint_data,
+    )
     if str(forecast.get("status") or "") != "ready":
         return None, f"station_forecast_{forecast.get('status') or 'unavailable'}"
 
@@ -924,6 +1069,50 @@ def _build_daily_rain_prior(
     if not pop_values:
         return None, "station_forecast_missing_precip_probability"
 
+    window_start = str(settlement.get("observation_window_local_start") or "").strip()
+    window_end = str(settlement.get("observation_window_local_end") or "").strip()
+
+    gridpoint_status = str(forecast.get("gridpoint_status") or "").strip().lower()
+    gridpoint_layers = forecast.get("gridpoint_layers") if isinstance(forecast.get("gridpoint_layers"), dict) else {}
+    gridpoint_pop_values: list[float] = []
+    gridpoint_qpf_in_values: list[float] = []
+    if gridpoint_status == "ready" and isinstance(gridpoint_layers, dict):
+        raw_pop_values = _gridpoint_numeric_values_for_target_window(
+            values=[
+                item
+                for item in (gridpoint_layers.get("probabilityOfPrecipitation") or [])
+                if isinstance(item, dict)
+            ],
+            settlement_timezone_name=settlement_timezone_name,
+            target_settlement_date=target_local_dt.date(),
+            observation_window_local_start=window_start,
+            observation_window_local_end=window_end,
+        )
+        gridpoint_pop_values = [
+            min(1.0, max(0.0, value / 100.0))
+            for value in raw_pop_values
+        ]
+        raw_qpf_values_mm = _gridpoint_numeric_values_for_target_window(
+            values=[
+                item
+                for item in (gridpoint_layers.get("quantitativePrecipitation") or [])
+                if isinstance(item, dict)
+            ],
+            settlement_timezone_name=settlement_timezone_name,
+            target_settlement_date=target_local_dt.date(),
+            observation_window_local_start=window_start,
+            observation_window_local_end=window_end,
+        )
+        gridpoint_qpf_in_values = [
+            max(0.0, value / 25.4)
+            for value in raw_qpf_values_mm
+        ]
+
+    combined_pop_values = list(pop_values)
+    if gridpoint_pop_values:
+        combined_pop_values.extend(gridpoint_pop_values)
+    pop_values = combined_pop_values
+
     rain_regime = _rain_probability_regime_adjusted(pop_values)
     model_probability_raw_independent = float(rain_regime.get("independent_probability") or 0.0)
     model_probability_raw_unclamped = float(rain_regime.get("regime_adjusted_probability") or 0.0)
@@ -938,6 +1127,15 @@ def _build_daily_rain_prior(
         rain_frequency = history_payload.get("rain_day_frequency")
         if isinstance(rain_frequency, (int, float)):
             climatology_frequency = max(0.0, min(1.0, float(rain_frequency)))
+    normals_status = str((normals_payload or {}).get("status") or "").strip().lower()
+    normals_rain_frequency = _parse_float((normals_payload or {}).get("rain_day_frequency"))
+    if normals_status == "ready" and isinstance(normals_rain_frequency, float):
+        normals_rain_frequency = max(0.0, min(1.0, float(normals_rain_frequency)))
+        if isinstance(climatology_frequency, float):
+            climatology_frequency = (0.82 * climatology_frequency) + (0.18 * normals_rain_frequency)
+        else:
+            climatology_frequency = normals_rain_frequency
+            climatology_count = max(climatology_count, 30)
     rain_climatology_blend_weight = 0.0
     updated_at = str(forecast.get("forecast_updated_at") or "").strip()
     age_penalty = 0.0
@@ -946,6 +1144,104 @@ def _build_daily_rain_prior(
     if isinstance(updated_dt, datetime):
         age_hours = max(0.0, (now - updated_dt).total_seconds() / 3600.0)
         age_penalty = min(0.2, age_hours / 48.0)
+
+    gridpoint_qpf_signal = 0.0
+    if gridpoint_qpf_in_values:
+        qpf_mean = max(0.0, mean(gridpoint_qpf_in_values))
+        qpf_peak = max(0.0, max(gridpoint_qpf_in_values))
+        gridpoint_qpf_signal = max(
+            0.0,
+            min(0.12, (qpf_mean * 0.35) + min(0.08, qpf_peak * 0.15)),
+        )
+        model_probability_raw_unclamped = min(1.0, model_probability_raw_unclamped + gridpoint_qpf_signal)
+
+    observations_status = "disabled"
+    observations_recent_count = 0
+    observations_recent_rain_count = 0
+    observations_signal = 0.0
+    if include_nws_observations:
+        try:
+            observations_payload = station_observations_fetcher(
+                station_id=station_id,
+                timeout_seconds=timeout_seconds,
+                limit=24,
+            )
+        except Exception:
+            observations_payload = {"status": "upstream_error"}
+        observations_status = str(observations_payload.get("status") or "").strip().lower() or "upstream_error"
+        if observations_status == "ready":
+            observations = observations_payload.get("observations")
+            if isinstance(observations, list):
+                for observation in observations:
+                    if not isinstance(observation, dict):
+                        continue
+                    observed_dt = _parse_datetime(observation.get("timestamp"))
+                    if observed_dt is None:
+                        continue
+                    age_hours_obs = max(0.0, (now - observed_dt).total_seconds() / 3600.0)
+                    if age_hours_obs > 12.0:
+                        continue
+                    observations_recent_count += 1
+                    precip_mm = _parse_float(observation.get("precipitation_last_hour_mm"))
+                    text_description = str(observation.get("text_description") or "").strip().lower()
+                    if (isinstance(precip_mm, float) and precip_mm >= 0.2) or ("rain" in text_description):
+                        observations_recent_rain_count += 1
+                if observations_recent_count > 0:
+                    observations_signal = min(
+                        0.12,
+                        float(observations_recent_rain_count) / float(observations_recent_count) * 0.15,
+                    )
+                    model_probability_raw_unclamped = min(1.0, model_probability_raw_unclamped + observations_signal)
+
+    alerts_status = "disabled"
+    alerts_count = 0
+    alerts_signal = 0.0
+    if include_nws_alerts:
+        latitude = _parse_float(forecast.get("latitude"))
+        longitude = _parse_float(forecast.get("longitude"))
+        if isinstance(latitude, float) and isinstance(longitude, float):
+            try:
+                alerts_payload = point_alerts_fetcher(
+                    latitude=latitude,
+                    longitude=longitude,
+                    timeout_seconds=timeout_seconds,
+                )
+            except Exception:
+                alerts_payload = {"status": "upstream_error"}
+            alerts_status = str(alerts_payload.get("status") or "").strip().lower() or "upstream_error"
+            if alerts_status == "ready":
+                alerts_count = max(0, int(_parse_float(alerts_payload.get("alerts_count")) or 0))
+                severe_alerts = 0
+                for alert in alerts_payload.get("alerts") if isinstance(alerts_payload.get("alerts"), list) else []:
+                    if not isinstance(alert, dict):
+                        continue
+                    event_text = str(alert.get("event") or "").lower()
+                    severity_text = str(alert.get("severity") or "").lower()
+                    if any(token in event_text for token in ("flood", "storm", "rain", "thunder")):
+                        severe_alerts += 1
+                    elif severity_text in {"severe", "extreme"}:
+                        severe_alerts += 1
+                alerts_signal = min(0.05, severe_alerts * 0.015)
+                model_probability_raw_unclamped = min(1.0, model_probability_raw_unclamped + alerts_signal)
+
+    mrms_status = str((mrms_payload or {}).get("status") or "").strip().lower()
+    mrms_age_seconds = _parse_float((mrms_payload or {}).get("age_seconds"))
+    mrms_freshness_boost = 0.0
+    if mrms_status == "ready" and isinstance(mrms_age_seconds, float):
+        if mrms_age_seconds <= 90.0 * 60.0:
+            mrms_freshness_boost = 0.02
+        elif mrms_age_seconds >= 6.0 * 3600.0:
+            mrms_freshness_boost = -0.03
+
+    nbm_status = str((nbm_payload or {}).get("status") or "").strip().lower()
+    nbm_cycle_age_seconds = _parse_float((nbm_payload or {}).get("cycle_age_seconds"))
+    nbm_freshness_boost = 0.0
+    if nbm_status == "ready" and isinstance(nbm_cycle_age_seconds, float):
+        if nbm_cycle_age_seconds <= 3.0 * 3600.0:
+            nbm_freshness_boost = 0.02
+        elif nbm_cycle_age_seconds >= 12.0 * 3600.0:
+            nbm_freshness_boost = -0.02
+
     if climatology_frequency is not None:
         rain_climatology_blend_weight = _adaptive_rain_climatology_blend_weight(
             pop_values=pop_values,
@@ -975,6 +1271,11 @@ def _build_daily_rain_prior(
                 0.40
                 + min(0.40, len(pop_values) * 0.02)
                 + min(0.12, climatology_count * 0.006)
+                + min(0.05, gridpoint_qpf_signal * 0.8)
+                + min(0.05, observations_signal * 0.9)
+                + alerts_signal
+                + mrms_freshness_boost
+                + nbm_freshness_boost
                 - age_penalty,
             ),
         ),
@@ -989,9 +1290,18 @@ def _build_daily_rain_prior(
             f" Adaptive climatology blend weight {rain_climatology_blend_weight:.1%} "
             f"with {climatology_count}y station rain frequency {climatology_frequency:.1%}."
         )
+    if observations_recent_count > 0:
+        thesis_suffix += (
+            " Recent station observations were incorporated for short-horizon rain persistence."
+        )
     source_parts = [
         f"nws_station_hourly_forecast:{station_id}",
         f"periods_used={len(pop_values)}",
+        f"hourly_pop_points={len(scoped_periods)}",
+        f"gridpoint_status={gridpoint_status or 'missing'}",
+        f"gridpoint_pop_points={len(gridpoint_pop_values)}",
+        f"gridpoint_qpf_points={len(gridpoint_qpf_in_values)}",
+        f"gridpoint_qpf_signal={gridpoint_qpf_signal:.4f}",
         f"forecast_updated_at={updated_at or 'unknown'}",
         f"rain_forecast_age_hours={age_hours:.2f}",
         f"raw_pop_independent={model_probability_raw_independent:.4f}",
@@ -1002,11 +1312,28 @@ def _build_daily_rain_prior(
         f"rain_hourly_concentration_ratio={float(rain_regime.get('concentration_ratio') or 1.0):.3f}",
         f"rain_burst_blend_weight={float(rain_regime.get('burst_blend_weight') or 0.0):.3f}",
         f"rain_climatology_blend_weight={rain_climatology_blend_weight:.4f}",
+        f"nws_observations_status={observations_status}",
+        f"nws_observations_recent_count={observations_recent_count}",
+        f"nws_observations_recent_rain_count={observations_recent_rain_count}",
+        f"nws_observations_signal={observations_signal:.4f}",
+        f"nws_alerts_status={alerts_status}",
+        f"nws_alerts_count={alerts_count}",
+        f"nws_alerts_signal={alerts_signal:.4f}",
+        f"noaa_mrms_status={mrms_status or 'missing'}",
+        f"noaa_mrms_age_seconds={mrms_age_seconds if isinstance(mrms_age_seconds, float) else ''}",
+        f"noaa_nbm_status={nbm_status or 'missing'}",
+        f"noaa_nbm_cycle_age_seconds={nbm_cycle_age_seconds if isinstance(nbm_cycle_age_seconds, float) else ''}",
     ]
-    window_start = str(settlement.get("observation_window_local_start") or "").strip()
-    window_end = str(settlement.get("observation_window_local_end") or "").strip()
     if window_start and window_end:
         source_parts.append(f"settlement_window_local={window_start}-{window_end}")
+    if normals_status:
+        source_parts.append(f"ncei_normals_status={normals_status}")
+    if normals_status == "ready":
+        source_parts.append(
+            f"ncei_normals_rain_freq={normals_rain_frequency:.4f}"
+            if isinstance(normals_rain_frequency, float)
+            else "ncei_normals_rain_freq="
+        )
     if isinstance(history_payload, dict):
         source_parts.append(f"ncei_cdo_status={history_health.get('status')}")
         source_parts.append(f"historical_sample_metric={history_health.get('sample_metric')}")
@@ -1038,9 +1365,16 @@ def _build_daily_rain_prior(
             ),
             "source_note": "; ".join(source_parts),
             "updated_at": now.isoformat(),
-            "evidence_count": len(pop_values) + climatology_count,
+            "evidence_count": len(pop_values) + climatology_count + observations_recent_count + alerts_count,
             "evidence_quality": round(
-                min(1.0, 0.55 + min(0.25, len(pop_values) * 0.01) + min(0.20, climatology_count * 0.008)),
+                min(
+                    1.0,
+                    0.55
+                    + min(0.25, len(pop_values) * 0.01)
+                    + min(0.20, climatology_count * 0.008)
+                    + min(0.05, observations_recent_count * 0.01)
+                    + max(-0.03, min(0.03, mrms_freshness_boost + nbm_freshness_boost)),
+                ),
                 6,
             ),
             "source_type": "auto_weather",
@@ -1061,9 +1395,17 @@ def _build_daily_temperature_prior(
     row: dict[str, str],
     settlement: dict[str, Any],
     history_payload: dict[str, Any] | None,
+    normals_payload: dict[str, Any] | None,
+    mrms_payload: dict[str, Any] | None,
+    nbm_payload: dict[str, Any] | None,
     now: datetime,
     timeout_seconds: float,
+    include_nws_gridpoint_data: bool,
+    include_nws_observations: bool,
+    include_nws_alerts: bool,
     station_forecast_fetcher: WeatherStationForecastFetcher,
+    station_observations_fetcher: WeatherStationObservationFetcher,
+    point_alerts_fetcher: WeatherPointAlertsFetcher,
 ) -> tuple[dict[str, Any] | None, str | None]:
     station_id = _infer_station_id(row, str(settlement.get("settlement_station") or ""))
     if not station_id:
@@ -1074,7 +1416,12 @@ def _build_daily_temperature_prior(
     if not threshold_kind:
         return None, "missing_threshold_expression"
 
-    forecast = station_forecast_fetcher(station_id=station_id, timeout_seconds=timeout_seconds)
+    forecast = _fetch_station_forecast(
+        station_forecast_fetcher=station_forecast_fetcher,
+        station_id=station_id,
+        timeout_seconds=timeout_seconds,
+        include_gridpoint_data=include_nws_gridpoint_data,
+    )
     if str(forecast.get("status") or "") != "ready":
         return None, f"station_forecast_{forecast.get('status') or 'unavailable'}"
 
@@ -1093,6 +1440,8 @@ def _build_daily_temperature_prior(
         observation_window_local_start=str(settlement.get("observation_window_local_start") or "").strip(),
         observation_window_local_end=str(settlement.get("observation_window_local_end") or "").strip(),
     )
+    window_start = str(settlement.get("observation_window_local_start") or "").strip()
+    window_end = str(settlement.get("observation_window_local_end") or "").strip()
     temperatures: list[float] = []
     for period in scoped_periods:
         temperature = _parse_float(period.get("temperature"))
@@ -1101,6 +1450,34 @@ def _build_daily_temperature_prior(
     if not temperatures:
         return None, "station_forecast_missing_temperatures"
 
+    gridpoint_status = str(forecast.get("gridpoint_status") or "").strip().lower()
+    gridpoint_layers = forecast.get("gridpoint_layers") if isinstance(forecast.get("gridpoint_layers"), dict) else {}
+    gridpoint_tmax_values: list[float] = []
+    gridpoint_tmin_values: list[float] = []
+    if gridpoint_status == "ready" and isinstance(gridpoint_layers, dict):
+        gridpoint_tmax_values = _gridpoint_numeric_values_for_target_window(
+            values=[
+                item
+                for item in (gridpoint_layers.get("maxTemperature") or [])
+                if isinstance(item, dict)
+            ],
+            settlement_timezone_name=settlement_timezone_name,
+            target_settlement_date=target_local_dt.date(),
+            observation_window_local_start=window_start,
+            observation_window_local_end=window_end,
+        )
+        gridpoint_tmin_values = _gridpoint_numeric_values_for_target_window(
+            values=[
+                item
+                for item in (gridpoint_layers.get("minTemperature") or [])
+                if isinstance(item, dict)
+            ],
+            settlement_timezone_name=settlement_timezone_name,
+            target_settlement_date=target_local_dt.date(),
+            observation_window_local_start=window_start,
+            observation_window_local_end=window_end,
+        )
+
     expected_label = _temperature_expected_label(row)
     if expected_label == "daily low":
         expected_temperature = min(temperatures)
@@ -1108,6 +1485,14 @@ def _build_daily_temperature_prior(
         expected_temperature = max(temperatures)
     else:
         expected_temperature = mean(temperatures)
+
+    if expected_label == "daily high" and gridpoint_tmax_values:
+        expected_temperature = (0.72 * expected_temperature) + (0.28 * max(gridpoint_tmax_values))
+    elif expected_label == "daily low" and gridpoint_tmin_values:
+        expected_temperature = (0.72 * expected_temperature) + (0.28 * min(gridpoint_tmin_values))
+    elif gridpoint_tmax_values and gridpoint_tmin_values:
+        gridpoint_mid = (max(gridpoint_tmax_values) + min(gridpoint_tmin_values)) / 2.0
+        expected_temperature = (0.80 * expected_temperature) + (0.20 * gridpoint_mid)
 
     sigma_forecast = max(2.0, pstdev(temperatures) if len(temperatures) > 1 else 3.5)
     climatology_values = (
@@ -1120,6 +1505,94 @@ def _build_daily_temperature_prior(
         forecast_sigma=sigma_forecast,
         climatology_values=climatology_values,
     )
+
+    normals_status = str((normals_payload or {}).get("status") or "").strip().lower()
+    normal_expected = None
+    normal_sigma = None
+    if normals_status == "ready":
+        if expected_label == "daily high":
+            normal_expected = _parse_float((normals_payload or {}).get("tmax_normal_f"))
+            normal_sigma = _parse_float((normals_payload or {}).get("tmax_stddev_f"))
+        elif expected_label == "daily low":
+            normal_expected = _parse_float((normals_payload or {}).get("tmin_normal_f"))
+            normal_sigma = _parse_float((normals_payload or {}).get("tmin_stddev_f"))
+        else:
+            normal_tmax = _parse_float((normals_payload or {}).get("tmax_normal_f"))
+            normal_tmin = _parse_float((normals_payload or {}).get("tmin_normal_f"))
+            if isinstance(normal_tmax, float) and isinstance(normal_tmin, float):
+                normal_expected = (normal_tmax + normal_tmin) / 2.0
+            normal_sigma = _parse_float((normals_payload or {}).get("tmax_stddev_f"))
+        if isinstance(normal_expected, float):
+            expected_temperature = (0.86 * expected_temperature) + (0.14 * normal_expected)
+        if isinstance(normal_sigma, float):
+            sigma = max(1.5, math.sqrt((0.86 * sigma) ** 2 + (0.14 * max(1.5, normal_sigma)) ** 2))
+
+    observations_status = "disabled"
+    observations_recent_count = 0
+    observations_temp_correction = 0.0
+    if include_nws_observations:
+        try:
+            observations_payload = station_observations_fetcher(
+                station_id=station_id,
+                timeout_seconds=timeout_seconds,
+                limit=24,
+            )
+        except Exception:
+            observations_payload = {"status": "upstream_error"}
+        observations_status = str(observations_payload.get("status") or "").strip().lower() or "upstream_error"
+        if observations_status == "ready":
+            observations = observations_payload.get("observations")
+            if isinstance(observations, list):
+                recent_temps_f: list[float] = []
+                for observation in observations:
+                    if not isinstance(observation, dict):
+                        continue
+                    observed_dt = _parse_datetime(observation.get("timestamp"))
+                    if observed_dt is None:
+                        continue
+                    age_hours_obs = max(0.0, (now - observed_dt).total_seconds() / 3600.0)
+                    if age_hours_obs > 6.0:
+                        continue
+                    temperature_c = _parse_float(observation.get("temperature_c"))
+                    if temperature_c is None:
+                        continue
+                    recent_temps_f.append((temperature_c * 9.0 / 5.0) + 32.0)
+                observations_recent_count = len(recent_temps_f)
+                if recent_temps_f and temperatures:
+                    latest_obs_f = recent_temps_f[0]
+                    nearest_forecast_f = temperatures[0]
+                    raw_delta = latest_obs_f - nearest_forecast_f
+                    observations_temp_correction = max(-4.0, min(4.0, raw_delta * 0.30))
+                    expected_temperature = expected_temperature + observations_temp_correction
+
+    alerts_status = "disabled"
+    alerts_count = 0
+    alerts_sigma_add = 0.0
+    if include_nws_alerts:
+        latitude = _parse_float(forecast.get("latitude"))
+        longitude = _parse_float(forecast.get("longitude"))
+        if isinstance(latitude, float) and isinstance(longitude, float):
+            try:
+                alerts_payload = point_alerts_fetcher(
+                    latitude=latitude,
+                    longitude=longitude,
+                    timeout_seconds=timeout_seconds,
+                )
+            except Exception:
+                alerts_payload = {"status": "upstream_error"}
+            alerts_status = str(alerts_payload.get("status") or "").strip().lower() or "upstream_error"
+            if alerts_status == "ready":
+                alerts_count = max(0, int(_parse_float(alerts_payload.get("alerts_count")) or 0))
+                for alert in alerts_payload.get("alerts") if isinstance(alerts_payload.get("alerts"), list) else []:
+                    if not isinstance(alert, dict):
+                        continue
+                    event_text = str(alert.get("event") or "").lower()
+                    severity_text = str(alert.get("severity") or "").lower()
+                    if any(token in event_text for token in ("storm", "warning", "advisory")):
+                        alerts_sigma_add = max(alerts_sigma_add, 0.35)
+                    if severity_text in {"severe", "extreme"}:
+                        alerts_sigma_add = max(alerts_sigma_add, 0.55)
+                sigma = sigma + alerts_sigma_add
     probability_raw_unclamped = _threshold_probability(
         threshold_kind,
         threshold_a,
@@ -1139,12 +1612,37 @@ def _build_daily_temperature_prior(
     market_midpoint = _midpoint_probability_from_market(row)
 
     climatology_count = len(climatology_values)
+    mrms_status = str((mrms_payload or {}).get("status") or "").strip().lower()
+    mrms_age_seconds = _parse_float((mrms_payload or {}).get("age_seconds"))
+    mrms_freshness_boost = 0.0
+    if mrms_status == "ready" and isinstance(mrms_age_seconds, float):
+        if mrms_age_seconds <= 90.0 * 60.0:
+            mrms_freshness_boost = 0.015
+        elif mrms_age_seconds >= 6.0 * 3600.0:
+            mrms_freshness_boost = -0.02
+
+    nbm_status = str((nbm_payload or {}).get("status") or "").strip().lower()
+    nbm_cycle_age_seconds = _parse_float((nbm_payload or {}).get("cycle_age_seconds"))
+    nbm_freshness_boost = 0.0
+    if nbm_status == "ready" and isinstance(nbm_cycle_age_seconds, float):
+        if nbm_cycle_age_seconds <= 3.0 * 3600.0:
+            nbm_freshness_boost = 0.02
+        elif nbm_cycle_age_seconds >= 12.0 * 3600.0:
+            nbm_freshness_boost = -0.02
+
     confidence = round(
         min(
             0.9,
             max(
                 0.25,
-                0.36 + min(0.30, len(temperatures) * 0.02) + min(0.18, climatology_count * 0.007),
+                0.36
+                + min(0.30, len(temperatures) * 0.02)
+                + min(0.18, climatology_count * 0.007)
+                + min(0.04, len(gridpoint_tmax_values + gridpoint_tmin_values) * 0.006)
+                + min(0.03, observations_recent_count * 0.008)
+                - min(0.03, alerts_sigma_add * 0.03)
+                + mrms_freshness_boost
+                + nbm_freshness_boost,
             ),
         ),
         6,
@@ -1159,20 +1657,44 @@ def _build_daily_temperature_prior(
             f" Blended with {climatology_count} historical same-day station realizations "
             f"for bias-resistant pricing."
         )
+    if normals_status == "ready":
+        thesis_suffix += " NCEI daily normals anchor was applied for station/date baseline."
+    if observations_recent_count > 0:
+        thesis_suffix += " Recent station observations were used for short-horizon bias correction."
     source_parts = [
         f"nws_station_hourly_forecast:{station_id}",
         f"temp_points={len(temperatures)}",
+        f"gridpoint_status={gridpoint_status or 'missing'}",
+        f"gridpoint_tmax_points={len(gridpoint_tmax_values)}",
+        f"gridpoint_tmin_points={len(gridpoint_tmin_values)}",
         f"forecast_updated_at={updated_at or 'unknown'}",
+        f"nws_observations_status={observations_status}",
+        f"nws_observations_recent_count={observations_recent_count}",
+        f"nws_observations_temp_correction_f={observations_temp_correction:.3f}",
+        f"nws_alerts_status={alerts_status}",
+        f"nws_alerts_count={alerts_count}",
+        f"nws_alerts_sigma_add={alerts_sigma_add:.3f}",
+        f"noaa_mrms_status={mrms_status or 'missing'}",
+        f"noaa_mrms_age_seconds={mrms_age_seconds if isinstance(mrms_age_seconds, float) else ''}",
+        f"noaa_nbm_status={nbm_status or 'missing'}",
+        f"noaa_nbm_cycle_age_seconds={nbm_cycle_age_seconds if isinstance(nbm_cycle_age_seconds, float) else ''}",
+        f"expected_temperature_f={expected_temperature:.3f}",
+        f"sigma_f={sigma:.3f}",
     ]
     history_health = _history_live_health(
         history_payload,
         contract_family="daily_temperature",
         sample_metric=_temperature_sample_metric(expected_label),
     )
-    window_start = str(settlement.get("observation_window_local_start") or "").strip()
-    window_end = str(settlement.get("observation_window_local_end") or "").strip()
     if window_start and window_end:
         source_parts.append(f"settlement_window_local={window_start}-{window_end}")
+    if normals_status:
+        source_parts.append(f"ncei_normals_status={normals_status}")
+    if normals_status == "ready":
+        if isinstance(normal_expected, float):
+            source_parts.append(f"ncei_normals_expected_temperature_f={normal_expected:.3f}")
+        if isinstance(normal_sigma, float):
+            source_parts.append(f"ncei_normals_sigma_f={normal_sigma:.3f}")
     if isinstance(history_payload, dict):
         source_parts.append(f"ncei_cdo_status={history_health.get('status')}")
         source_parts.append(f"historical_sample_metric={history_health.get('sample_metric')}")
@@ -1203,9 +1725,24 @@ def _build_daily_temperature_prior(
             ),
             "source_note": "; ".join(source_parts),
             "updated_at": now.isoformat(),
-            "evidence_count": len(temperatures) + climatology_count,
+            "evidence_count": (
+                len(temperatures)
+                + climatology_count
+                + len(gridpoint_tmax_values)
+                + len(gridpoint_tmin_values)
+                + observations_recent_count
+                + alerts_count
+            ),
             "evidence_quality": round(
-                min(1.0, 0.58 + min(0.22, len(temperatures) * 0.008) + min(0.20, climatology_count * 0.007)),
+                min(
+                    1.0,
+                    0.58
+                    + min(0.22, len(temperatures) * 0.008)
+                    + min(0.20, climatology_count * 0.007)
+                    + min(0.05, len(gridpoint_tmax_values + gridpoint_tmin_values) * 0.005)
+                    + min(0.03, observations_recent_count * 0.006)
+                    + max(-0.03, min(0.03, mrms_freshness_boost + nbm_freshness_boost)),
+                ),
                 6,
             ),
             "source_type": "auto_weather",
@@ -1322,10 +1859,21 @@ def run_kalshi_weather_priors(
     protect_manual: bool = True,
     write_back_to_priors: bool = True,
     station_forecast_fetcher: WeatherStationForecastFetcher = fetch_nws_station_hourly_forecast,
+    station_observations_fetcher: WeatherStationObservationFetcher = fetch_nws_station_recent_observations,
+    point_alerts_fetcher: WeatherPointAlertsFetcher = fetch_nws_active_alerts_for_point,
     station_history_fetcher: StationHistoryFetcher = fetch_ncei_cdo_station_daily_history,
+    station_normals_fetcher: StationNormalsFetcher = fetch_ncei_normals_station_day,
+    mrms_snapshot_fetcher: MrmsSnapshotFetcher = fetch_noaa_mrms_qpe_latest_metadata,
+    nbm_snapshot_fetcher: NbmSnapshotFetcher = fetch_noaa_nbm_latest_snapshot,
     anomaly_series_fetcher: NoaaAnomalySeriesFetcher = fetch_noaa_global_land_ocean_anomaly_series,
     historical_lookback_years: int = _DEFAULT_HISTORICAL_LOOKBACK_YEARS,
     station_history_cache_max_age_hours: float = _DEFAULT_STATION_HISTORY_CACHE_MAX_AGE_HOURS,
+    include_nws_gridpoint_data: bool = False,
+    include_nws_observations: bool = False,
+    include_nws_alerts: bool = False,
+    include_ncei_normals: bool = False,
+    include_mrms_qpe: bool = False,
+    include_nbm_snapshot: bool = False,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     captured_at = now or datetime.now(timezone.utc)
@@ -1359,7 +1907,13 @@ def run_kalshi_weather_priors(
         str(settlement.get("contract_family") or "").strip().lower() == "monthly_climate_anomaly"
         for _, settlement in candidate_rows
     )
+    has_daily_weather_family = any(
+        str(settlement.get("contract_family") or "").strip().lower() in {"daily_rain", "daily_temperature", "daily_snow"}
+        for _, settlement in candidate_rows
+    )
     noaa_series_payload: dict[str, Any] | None = None
+    mrms_snapshot_payload: dict[str, Any] | None = None
+    nbm_snapshot_payload: dict[str, Any] | None = None
     fetch_errors: list[dict[str, str]] = []
     fetch_error_kind_counts: dict[str, int] = {}
     if has_monthly_family:
@@ -1383,12 +1937,61 @@ def run_kalshi_weather_priors(
                 "error_kind": error_kind,
             }
 
+    if has_daily_weather_family and include_mrms_qpe:
+        try:
+            mrms_snapshot_payload = mrms_snapshot_fetcher(
+                timeout_seconds=timeout_seconds,
+                now=captured_at,
+            )
+        except Exception as exc:
+            error_text = str(exc)
+            error_kind = _classify_fetch_error(exc)
+            fetch_errors.append(
+                {
+                    "source": "mrms_snapshot",
+                    "market_ticker": "",
+                    "error": error_text,
+                    "error_kind": error_kind,
+                }
+            )
+            fetch_error_kind_counts[error_kind] = fetch_error_kind_counts.get(error_kind, 0) + 1
+            mrms_snapshot_payload = {
+                "status": "upstream_error",
+                "error": error_text,
+                "error_kind": error_kind,
+            }
+
+    if has_daily_weather_family and include_nbm_snapshot:
+        try:
+            nbm_snapshot_payload = nbm_snapshot_fetcher(
+                timeout_seconds=timeout_seconds,
+                now=captured_at,
+            )
+        except Exception as exc:
+            error_text = str(exc)
+            error_kind = _classify_fetch_error(exc)
+            fetch_errors.append(
+                {
+                    "source": "nbm_snapshot",
+                    "market_ticker": "",
+                    "error": error_text,
+                    "error_kind": error_kind,
+                }
+            )
+            fetch_error_kind_counts[error_kind] = fetch_error_kind_counts.get(error_kind, 0) + 1
+            nbm_snapshot_payload = {
+                "status": "upstream_error",
+                "error": error_text,
+                "error_kind": error_kind,
+            }
+
     generated_rows: list[dict[str, Any]] = []
     skipped_rows: list[dict[str, Any]] = []
     family_generated_counts: dict[str, int] = {}
     family_skipped_counts: dict[str, int] = {}
     history_fetch_status_counts: dict[str, int] = {}
     station_history_cache: dict[tuple[str, int, int], dict[str, Any]] = {}
+    station_normals_cache: dict[tuple[str, int, int], dict[str, Any]] = {}
     station_history_cache_dir = str(Path(output_dir) / "weather_station_history_cache")
     station_history_fetcher_signature = inspect.signature(station_history_fetcher)
     supports_history_cache_dir = "cache_dir" in station_history_fetcher_signature.parameters
@@ -1399,6 +2002,7 @@ def run_kalshi_weather_priors(
         generated: dict[str, Any] | None = None
         skip_reason: str | None = None
         history_payload: dict[str, Any] | None = None
+        normals_payload: dict[str, Any] | None = None
         history_health: dict[str, Any] | None = None
         if family in {"daily_rain", "daily_temperature"}:
             station_id = _infer_station_id(row, str(settlement.get("settlement_station") or ""))
@@ -1443,6 +2047,33 @@ def run_kalshi_weather_priors(
                 history_payload = station_history_cache.get(cache_key)
                 history_status = str((history_payload or {}).get("status") or "").strip().lower() or "unknown"
                 history_fetch_status_counts[history_status] = history_fetch_status_counts.get(history_status, 0) + 1
+                if include_ncei_normals and cache_key not in station_normals_cache:
+                    try:
+                        station_normals_cache[cache_key] = station_normals_fetcher(
+                            station_id=station_id,
+                            month=month_value,
+                            day=day_value,
+                            timeout_seconds=timeout_seconds,
+                        )
+                    except Exception as exc:
+                        error_text = str(exc)
+                        error_kind = _classify_fetch_error(exc)
+                        fetch_errors.append(
+                            {
+                                "source": "station_normals",
+                                "market_ticker": str(row.get("market_ticker") or "").strip(),
+                                "error": error_text,
+                                "error_kind": error_kind,
+                            }
+                        )
+                        fetch_error_kind_counts[error_kind] = fetch_error_kind_counts.get(error_kind, 0) + 1
+                        station_normals_cache[cache_key] = {
+                            "status": "upstream_error",
+                            "error": error_text,
+                            "error_kind": error_kind,
+                        }
+                if include_ncei_normals:
+                    normals_payload = station_normals_cache.get(cache_key)
             history_sample_metric = ""
             if family == "daily_rain":
                 history_sample_metric = "precip"
@@ -1459,9 +2090,17 @@ def run_kalshi_weather_priors(
                     row=row,
                     settlement=settlement,
                     history_payload=history_payload,
+                    normals_payload=normals_payload,
+                    mrms_payload=mrms_snapshot_payload,
+                    nbm_payload=nbm_snapshot_payload,
                     now=captured_at,
                     timeout_seconds=timeout_seconds,
+                    include_nws_gridpoint_data=include_nws_gridpoint_data,
+                    include_nws_observations=include_nws_observations,
+                    include_nws_alerts=include_nws_alerts,
                     station_forecast_fetcher=station_forecast_fetcher,
+                    station_observations_fetcher=station_observations_fetcher,
+                    point_alerts_fetcher=point_alerts_fetcher,
                 )
             except Exception as exc:
                 error_text = str(exc)
@@ -1482,9 +2121,17 @@ def run_kalshi_weather_priors(
                     row=row,
                     settlement=settlement,
                     history_payload=history_payload,
+                    normals_payload=normals_payload,
+                    mrms_payload=mrms_snapshot_payload,
+                    nbm_payload=nbm_snapshot_payload,
                     now=captured_at,
                     timeout_seconds=timeout_seconds,
+                    include_nws_gridpoint_data=include_nws_gridpoint_data,
+                    include_nws_observations=include_nws_observations,
+                    include_nws_alerts=include_nws_alerts,
                     station_forecast_fetcher=station_forecast_fetcher,
+                    station_observations_fetcher=station_observations_fetcher,
+                    point_alerts_fetcher=point_alerts_fetcher,
                 )
             except Exception as exc:
                 error_text = str(exc)
@@ -1675,6 +2322,12 @@ def run_kalshi_weather_priors(
         "protect_manual": protect_manual,
         "allowed_contract_families": sorted(allowed_family_set) if allowed_family_set else list(_DEFAULT_ALLOWED_FAMILIES),
         "historical_lookback_years": int(historical_lookback_years),
+        "include_nws_gridpoint_data": bool(include_nws_gridpoint_data),
+        "include_nws_observations": bool(include_nws_observations),
+        "include_nws_alerts": bool(include_nws_alerts),
+        "include_ncei_normals": bool(include_ncei_normals),
+        "include_mrms_qpe": bool(include_mrms_qpe),
+        "include_nbm_snapshot": bool(include_nbm_snapshot),
         "station_history_cache_dir": station_history_cache_dir if supports_history_cache_dir else None,
         "station_history_cache_max_age_hours": (
             max(0.0, float(station_history_cache_max_age_hours)) if supports_history_cache_age else None
@@ -1689,8 +2342,13 @@ def run_kalshi_weather_priors(
         "contract_family_generated_counts": family_generated_counts,
         "contract_family_skipped_counts": family_skipped_counts,
         "station_history_cache_entries": len(station_history_cache),
+        "station_normals_cache_entries": len(station_normals_cache),
         "weather_station_history_cache_age_seconds": weather_station_history_cache_age_seconds,
         "station_history_status_counts": history_fetch_status_counts,
+        "mrms_snapshot_status": str((mrms_snapshot_payload or {}).get("status") or "").strip(),
+        "mrms_snapshot_age_seconds": (mrms_snapshot_payload or {}).get("age_seconds"),
+        "nbm_snapshot_status": str((nbm_snapshot_payload or {}).get("status") or "").strip(),
+        "nbm_snapshot_cycle_age_seconds": (nbm_snapshot_payload or {}).get("cycle_age_seconds"),
         "rain_model_tag": rain_model_tag,
         "temperature_model_tag": temperature_model_tag,
         "weather_priors_version": weather_priors_version_name,

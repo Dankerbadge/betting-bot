@@ -84,6 +84,12 @@ KALSHI_DNS_ERROR_MARKERS = (
     "temporary failure in name resolution",
     "no address associated with hostname",
 )
+_CLIMATE_ROUTER_PILOT_BOOTSTRAP_ALLOWED_CLASSES = {
+    "tradable",
+    "tradable_positive",
+    "hot",
+    "hot_positive",
+}
 
 
 def _decode_response_body(raw_body: bytes) -> Any:
@@ -128,6 +134,14 @@ def _is_retryable_network_error(exc: URLError | TimeoutError) -> bool:
         "connection refused",
     )
     return any(marker in text for marker in transient_markers)
+
+
+def _coerce_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    return str(value or "").strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
 def _is_transient_orderbook_unavailable_attempt(attempt: dict[str, Any]) -> bool:
@@ -266,6 +280,322 @@ def _should_allow_untrusted_bucket_probe(
     if decision != "submit":
         return False, "probe_execution_policy_not_submit"
     return True, "probe_submit_untrusted_bucket_sample_depth"
+
+
+def _is_climate_router_pilot_attempt(attempt: dict[str, Any]) -> bool:
+    return str(attempt.get("source_strategy") or "").strip().lower() == "climate_router_pilot"
+
+
+def _should_allow_pilot_frontier_bootstrap_probe(
+    *,
+    attempt: dict[str, Any],
+    allow_live_orders: bool,
+    enforce_trade_gate: bool,
+    execution_frontier_report_stale: bool,
+) -> tuple[bool, str]:
+    if not allow_live_orders or not enforce_trade_gate:
+        return False, "bootstrap_not_live_trade_gate"
+    if execution_frontier_report_stale:
+        return False, "bootstrap_frontier_report_stale"
+    if not _is_climate_router_pilot_attempt(attempt):
+        return False, "bootstrap_not_pilot_strategy"
+    opportunity_class = str(attempt.get("router_opportunity_class") or "").strip().lower()
+    if opportunity_class and opportunity_class not in _CLIMATE_ROUTER_PILOT_BOOTSTRAP_ALLOWED_CLASSES:
+        return False, "bootstrap_opportunity_class_not_allowed"
+    planned_contracts = _parse_float(attempt.get("planned_contracts"))
+    if not isinstance(planned_contracts, float) or planned_contracts <= 0.0:
+        return False, "bootstrap_contracts_missing"
+    if planned_contracts > 1.0 + 1e-9:
+        return False, f"bootstrap_contracts_above_cap:{planned_contracts:.4f}>1"
+    expected_value_dollars = _parse_float(attempt.get("router_expected_value_dollars"))
+    if not isinstance(expected_value_dollars, float) or expected_value_dollars <= 0.0:
+        return False, "bootstrap_expected_value_not_positive"
+    return True, "bootstrap_allowed"
+
+
+def _is_pilot_live_mode_enabled(attempt: dict[str, Any]) -> bool:
+    explicit_flag = attempt.get("allow_live_orders_requested")
+    if isinstance(explicit_flag, bool):
+        return explicit_flag
+    run_mode = str(attempt.get("run_mode") or "").strip().lower()
+    if run_mode in {"live", "dry_run"}:
+        return run_mode == "live"
+    result = str(attempt.get("result") or "").strip().lower()
+    if result in {"dry_run_ready", "dry_run"}:
+        return False
+    if isinstance(_parse_float(attempt.get("submission_http_status")), float):
+        return True
+    if str(attempt.get("order_id") or "").strip():
+        return True
+    return result in {
+        "blocked_trade_gate",
+        "blocked_exchange_inactive",
+        "blocked_exchange_status_unavailable",
+        "blocked_concurrent_live_execution",
+        "blocked_sports_guardrail",
+        "blocked_by_safety_flag",
+        "blocked_balance_unverified",
+        "needs_funding",
+        "blocked_ws_state_missing",
+        "blocked_ws_state_stale",
+        "blocked_ws_state_desynced",
+        "blocked_ws_state_unhealthy",
+        "blocked_ws_state_upstream_error",
+        "blocked_ws_state_empty",
+        "blocked_ws_state_invalid",
+        "submitted",
+        "submitted_then_canceled",
+        "submit_failed",
+        "cancel_failed",
+        "janitor_cancel_failed",
+    }
+
+
+def _pilot_non_policy_block_reason(attempt: dict[str, Any]) -> str | None:
+    if not _is_climate_router_pilot_attempt(attempt):
+        return None
+    result = str(attempt.get("result") or "").strip().lower()
+    policy_reason = str(attempt.get("execution_policy_reason") or "").strip().lower()
+    probe_reason = str(attempt.get("execution_untrusted_bucket_probe_reason") or "").strip().lower()
+
+    if result == "blocked_pre_submit_smoke_mode":
+        return "blocked_pre_submit_smoke_mode"
+
+    if result == "blocked_execution_policy":
+        if policy_reason in {
+            "execution_frontier_insufficient_data",
+            "missing_empirical_break_even_bucket",
+            "insufficient_empirical_markout_samples_bucket",
+            "execution_frontier_report_stale",
+        }:
+            return "blocked_frontier_insufficient_data"
+        if policy_reason in {
+            "forecast_edge_below_break_even_edge",
+            "forecast_edge_below_empirical_break_even_bucket",
+            "negative_expected_net_after_execution_costs",
+            "non_positive_ev_submit",
+            "fill_probability_too_low_before_signal_decay",
+        }:
+            return "blocked_ev_below_threshold"
+        if probe_reason in {
+            "probe_contracts_above_cap",
+            "probe_contracts_missing",
+            "probe_budget_exhausted",
+        }:
+            return "blocked_contract_cap"
+        if policy_reason == "edge_inputs_missing_assume_plan_prequalified":
+            return "blocked_no_orderable_side_on_recheck"
+    if result in {"blocked_duplicate_open_order"}:
+        return "blocked_duplicate_ticker"
+    if result in {"blocked_submission_budget", "blocked_live_cost_cap"}:
+        return "blocked_contract_cap"
+    if result in {"blocked_balance_unverified", "needs_funding"}:
+        return "blocked_balance"
+    if result in {"orderbook_unavailable"}:
+        return "blocked_no_orderable_side_on_recheck"
+    return None
+
+
+def _pilot_policy_scope_blocked(attempt: dict[str, Any]) -> bool:
+    if not _is_climate_router_pilot_attempt(attempt):
+        return False
+    result = str(attempt.get("result") or "").strip().lower()
+    policy_reason = str(attempt.get("execution_policy_reason") or "").strip().lower()
+    probe_reason = str(attempt.get("execution_untrusted_bucket_probe_reason") or "").strip().lower()
+    if result == "blocked_execution_policy":
+        if policy_reason in {
+            "execution_frontier_insufficient_data",
+            "missing_empirical_break_even_bucket",
+            "insufficient_empirical_markout_samples_bucket",
+            "execution_frontier_report_stale",
+            "forecast_edge_below_break_even_edge",
+            "forecast_edge_below_empirical_break_even_bucket",
+            "negative_expected_net_after_execution_costs",
+            "non_positive_ev_submit",
+            "fill_probability_too_low_before_signal_decay",
+            "edge_inputs_missing_assume_plan_prequalified",
+        }:
+            return False
+        if probe_reason in {
+            "probe_contracts_above_cap",
+            "probe_contracts_missing",
+            "probe_budget_exhausted",
+        }:
+            return False
+        return True
+    if result in {"blocked_trade_gate", "blocked_exchange_inactive", "blocked_exchange_status_unavailable"}:
+        return True
+    if result in {"blocked_concurrent_live_execution", "blocked_sports_guardrail", "blocked_by_safety_flag"}:
+        return True
+    if result in {
+        "blocked_ws_state_missing",
+        "blocked_ws_state_stale",
+        "blocked_ws_state_desynced",
+        "blocked_ws_state_unhealthy",
+        "blocked_ws_state_upstream_error",
+        "blocked_ws_state_empty",
+        "blocked_ws_state_invalid",
+    }:
+        return True
+    return False
+
+
+def _build_climate_router_pilot_execute_funnel(
+    attempts: list[dict[str, Any]],
+) -> dict[str, Any]:
+    pilot_attempts = [attempt for attempt in attempts if isinstance(attempt, dict) and _is_climate_router_pilot_attempt(attempt)]
+    execute_considered_rows = len(pilot_attempts)
+    attempted_orders = 0
+    acked_orders = 0
+    resting_orders = 0
+    filled_orders = 0
+    live_mode_enabled_any = False
+    live_eligible_rows = 0
+    would_attempt_live_if_enabled = 0
+    blocked_dry_run_only_rows = 0
+    non_policy_gates_passed_rows = 0
+    blocked_reason_counts: dict[str, int] = {}
+    blocked_research_dry_run_only_reason_counts: dict[str, int] = {}
+    policy_scope_override_attempts = 0
+    policy_scope_override_submissions = 0
+    policy_scope_override_blocked_reason_counts: dict[str, int] = {}
+    policy_scope_override_enabled_any = False
+    policy_scope_override_applicable_any = False
+    policy_scope_override_used_any = False
+
+    for attempt in pilot_attempts:
+        submission_http_status = _parse_float(attempt.get("submission_http_status"))
+        order_id = str(attempt.get("order_id") or "").strip()
+        result = str(attempt.get("result") or "").strip().lower()
+        order_status = str(attempt.get("order_status") or "").strip().lower()
+        live_mode_enabled = _is_pilot_live_mode_enabled(attempt)
+        live_mode_enabled_any = live_mode_enabled_any or live_mode_enabled
+        policy_scope_override_used = _coerce_bool(attempt.get("pilot_policy_scope_override_used"))
+        policy_scope_override_enabled = _coerce_bool(attempt.get("pilot_policy_scope_override_enabled"))
+        policy_scope_override_applicable = _coerce_bool(attempt.get("pilot_policy_scope_override_applicable"))
+        policy_scope_override_enabled_any = policy_scope_override_enabled_any or policy_scope_override_enabled
+        policy_scope_override_applicable_any = policy_scope_override_applicable_any or policy_scope_override_applicable
+        policy_scope_override_used_any = policy_scope_override_used_any or policy_scope_override_used
+        if policy_scope_override_used:
+            policy_scope_override_attempts += 1
+        if isinstance(submission_http_status, float):
+            attempted_orders += 1
+            if policy_scope_override_used:
+                policy_scope_override_submissions += 1
+        if order_id:
+            acked_orders += 1
+        if order_status in {"resting", "open"} or result in {"submitted"}:
+            resting_orders += 1
+        if order_status in {"filled", "executed", "completed"}:
+            filled_orders += 1
+
+        non_policy_block_reason = _pilot_non_policy_block_reason(attempt)
+        policy_scope_blocked = _pilot_policy_scope_blocked(attempt)
+        non_policy_gates_passed = non_policy_block_reason is None
+        if non_policy_gates_passed:
+            non_policy_gates_passed_rows += 1
+
+        blocked_reason = None
+        if non_policy_block_reason:
+            blocked_reason = non_policy_block_reason
+        elif not live_mode_enabled:
+            if result in {"dry_run_ready", "dry_run"}:
+                blocked_reason = "blocked_research_dry_run_only"
+                blocked_dry_run_only_rows += 1
+                would_attempt_live_if_enabled += 1
+                blocked_research_dry_run_only_reason_counts["would_attempt_live_if_enabled"] = (
+                    blocked_research_dry_run_only_reason_counts.get("would_attempt_live_if_enabled", 0) + 1
+                )
+            else:
+                blocked_reason = "blocked_live_disabled"
+                blocked_research_dry_run_only_reason_counts["live_mode_disabled"] = (
+                    blocked_research_dry_run_only_reason_counts.get("live_mode_disabled", 0) + 1
+                )
+        elif policy_scope_blocked:
+            blocked_reason = "blocked_policy_scope"
+        else:
+            live_eligible_rows += 1
+
+        if blocked_reason:
+            blocked_reason_counts[blocked_reason] = blocked_reason_counts.get(blocked_reason, 0) + 1
+            if policy_scope_override_used:
+                policy_scope_override_blocked_reason_counts[blocked_reason] = (
+                    policy_scope_override_blocked_reason_counts.get(blocked_reason, 0) + 1
+                )
+
+    if policy_scope_override_used_any:
+        policy_scope_override_status = "active"
+    elif not policy_scope_override_enabled_any:
+        policy_scope_override_status = "inactive_disabled"
+    elif policy_scope_override_applicable_any and not live_mode_enabled_any:
+        policy_scope_override_status = "enabled_pending_live_mode"
+    else:
+        policy_scope_override_status = "inactive_not_applicable"
+
+    sorted_counts = dict(sorted(blocked_reason_counts.items(), key=lambda item: (-item[1], item[0])))
+    return {
+        "climate_router_pilot_execute_considered_rows": execute_considered_rows,
+        "climate_router_pilot_attempted_orders": attempted_orders,
+        "climate_router_pilot_acked_orders": acked_orders,
+        "climate_router_pilot_resting_orders": resting_orders,
+        "climate_router_pilot_filled_orders": filled_orders,
+        "climate_router_pilot_live_mode_enabled": bool(live_mode_enabled_any),
+        "climate_router_pilot_live_eligible_rows": int(live_eligible_rows),
+        "climate_router_pilot_would_attempt_live_if_enabled": int(would_attempt_live_if_enabled),
+        "climate_router_pilot_blocked_dry_run_only_rows": int(blocked_dry_run_only_rows),
+        "climate_router_pilot_blocked_research_dry_run_only_reason_counts": dict(
+            sorted(
+                blocked_research_dry_run_only_reason_counts.items(),
+                key=lambda item: (-item[1], item[0]),
+            )
+        ),
+        "climate_router_pilot_non_policy_gates_passed_rows": int(non_policy_gates_passed_rows),
+        "climate_router_pilot_blocked_post_promotion_reason_counts": sorted_counts,
+        "climate_router_pilot_blocked_frontier_insufficient_data": int(
+            blocked_reason_counts.get("blocked_frontier_insufficient_data", 0)
+        ),
+        "climate_router_pilot_blocked_balance": int(blocked_reason_counts.get("blocked_balance", 0)),
+        "climate_router_pilot_blocked_board_stale": int(blocked_reason_counts.get("blocked_board_stale", 0)),
+        "climate_router_pilot_blocked_weather_history": int(
+            blocked_reason_counts.get("blocked_weather_history", 0)
+        ),
+        "climate_router_pilot_blocked_duplicate_ticker": int(
+            blocked_reason_counts.get("blocked_duplicate_ticker", 0)
+        ),
+        "climate_router_pilot_blocked_no_orderable_side_on_recheck": int(
+            blocked_reason_counts.get("blocked_no_orderable_side_on_recheck", 0)
+        ),
+        "climate_router_pilot_blocked_ev_below_threshold": int(
+            blocked_reason_counts.get("blocked_ev_below_threshold", 0)
+        ),
+        "climate_router_pilot_blocked_research_dry_run_only": int(
+            blocked_reason_counts.get("blocked_research_dry_run_only", 0)
+        ),
+        "climate_router_pilot_blocked_live_disabled": int(
+            blocked_reason_counts.get("blocked_live_disabled", 0)
+        ),
+        "climate_router_pilot_blocked_policy_scope": int(
+            blocked_reason_counts.get("blocked_policy_scope", 0)
+        ),
+        "climate_router_pilot_blocked_family_filter": int(
+            blocked_reason_counts.get("blocked_family_filter", 0)
+        ),
+        "climate_router_pilot_blocked_contract_cap": int(
+            blocked_reason_counts.get("blocked_contract_cap", 0)
+        ),
+        "climate_router_pilot_blocked_pre_submit_smoke_mode": int(
+            blocked_reason_counts.get("blocked_pre_submit_smoke_mode", 0)
+        ),
+        "climate_router_pilot_policy_scope_override_attempts": int(policy_scope_override_attempts),
+        "climate_router_pilot_policy_scope_override_submissions": int(policy_scope_override_submissions),
+        "climate_router_pilot_policy_scope_override_status": policy_scope_override_status,
+        "climate_router_pilot_policy_scope_override_blocked_reason_counts": dict(
+            sorted(
+                policy_scope_override_blocked_reason_counts.items(),
+                key=lambda item: (-item[1], item[0]),
+            )
+        ),
+    }
 
 
 def _execution_fill_horizon_seconds(
@@ -1349,6 +1679,23 @@ def _write_attempts_csv(path: Path, attempts: list[dict[str, Any]]) -> None:
         "canonical_ticker",
         "canonical_niche",
         "contract_family",
+        "source_strategy",
+        "router_opportunity_class",
+        "router_expected_value_dollars",
+        "router_reference_price",
+        "router_reference_price_source",
+        "router_true_probability",
+        "router_break_even_probability",
+        "router_suggested_risk_dollars",
+        "router_shadow_rank",
+        "router_family",
+        "router_strip_id",
+        "pilot_policy_scope_override_used",
+        "pilot_policy_scope_override_enabled",
+        "pilot_policy_scope_override_applicable",
+        "pilot_policy_scope_override_reason",
+        "pilot_policy_scope_override_family",
+        "pilot_policy_scope_override_ticker",
         "planned_side",
         "planned_contracts",
         "planned_entry_price_dollars",
@@ -1398,6 +1745,8 @@ def _write_attempts_csv(path: Path, attempts: list[dict[str, Any]]) -> None:
         "execution_frontier_bucket_markout_300s_samples",
         "execution_untrusted_bucket_probe",
         "execution_untrusted_bucket_probe_reason",
+        "execution_frontier_bootstrap_probe",
+        "execution_frontier_bootstrap_probe_reason",
         "probe_lane_used",
         "probe_reason",
         "planned_yes_bid_dollars",
@@ -1412,6 +1761,8 @@ def _write_attempts_csv(path: Path, attempts: list[dict[str, Any]]) -> None:
         "orderbook_error_type",
         "orderbook_error",
         "live_write_allowed",
+        "allow_live_orders_requested",
+        "run_mode",
         "result",
         "duplicate_open_orders_count",
         "duplicate_open_orders_count_after_janitor",
@@ -1589,6 +1940,10 @@ def run_kalshi_micro_execute(
         "true",
         "yes",
     }
+    pre_submit_smoke_mode = (
+        bool(allow_live_orders)
+        and _coerce_bool(os.environ.get("BETBOT_PRE_SUBMIT_SMOKE_MODE"))
+    )
     ledger_summary_before = summarize_trade_ledger(
         path=ledger_path,
         timezone_name=timezone_name,
@@ -1831,6 +2186,21 @@ def run_kalshi_micro_execute(
             "execution_untrusted_bucket_probe_reason": attempt.get(
                 "execution_untrusted_bucket_probe_reason"
             ),
+            "execution_frontier_bootstrap_probe": attempt.get("execution_frontier_bootstrap_probe"),
+            "execution_frontier_bootstrap_probe_reason": attempt.get(
+                "execution_frontier_bootstrap_probe_reason"
+            ),
+            "source_strategy": str(attempt.get("source_strategy") or "").strip().lower(),
+            "router_opportunity_class": str(attempt.get("router_opportunity_class") or "").strip().lower(),
+            "router_expected_value_dollars": _parse_float(attempt.get("router_expected_value_dollars")),
+            "router_reference_price": _parse_float(attempt.get("router_reference_price")),
+            "router_reference_price_source": str(attempt.get("router_reference_price_source") or "").strip(),
+            "router_true_probability": _parse_float(attempt.get("router_true_probability")),
+            "router_break_even_probability": _parse_float(attempt.get("router_break_even_probability")),
+            "router_suggested_risk_dollars": _parse_float(attempt.get("router_suggested_risk_dollars")),
+            "router_shadow_rank": _parse_float(attempt.get("router_shadow_rank")),
+            "router_family": str(attempt.get("router_family") or "").strip().lower(),
+            "router_strip_id": str(attempt.get("router_strip_id") or "").strip(),
         }
         event_payload.update(extra.pop("payload", {}) if isinstance(extra.get("payload"), dict) else {})
         journal_event = {
@@ -1957,6 +2327,27 @@ def run_kalshi_micro_execute(
                 "canonical_ticker": plan.get("canonical_ticker", ""),
                 "canonical_niche": plan.get("canonical_niche", ""),
                 "contract_family": plan.get("contract_family", ""),
+                "source_strategy": str(plan.get("source_strategy") or "").strip().lower(),
+                "router_opportunity_class": str(plan.get("router_opportunity_class") or "").strip().lower(),
+                "router_expected_value_dollars": plan.get("router_expected_value_dollars", ""),
+                "router_reference_price": plan.get("router_reference_price", ""),
+                "router_reference_price_source": plan.get("router_reference_price_source", ""),
+                "router_true_probability": plan.get("router_true_probability", ""),
+                "router_break_even_probability": plan.get("router_break_even_probability", ""),
+                "router_suggested_risk_dollars": plan.get("router_suggested_risk_dollars", ""),
+                "router_shadow_rank": plan.get("router_shadow_rank", ""),
+                "router_family": plan.get("router_family", ""),
+                "router_strip_id": plan.get("router_strip_id", ""),
+                "pilot_policy_scope_override_used": _coerce_bool(plan.get("pilot_policy_scope_override_used")),
+                "pilot_policy_scope_override_enabled": _coerce_bool(
+                    plan.get("pilot_policy_scope_override_enabled")
+                ),
+                "pilot_policy_scope_override_applicable": _coerce_bool(
+                    plan.get("pilot_policy_scope_override_applicable")
+                ),
+                "pilot_policy_scope_override_reason": plan.get("pilot_policy_scope_override_reason", ""),
+                "pilot_policy_scope_override_family": plan.get("pilot_policy_scope_override_family", ""),
+                "pilot_policy_scope_override_ticker": plan.get("pilot_policy_scope_override_ticker", ""),
                 "planned_side": str(plan.get("side") or plan.get("order_payload_preview", {}).get("side") or "yes"),
                 "planned_contracts": (
                     plan.get("contracts_per_order")
@@ -2036,6 +2427,9 @@ def run_kalshi_micro_execute(
                 "orderbook_error_type": orderbook.get("error_type", ""),
                 "orderbook_error": orderbook.get("error", ""),
                 "live_write_allowed": live_write_allowed,
+                "allow_live_orders_requested": bool(allow_live_orders),
+                "pre_submit_smoke_mode": pre_submit_smoke_mode,
+                "run_mode": "live" if allow_live_orders else "dry_run",
                 "result": "dry_run_ready",
                 "duplicate_open_orders_count": "",
                 "duplicate_open_orders_count_after_janitor": "",
@@ -2138,11 +2532,22 @@ def run_kalshi_micro_execute(
                 and str(attempt.get("execution_policy_decision") or "").strip().lower() == "submit"
             ):
                 if not execution_frontier_break_even_by_bucket:
-                    attempt["execution_policy_decision"] = "skip"
-                    if execution_frontier_report_stale:
-                        attempt["execution_policy_reason"] = "execution_frontier_report_stale"
+                    allow_pilot_bootstrap, pilot_bootstrap_reason = _should_allow_pilot_frontier_bootstrap_probe(
+                        attempt=attempt,
+                        allow_live_orders=allow_live_orders,
+                        enforce_trade_gate=enforce_trade_gate,
+                        execution_frontier_report_stale=execution_frontier_report_stale,
+                    )
+                    attempt["execution_frontier_bootstrap_probe_reason"] = pilot_bootstrap_reason
+                    if allow_pilot_bootstrap:
+                        attempt["execution_frontier_bootstrap_probe"] = True
+                        attempt["execution_policy_reason"] = "submit_pilot_frontier_bootstrap_probe_frontier_insufficient_data"
                     else:
-                        attempt["execution_policy_reason"] = "execution_frontier_insufficient_data"
+                        attempt["execution_policy_decision"] = "skip"
+                        if execution_frontier_report_stale:
+                            attempt["execution_policy_reason"] = "execution_frontier_report_stale"
+                        else:
+                            attempt["execution_policy_reason"] = "execution_frontier_insufficient_data"
                 elif empirical_break_even is None:
                     probe_allowed, probe_reason = _should_allow_untrusted_bucket_probe(
                         attempt=attempt,
@@ -2161,11 +2566,24 @@ def run_kalshi_micro_execute(
                             untrusted_bucket_probe_budget_remaining - 1,
                         )
                     else:
-                        attempt["execution_policy_decision"] = "skip"
-                        if bucket_trust and not bool(bucket_trust.get("trusted")):
-                            attempt["execution_policy_reason"] = "insufficient_empirical_markout_samples_bucket"
+                        allow_pilot_bootstrap, pilot_bootstrap_reason = _should_allow_pilot_frontier_bootstrap_probe(
+                            attempt=attempt,
+                            allow_live_orders=allow_live_orders,
+                            enforce_trade_gate=enforce_trade_gate,
+                            execution_frontier_report_stale=execution_frontier_report_stale,
+                        )
+                        attempt["execution_frontier_bootstrap_probe_reason"] = pilot_bootstrap_reason
+                        if allow_pilot_bootstrap:
+                            attempt["execution_frontier_bootstrap_probe"] = True
+                            attempt["execution_policy_reason"] = (
+                                "submit_pilot_frontier_bootstrap_probe_missing_bucket"
+                            )
                         else:
-                            attempt["execution_policy_reason"] = "missing_empirical_break_even_bucket"
+                            attempt["execution_policy_decision"] = "skip"
+                            if bucket_trust and not bool(bucket_trust.get("trusted")):
+                                attempt["execution_policy_reason"] = "insufficient_empirical_markout_samples_bucket"
+                            else:
+                                attempt["execution_policy_reason"] = "missing_empirical_break_even_bucket"
             attempt["probe_lane_used"] = bool(attempt.get("execution_untrusted_bucket_probe"))
             attempt["probe_reason"] = str(attempt.get("execution_untrusted_bucket_probe_reason") or "").strip()
             _append_journal_event("candidate_seen", attempt)
@@ -2384,6 +2802,21 @@ def run_kalshi_micro_execute(
                 attempts.append(attempt)
                 continue
 
+            if pre_submit_smoke_mode:
+                attempt["result"] = "blocked_pre_submit_smoke_mode"
+                attempt["execution_policy_reason"] = (
+                    str(attempt.get("execution_policy_reason") or "").strip()
+                    or "pre_submit_smoke_mode"
+                )
+                _append_journal_event(
+                    "order_terminal",
+                    attempt,
+                    result=attempt.get("result"),
+                    status=attempt.get("order_status"),
+                )
+                attempts.append(attempt)
+                continue
+
             payload = dict(plan.get("order_payload_preview", {}))
             payload.setdefault("post_only", True)
             payload.setdefault("cancel_order_on_pause", True)
@@ -2543,6 +2976,9 @@ def run_kalshi_micro_execute(
     blocked_submission_budget_attempts = sum(1 for attempt in attempts if attempt["result"] == "blocked_submission_budget")
     blocked_live_cost_cap_attempts = sum(1 for attempt in attempts if attempt["result"] == "blocked_live_cost_cap")
     blocked_execution_policy_attempts = sum(1 for attempt in attempts if attempt["result"] == "blocked_execution_policy")
+    pre_submit_smoke_blocked_attempts = sum(
+        1 for attempt in attempts if attempt["result"] == "blocked_pre_submit_smoke_mode"
+    )
     if plan_summary.get("status") in {"rate_limited", "upstream_error"}:
         status = str(plan_summary.get("status"))
     elif plan_summary.get("status") == "no_candidates":
@@ -2617,6 +3053,12 @@ def run_kalshi_micro_execute(
             status = "live_blocked_execution_policy"
         elif blocked_execution_policy_attempts > 0:
             status = "live_partial_execution_policy_blocked"
+        elif pre_submit_smoke_mode and pre_submit_smoke_blocked_attempts > 0 and (
+            pre_submit_smoke_blocked_attempts + duplicate_block_attempts == len(attempts)
+        ):
+            status = "live_pre_submit_smoke_mode"
+        elif pre_submit_smoke_mode and pre_submit_smoke_blocked_attempts > 0:
+            status = "live_partial_pre_submit_smoke_mode"
         elif duplicate_block_attempts > 0 and duplicate_block_attempts == len(attempts):
             status = "live_blocked_duplicate_open_orders"
         elif duplicate_block_attempts > 0:
@@ -2651,6 +3093,22 @@ def run_kalshi_micro_execute(
         if not reason:
             continue
         untrusted_bucket_probe_reason_counts[reason] = untrusted_bucket_probe_reason_counts.get(reason, 0) + 1
+    climate_router_pilot_execute_funnel = _build_climate_router_pilot_execute_funnel(attempts)
+    climate_router_pilot_frontier_bootstrap_submitted_attempts = sum(
+        1 for attempt in attempts if bool(attempt.get("execution_frontier_bootstrap_probe"))
+    )
+    climate_router_pilot_frontier_bootstrap_blocked_attempts = sum(
+        1
+        for attempt in attempts
+        if _is_climate_router_pilot_attempt(attempt)
+        and str(attempt.get("execution_policy_decision") or "").strip().lower() == "skip"
+        and str(attempt.get("execution_policy_reason") or "").strip().lower()
+        in {
+            "execution_frontier_insufficient_data",
+            "missing_empirical_break_even_bucket",
+            "insufficient_empirical_markout_samples_bucket",
+        }
+    )
     fill_model_mode = infer_fill_model_mode(
         attempts=attempts,
         prefer_empirical_fill_model=execution_empirical_fill_model_prefer_empirical,
@@ -2696,6 +3154,7 @@ def run_kalshi_micro_execute(
         "kalshi_env": (env_data.get("KALSHI_ENV") or "").strip().lower(),
         "allow_live_orders": allow_live_orders,
         "safety_env_enabled": safety_env_enabled,
+        "pre_submit_smoke_mode": pre_submit_smoke_mode,
         "sports_excluded": sports_excluded,
         "cancel_resting_immediately": cancel_resting_immediately,
         "resting_hold_seconds": resting_hold_seconds,
@@ -2752,6 +3211,7 @@ def run_kalshi_micro_execute(
         "ledger_summary_after": ledger_summary_after,
         "trade_gate_summary": trade_gate_summary,
         "blocked_duplicate_open_order_attempts": len(duplicate_open_order_attempts),
+        "pre_submit_smoke_blocked_attempts": pre_submit_smoke_blocked_attempts,
         "blocked_submission_budget_attempts": blocked_submission_budget_attempts,
         "blocked_live_cost_cap_attempts": blocked_live_cost_cap_attempts,
         "blocked_execution_policy_attempts": blocked_execution_policy_attempts,
@@ -2819,6 +3279,92 @@ def run_kalshi_micro_execute(
             and str(attempt.get("execution_untrusted_bucket_probe_reason") or "").strip().startswith("probe_")
         ),
         "untrusted_bucket_probe_reason_counts": untrusted_bucket_probe_reason_counts,
+        "climate_router_pilot_execute_considered_rows": climate_router_pilot_execute_funnel.get(
+            "climate_router_pilot_execute_considered_rows"
+        ),
+        "climate_router_pilot_live_mode_enabled": climate_router_pilot_execute_funnel.get(
+            "climate_router_pilot_live_mode_enabled"
+        ),
+        "climate_router_pilot_live_eligible_rows": climate_router_pilot_execute_funnel.get(
+            "climate_router_pilot_live_eligible_rows"
+        ),
+        "climate_router_pilot_would_attempt_live_if_enabled": climate_router_pilot_execute_funnel.get(
+            "climate_router_pilot_would_attempt_live_if_enabled"
+        ),
+        "climate_router_pilot_blocked_dry_run_only_rows": climate_router_pilot_execute_funnel.get(
+            "climate_router_pilot_blocked_dry_run_only_rows"
+        ),
+        "climate_router_pilot_blocked_research_dry_run_only_reason_counts": climate_router_pilot_execute_funnel.get(
+            "climate_router_pilot_blocked_research_dry_run_only_reason_counts"
+        ),
+        "climate_router_pilot_non_policy_gates_passed_rows": climate_router_pilot_execute_funnel.get(
+            "climate_router_pilot_non_policy_gates_passed_rows"
+        ),
+        "climate_router_pilot_attempted_orders": climate_router_pilot_execute_funnel.get(
+            "climate_router_pilot_attempted_orders"
+        ),
+        "climate_router_pilot_acked_orders": climate_router_pilot_execute_funnel.get(
+            "climate_router_pilot_acked_orders"
+        ),
+        "climate_router_pilot_resting_orders": climate_router_pilot_execute_funnel.get(
+            "climate_router_pilot_resting_orders"
+        ),
+        "climate_router_pilot_filled_orders": climate_router_pilot_execute_funnel.get(
+            "climate_router_pilot_filled_orders"
+        ),
+        "climate_router_pilot_blocked_post_promotion_reason_counts": climate_router_pilot_execute_funnel.get(
+            "climate_router_pilot_blocked_post_promotion_reason_counts"
+        ),
+        "climate_router_pilot_blocked_frontier_insufficient_data": climate_router_pilot_execute_funnel.get(
+            "climate_router_pilot_blocked_frontier_insufficient_data"
+        ),
+        "climate_router_pilot_blocked_balance": climate_router_pilot_execute_funnel.get(
+            "climate_router_pilot_blocked_balance"
+        ),
+        "climate_router_pilot_blocked_board_stale": climate_router_pilot_execute_funnel.get(
+            "climate_router_pilot_blocked_board_stale"
+        ),
+        "climate_router_pilot_blocked_weather_history": climate_router_pilot_execute_funnel.get(
+            "climate_router_pilot_blocked_weather_history"
+        ),
+        "climate_router_pilot_blocked_duplicate_ticker": climate_router_pilot_execute_funnel.get(
+            "climate_router_pilot_blocked_duplicate_ticker"
+        ),
+        "climate_router_pilot_blocked_no_orderable_side_on_recheck": climate_router_pilot_execute_funnel.get(
+            "climate_router_pilot_blocked_no_orderable_side_on_recheck"
+        ),
+        "climate_router_pilot_blocked_ev_below_threshold": climate_router_pilot_execute_funnel.get(
+            "climate_router_pilot_blocked_ev_below_threshold"
+        ),
+        "climate_router_pilot_blocked_research_dry_run_only": climate_router_pilot_execute_funnel.get(
+            "climate_router_pilot_blocked_research_dry_run_only"
+        ),
+        "climate_router_pilot_blocked_live_disabled": climate_router_pilot_execute_funnel.get(
+            "climate_router_pilot_blocked_live_disabled"
+        ),
+        "climate_router_pilot_blocked_policy_scope": climate_router_pilot_execute_funnel.get(
+            "climate_router_pilot_blocked_policy_scope"
+        ),
+        "climate_router_pilot_blocked_family_filter": climate_router_pilot_execute_funnel.get(
+            "climate_router_pilot_blocked_family_filter"
+        ),
+        "climate_router_pilot_blocked_contract_cap": climate_router_pilot_execute_funnel.get(
+            "climate_router_pilot_blocked_contract_cap"
+        ),
+        "climate_router_pilot_policy_scope_override_attempts": climate_router_pilot_execute_funnel.get(
+            "climate_router_pilot_policy_scope_override_attempts"
+        ),
+        "climate_router_pilot_policy_scope_override_submissions": climate_router_pilot_execute_funnel.get(
+            "climate_router_pilot_policy_scope_override_submissions"
+        ),
+        "climate_router_pilot_policy_scope_override_status": climate_router_pilot_execute_funnel.get(
+            "climate_router_pilot_policy_scope_override_status"
+        ),
+        "climate_router_pilot_policy_scope_override_blocked_reason_counts": climate_router_pilot_execute_funnel.get(
+            "climate_router_pilot_policy_scope_override_blocked_reason_counts"
+        ),
+        "climate_router_pilot_frontier_bootstrap_submitted_attempts": climate_router_pilot_frontier_bootstrap_submitted_attempts,
+        "climate_router_pilot_frontier_bootstrap_blocked_attempts": climate_router_pilot_frontier_bootstrap_blocked_attempts,
         "orderbook_outage_short_circuit_triggered": orderbook_outage_short_circuit_triggered,
         "orderbook_outage_short_circuit_trigger_market_ticker": orderbook_outage_short_circuit_trigger_market_ticker,
         "orderbook_outage_short_circuit_skipped_orders": orderbook_outage_short_circuit_skipped_orders,

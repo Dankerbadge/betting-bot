@@ -5,7 +5,9 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 from typing import Any, Callable
+import xml.etree.ElementTree as ET
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
@@ -16,6 +18,16 @@ JsonGetterWithHeaders = Callable[
     [str, float, dict[str, str] | None],
     tuple[int, dict[str, Any] | list[Any] | Any],
 ]
+TextGetter = Callable[[str, float], tuple[int, str]]
+
+_NWS_GRIDPOINT_LAYER_KEYS = (
+    "maxTemperature",
+    "minTemperature",
+    "probabilityOfPrecipitation",
+    "quantitativePrecipitation",
+    "snowfallAmount",
+    "hazards",
+)
 
 
 _NCEI_CDO_STATION_BY_ICAO = {
@@ -300,9 +312,71 @@ def _http_get_json_with_headers(
         return status, {"raw_text": payload}
 
 
+def _http_get_text(url: str, timeout_seconds: float) -> tuple[int, str]:
+    request = Request(
+        url,
+        headers={
+            "Accept": "application/xml, text/xml, text/plain, application/json;q=0.9, */*;q=0.8",
+            "User-Agent": "betbot-weather-ingest/1.0 (research)",
+        },
+        method="GET",
+    )
+    with urlopen_with_dns_recovery(
+        request,
+        timeout_seconds=max(1.0, float(timeout_seconds)),
+        urlopen_fn=urlopen,
+    ) as response:
+        status = int(getattr(response, "status", 200) or 200)
+        payload = response.read().decode("utf-8", errors="replace")
+    return (status, payload)
+
+
+def _parse_s3_list_bucket_payload(payload_text: str) -> dict[str, Any]:
+    text = str(payload_text or "").strip()
+    if not text:
+        return {
+            "keys": [],
+            "common_prefixes": [],
+            "is_truncated": False,
+            "next_marker": "",
+            "parse_error": "empty_payload",
+        }
+    try:
+        root = ET.fromstring(text)
+    except ET.ParseError as exc:
+        return {
+            "keys": [],
+            "common_prefixes": [],
+            "is_truncated": False,
+            "next_marker": "",
+            "parse_error": str(exc),
+        }
+
+    namespace = {"s3": "http://s3.amazonaws.com/doc/2006-03-01/"}
+    keys = [
+        str(node.text or "").strip()
+        for node in root.findall("s3:Contents/s3:Key", namespace)
+        if str(node.text or "").strip()
+    ]
+    common_prefixes = [
+        str(node.text or "").strip()
+        for node in root.findall("s3:CommonPrefixes/s3:Prefix", namespace)
+        if str(node.text or "").strip()
+    ]
+    is_truncated_text = str(root.findtext("s3:IsTruncated", default="", namespaces=namespace) or "").strip().lower()
+    next_marker = str(root.findtext("s3:NextMarker", default="", namespaces=namespace) or "").strip()
+    return {
+        "keys": keys,
+        "common_prefixes": common_prefixes,
+        "is_truncated": is_truncated_text == "true",
+        "next_marker": next_marker,
+    }
+
+
 def fetch_nws_station_hourly_forecast(
     *,
     station_id: str,
+    include_gridpoint_data: bool = False,
     timeout_seconds: float = 12.0,
     http_get_json: JsonGetter = _http_get_json,
 ) -> dict[str, Any]:
@@ -372,6 +446,11 @@ def fetch_nws_station_hourly_forecast(
         if isinstance(points_properties, dict)
         else ""
     )
+    forecast_grid_data_url = (
+        str((points_properties or {}).get("forecastGridData") or "").strip()
+        if isinstance(points_properties, dict)
+        else ""
+    )
     if not forecast_hourly_url:
         return {
             "status": "forecast_hourly_missing",
@@ -381,6 +460,7 @@ def fetch_nws_station_hourly_forecast(
             "station_timezone": station_timezone or "",
             "latitude": lat_value,
             "longitude": lon_value,
+            "forecast_grid_data_url": forecast_grid_data_url,
             "error": f"NWS points metadata did not include forecastHourly for station {clean_station_id}.",
         }
 
@@ -409,18 +489,573 @@ def fetch_nws_station_hourly_forecast(
         updated = str(forecast_properties.get("updateTime") or "").strip()
         generated_at = str(forecast_properties.get("generatedAt") or "").strip()
 
-    return {
+    payload = {
         "status": "ready",
         "station_id": clean_station_id,
         "station_timezone": station_timezone or "",
         "latitude": lat_value,
         "longitude": lon_value,
         "forecast_hourly_url": forecast_hourly_url,
+        "forecast_grid_data_url": forecast_grid_data_url,
         "forecast_updated_at": updated or generated_at,
         "periods": [period for period in periods if isinstance(period, dict)],
         "http_status_station": status_station,
         "http_status_points": status_points,
         "http_status_forecast": status_forecast,
+    }
+    if include_gridpoint_data:
+        payload["gridpoint_status"] = "missing"
+        payload["gridpoint_updated_at"] = ""
+        payload["gridpoint_layers"] = {}
+        if forecast_grid_data_url:
+            status_gridpoint, payload_gridpoint = http_get_json(forecast_grid_data_url, timeout_seconds)
+            payload["http_status_gridpoint"] = status_gridpoint
+            if status_gridpoint == 200 and isinstance(payload_gridpoint, dict):
+                gridpoint_properties = payload_gridpoint.get("properties") if isinstance(payload_gridpoint, dict) else None
+                if isinstance(gridpoint_properties, dict):
+                    layers: dict[str, list[dict[str, Any]]] = {}
+                    for layer_key in _NWS_GRIDPOINT_LAYER_KEYS:
+                        layer_payload = gridpoint_properties.get(layer_key)
+                        if not isinstance(layer_payload, dict):
+                            continue
+                        values = layer_payload.get("values")
+                        if not isinstance(values, list):
+                            continue
+                        normalized_values = [item for item in values if isinstance(item, dict)]
+                        if normalized_values:
+                            layers[layer_key] = normalized_values
+                    payload["gridpoint_layers"] = layers
+                    payload["gridpoint_status"] = "ready"
+                    payload["gridpoint_updated_at"] = str(
+                        gridpoint_properties.get("updateTime")
+                        or gridpoint_properties.get("generatedAt")
+                        or ""
+                    ).strip()
+                else:
+                    payload["gridpoint_status"] = "invalid_payload"
+                    payload["gridpoint_error"] = "Gridpoint response missing properties object."
+            else:
+                payload["gridpoint_status"] = "unavailable"
+                payload["gridpoint_error"] = "NWS forecastGridData request failed."
+        else:
+            payload["gridpoint_error"] = "NWS points metadata did not include forecastGridData."
+    return payload
+
+
+def fetch_nws_station_recent_observations(
+    *,
+    station_id: str,
+    limit: int = 24,
+    timeout_seconds: float = 12.0,
+    http_get_json: JsonGetter = _http_get_json,
+) -> dict[str, Any]:
+    clean_station_id = str(station_id or "").strip().upper()
+    if not clean_station_id:
+        return {
+            "status": "invalid_station",
+            "station_id": "",
+            "error": "Missing station identifier.",
+        }
+    limit_value = max(1, min(500, int(limit)))
+    observations_url = f"https://api.weather.gov/stations/{clean_station_id}/observations?limit={limit_value}"
+    status, payload = http_get_json(observations_url, timeout_seconds)
+    if status != 200 or not isinstance(payload, dict):
+        return {
+            "status": "observations_unavailable",
+            "station_id": clean_station_id,
+            "observations_url": observations_url,
+            "http_status_observations": status,
+            "error": f"NWS station observations request failed for station {clean_station_id}.",
+        }
+
+    features = payload.get("features")
+    if not isinstance(features, list):
+        features = []
+    observations: list[dict[str, Any]] = []
+    for feature in features:
+        if not isinstance(feature, dict):
+            continue
+        properties = feature.get("properties")
+        if not isinstance(properties, dict):
+            continue
+        observations.append(
+            {
+                "timestamp": str(properties.get("timestamp") or "").strip(),
+                "text_description": str(properties.get("textDescription") or "").strip(),
+                "temperature_c": (
+                    float(properties.get("temperature", {}).get("value"))
+                    if isinstance(properties.get("temperature"), dict)
+                    and isinstance(properties.get("temperature", {}).get("value"), (int, float))
+                    else None
+                ),
+                "dewpoint_c": (
+                    float(properties.get("dewpoint", {}).get("value"))
+                    if isinstance(properties.get("dewpoint"), dict)
+                    and isinstance(properties.get("dewpoint", {}).get("value"), (int, float))
+                    else None
+                ),
+                "relative_humidity_pct": (
+                    float(properties.get("relativeHumidity", {}).get("value"))
+                    if isinstance(properties.get("relativeHumidity"), dict)
+                    and isinstance(properties.get("relativeHumidity", {}).get("value"), (int, float))
+                    else None
+                ),
+                "precipitation_last_hour_mm": (
+                    float(properties.get("precipitationLastHour", {}).get("value"))
+                    if isinstance(properties.get("precipitationLastHour"), dict)
+                    and isinstance(properties.get("precipitationLastHour", {}).get("value"), (int, float))
+                    else None
+                ),
+                "wind_speed_mps": (
+                    float(properties.get("windSpeed", {}).get("value"))
+                    if isinstance(properties.get("windSpeed"), dict)
+                    and isinstance(properties.get("windSpeed", {}).get("value"), (int, float))
+                    else None
+                ),
+            }
+        )
+
+    return {
+        "status": "ready",
+        "station_id": clean_station_id,
+        "observations_url": observations_url,
+        "http_status_observations": status,
+        "observations_count": len(observations),
+        "observations": observations,
+    }
+
+
+def fetch_nws_active_alerts_for_point(
+    *,
+    latitude: float,
+    longitude: float,
+    timeout_seconds: float = 12.0,
+    http_get_json: JsonGetter = _http_get_json,
+) -> dict[str, Any]:
+    try:
+        lat_value = float(latitude)
+        lon_value = float(longitude)
+    except (TypeError, ValueError):
+        return {
+            "status": "invalid_coordinates",
+            "error": "Latitude/longitude must be numeric.",
+        }
+
+    alerts_url = f"https://api.weather.gov/alerts/active?point={lat_value:.4f},{lon_value:.4f}"
+    status, payload = http_get_json(alerts_url, timeout_seconds)
+    if status != 200 or not isinstance(payload, dict):
+        return {
+            "status": "alerts_unavailable",
+            "alerts_url": alerts_url,
+            "http_status_alerts": status,
+            "error": "NWS active alerts request failed for point.",
+        }
+
+    features = payload.get("features")
+    if not isinstance(features, list):
+        features = []
+
+    alerts: list[dict[str, Any]] = []
+    for feature in features:
+        if not isinstance(feature, dict):
+            continue
+        properties = feature.get("properties")
+        if not isinstance(properties, dict):
+            continue
+        alerts.append(
+            {
+                "id": str(feature.get("id") or "").strip(),
+                "event": str(properties.get("event") or "").strip(),
+                "severity": str(properties.get("severity") or "").strip(),
+                "urgency": str(properties.get("urgency") or "").strip(),
+                "headline": str(properties.get("headline") or "").strip(),
+                "effective": str(properties.get("effective") or "").strip(),
+                "expires": str(properties.get("expires") or "").strip(),
+                "areas_desc": str(properties.get("areaDesc") or "").strip(),
+            }
+        )
+
+    return {
+        "status": "ready",
+        "alerts_url": alerts_url,
+        "http_status_alerts": status,
+        "alerts_count": len(alerts),
+        "alerts": alerts,
+    }
+
+
+def _extract_timestamp_from_key(
+    *,
+    key: str,
+    pattern: str,
+) -> datetime | None:
+    match = re.search(pattern, str(key or ""))
+    if not match:
+        return None
+    stamp = str(match.group(1) or "").strip()
+    if not stamp:
+        return None
+    for fmt in ("%Y%m%d-%H%M%S", "%Y%m%d%H%M", "%Y%m%d%H"):
+        try:
+            return datetime.strptime(stamp, fmt).replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+    return None
+
+
+def fetch_noaa_mrms_qpe_latest_metadata(
+    *,
+    now: datetime | None = None,
+    timeout_seconds: float = 12.0,
+    lookback_days: int = 2,
+    product_prefix: str = "CONUS/MultiSensor_QPE_01H_Pass2_00.00/",
+    base_url: str = "https://noaa-mrms-pds.s3.amazonaws.com",
+    http_get_text: TextGetter = _http_get_text,
+) -> dict[str, Any]:
+    current_time = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    clean_prefix = str(product_prefix or "").strip().lstrip("/")
+    if not clean_prefix.endswith("/"):
+        clean_prefix = f"{clean_prefix}/"
+    base = str(base_url or "").strip().rstrip("/")
+    if not base:
+        return {
+            "status": "invalid_base_url",
+            "error": "Missing MRMS base URL.",
+        }
+
+    lookback_days_clamped = max(1, min(7, int(lookback_days)))
+    request_count = 0
+    errors: list[dict[str, Any]] = []
+    for offset in range(lookback_days_clamped + 1):
+        day_value = current_time.date().fromordinal(current_time.date().toordinal() - offset)
+        day_prefix = f"{clean_prefix}{day_value.strftime('%Y%m%d')}/"
+        list_url = f"{base}/?{urlencode([('prefix', day_prefix), ('max-keys', '1000')])}"
+        request_count += 1
+        status, payload_text = http_get_text(list_url, timeout_seconds)
+        if status != 200:
+            errors.append(
+                {
+                    "prefix": day_prefix,
+                    "http_status": int(status),
+                    "error": "mrms_list_request_failed",
+                }
+            )
+            continue
+        parsed = _parse_s3_list_bucket_payload(payload_text)
+        parse_error = str(parsed.get("parse_error") or "").strip()
+        if parse_error:
+            errors.append(
+                {
+                    "prefix": day_prefix,
+                    "http_status": int(status),
+                    "error": f"mrms_list_parse_error:{parse_error}",
+                }
+            )
+            continue
+        keys = [
+            str(key or "").strip()
+            for key in (parsed.get("keys") or [])
+            if str(key or "").strip().endswith(".grib2.gz")
+        ]
+        if not keys:
+            continue
+        latest_key = sorted(keys)[-1]
+        observed_at = _extract_timestamp_from_key(
+            key=latest_key,
+            pattern=r"_(\d{8}-\d{6})\.grib2\.gz$",
+        )
+        age_seconds = None
+        if isinstance(observed_at, datetime):
+            age_seconds = max(0.0, (current_time - observed_at.astimezone(timezone.utc)).total_seconds())
+        return {
+            "status": "ready",
+            "data_source": "noaa_mrms_s3",
+            "product_prefix": clean_prefix,
+            "day_prefix": day_prefix,
+            "latest_key": latest_key,
+            "latest_url": f"{base}/{latest_key}",
+            "observed_at_utc": observed_at.isoformat() if isinstance(observed_at, datetime) else "",
+            "age_seconds": round(age_seconds, 3) if isinstance(age_seconds, float) else None,
+            "request_count": int(request_count),
+            "list_url": list_url,
+            "lookback_days": int(lookback_days_clamped),
+            "errors": errors,
+        }
+
+    return {
+        "status": "no_data",
+        "data_source": "noaa_mrms_s3",
+        "product_prefix": clean_prefix,
+        "request_count": int(request_count),
+        "lookback_days": int(lookback_days_clamped),
+        "errors": errors,
+        "error": "No MRMS QPE objects were found in the requested lookback window.",
+    }
+
+
+def fetch_noaa_nbm_latest_snapshot(
+    *,
+    now: datetime | None = None,
+    timeout_seconds: float = 12.0,
+    lookback_days: int = 2,
+    region: str = "co",
+    base_url: str = "https://noaa-nbm-grib2-pds.s3.amazonaws.com",
+    http_get_text: TextGetter = _http_get_text,
+) -> dict[str, Any]:
+    current_time = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    clean_region = str(region or "co").strip().lower() or "co"
+    base = str(base_url or "").strip().rstrip("/")
+    if not base:
+        return {
+            "status": "invalid_base_url",
+            "error": "Missing NBM base URL.",
+        }
+
+    lookback_days_clamped = max(1, min(7, int(lookback_days)))
+    request_count = 0
+    errors: list[dict[str, Any]] = []
+    candidate_days = [
+        current_time.date().fromordinal(current_time.date().toordinal() - offset)
+        for offset in range(lookback_days_clamped + 1)
+    ]
+    for day_value in candidate_days:
+        day_stamp = day_value.strftime("%Y%m%d")
+        for cycle_hour in range(23, -1, -1):
+            cycle_prefix = f"blend.{day_stamp}/{cycle_hour:02d}/core/"
+            list_url = f"{base}/?{urlencode([('prefix', cycle_prefix), ('max-keys', '2000')])}"
+            request_count += 1
+            status, payload_text = http_get_text(list_url, timeout_seconds)
+            if status != 200:
+                errors.append(
+                    {
+                        "prefix": cycle_prefix,
+                        "http_status": int(status),
+                        "error": "nbm_list_request_failed",
+                    }
+                )
+                continue
+            parsed = _parse_s3_list_bucket_payload(payload_text)
+            parse_error = str(parsed.get("parse_error") or "").strip()
+            if parse_error:
+                errors.append(
+                    {
+                        "prefix": cycle_prefix,
+                        "http_status": int(status),
+                        "error": f"nbm_list_parse_error:{parse_error}",
+                    }
+                )
+                continue
+            idx_keys = [
+                str(key or "").strip()
+                for key in (parsed.get("keys") or [])
+                if str(key or "").strip().endswith(f".{clean_region}.grib2.idx")
+            ]
+            if not idx_keys:
+                continue
+
+            forecast_hours: list[int] = []
+            for key in idx_keys:
+                match = re.search(r"\.f(\d{3})\.", key)
+                if not match:
+                    continue
+                try:
+                    forecast_hours.append(int(match.group(1)))
+                except ValueError:
+                    continue
+            forecast_hours = sorted(set(forecast_hours))
+            representative_idx_key = sorted(idx_keys)[0]
+            representative_idx_url = f"{base}/{representative_idx_key}"
+            status_idx, idx_text = http_get_text(representative_idx_url, timeout_seconds)
+            idx_variable_counts: dict[str, int] = {}
+            if status_idx == 200 and idx_text:
+                for line in idx_text.splitlines():
+                    fields = line.split(":")
+                    if len(fields) < 4:
+                        continue
+                    variable = str(fields[3] or "").strip().upper()
+                    if variable:
+                        idx_variable_counts[variable] = idx_variable_counts.get(variable, 0) + 1
+
+            cycle_dt = datetime.strptime(f"{day_stamp}{cycle_hour:02d}", "%Y%m%d%H").replace(tzinfo=timezone.utc)
+            cycle_age_seconds = max(0.0, (current_time - cycle_dt).total_seconds())
+            return {
+                "status": "ready",
+                "data_source": "noaa_nbm_s3",
+                "region": clean_region,
+                "cycle_prefix": cycle_prefix,
+                "cycle_utc": cycle_dt.isoformat(),
+                "cycle_age_seconds": round(cycle_age_seconds, 3),
+                "forecast_hours_available": forecast_hours,
+                "forecast_hours_count": len(forecast_hours),
+                "max_forecast_hour": max(forecast_hours) if forecast_hours else None,
+                "representative_idx_key": representative_idx_key,
+                "representative_idx_url": representative_idx_url,
+                "representative_idx_http_status": int(status_idx),
+                "idx_variable_counts": idx_variable_counts,
+                "request_count": int(request_count + 1),
+                "lookback_days": int(lookback_days_clamped),
+                "list_url": list_url,
+                "errors": errors,
+            }
+
+    return {
+        "status": "no_data",
+        "data_source": "noaa_nbm_s3",
+        "region": clean_region,
+        "request_count": int(request_count),
+        "lookback_days": int(lookback_days_clamped),
+        "errors": errors,
+        "error": "No NBM snapshot objects were found in the requested lookback window.",
+    }
+
+
+def fetch_ncei_normals_station_day(
+    *,
+    station_id: str,
+    month: int,
+    day: int,
+    timeout_seconds: float = 12.0,
+    cdo_token: str | None = None,
+    http_get_json_with_headers: JsonGetterWithHeaders = _http_get_json_with_headers,
+) -> dict[str, Any]:
+    clean_station_id = str(station_id or "").strip().upper()
+    if not clean_station_id:
+        return {
+            "status": "invalid_station",
+            "station_id": "",
+            "error": "Missing station identifier.",
+        }
+    cdo_station_id = _resolve_cdo_station_id(clean_station_id)
+    if not cdo_station_id:
+        return {
+            "status": "station_mapping_missing",
+            "station_id": clean_station_id,
+            "error": "No CDO station mapping is configured for normals lookup.",
+        }
+
+    try:
+        month_value = int(month)
+        day_value = int(day)
+    except (TypeError, ValueError):
+        return {
+            "status": "invalid_target_day",
+            "station_id": clean_station_id,
+            "cdo_station_id": cdo_station_id,
+            "error": "Month/day target is invalid.",
+        }
+    if month_value < 1 or month_value > 12 or day_value < 1 or day_value > 31:
+        return {
+            "status": "invalid_target_day",
+            "station_id": clean_station_id,
+            "cdo_station_id": cdo_station_id,
+            "error": "Month/day target is out of range.",
+        }
+
+    token = str(
+        cdo_token
+        or os.getenv("BETBOT_NOAA_CDO_TOKEN")
+        or os.getenv("NOAA_CDO_TOKEN")
+        or os.getenv("NCEI_CDO_TOKEN")
+        or ""
+    ).strip()
+    if not token:
+        return {
+            "status": "disabled_missing_token",
+            "station_id": clean_station_id,
+            "cdo_station_id": cdo_station_id,
+            "error": "Missing NOAA/NCEI CDO API token for normals lookup.",
+        }
+
+    normals_reference_date = f"2010-{month_value:02d}-{day_value:02d}"
+    datatypes = (
+        "DLY-TMAX-NORMAL",
+        "DLY-TMAX-STDDEV",
+        "DLY-TMIN-NORMAL",
+        "DLY-TMIN-STDDEV",
+        "DLY-PRCP-PCTALL-GE001HI",
+    )
+    params: list[tuple[str, str]] = [
+        ("datasetid", "NORMAL_DLY"),
+        ("stationid", cdo_station_id),
+        ("startdate", normals_reference_date),
+        ("enddate", normals_reference_date),
+        ("units", "standard"),
+        ("limit", "1000"),
+    ]
+    params.extend(("datatypeid", datatype) for datatype in datatypes)
+    source_url = f"https://www.ncei.noaa.gov/cdo-web/api/v2/data?{urlencode(params, doseq=True)}"
+    status, payload = http_get_json_with_headers(
+        source_url,
+        timeout_seconds,
+        {"token": token},
+    )
+    if status != 200 or not isinstance(payload, dict):
+        return {
+            "status": "normals_unavailable",
+            "station_id": clean_station_id,
+            "cdo_station_id": cdo_station_id,
+            "month": int(month_value),
+            "day": int(day_value),
+            "http_status": int(status),
+            "source_url": source_url,
+            "error": "NCEI normals request failed.",
+        }
+
+    results = payload.get("results")
+    if not isinstance(results, list):
+        results = []
+    values_by_datatype: dict[str, float] = {}
+    for item in results:
+        if not isinstance(item, dict):
+            continue
+        datatype = str(item.get("datatype") or "").strip().upper()
+        numeric_value = item.get("value")
+        try:
+            numeric = float(numeric_value)
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(numeric):
+            continue
+        values_by_datatype[datatype] = numeric
+
+    if not values_by_datatype:
+        return {
+            "status": "no_history",
+            "station_id": clean_station_id,
+            "cdo_station_id": cdo_station_id,
+            "month": int(month_value),
+            "day": int(day_value),
+            "source_url": source_url,
+            "sample_years": 0,
+            "error": "No normals values were returned for the target station/day.",
+        }
+
+    rain_frequency = None
+    rain_raw = values_by_datatype.get("DLY-PRCP-PCTALL-GE001HI")
+    if isinstance(rain_raw, float):
+        if rain_raw > 100.0:
+            rain_pct = rain_raw / 10.0
+        elif rain_raw > 1.0:
+            rain_pct = rain_raw
+        else:
+            rain_pct = rain_raw * 100.0
+        rain_frequency = max(0.0, min(1.0, rain_pct / 100.0))
+
+    return {
+        "status": "ready",
+        "station_id": clean_station_id,
+        "cdo_station_id": cdo_station_id,
+        "month": int(month_value),
+        "day": int(day_value),
+        "normals_reference_date": normals_reference_date,
+        "source_url": source_url,
+        "sample_years": 30,
+        "tmax_normal_f": values_by_datatype.get("DLY-TMAX-NORMAL"),
+        "tmax_stddev_f": values_by_datatype.get("DLY-TMAX-STDDEV"),
+        "tmin_normal_f": values_by_datatype.get("DLY-TMIN-NORMAL"),
+        "tmin_stddev_f": values_by_datatype.get("DLY-TMIN-STDDEV"),
+        "rain_day_frequency": rain_frequency,
+        "raw_values": values_by_datatype,
     }
 
 

@@ -723,6 +723,36 @@ python -m betbot.cli kalshi-micro-prior-trader \
 
 For explicit live runs without permanently changing your saved env file, add both `--allow-live-orders` and `--use-temp-live-env`. The trader will create a temporary env copy with `BETBOT_ENABLE_LIVE_ORDERS=1`, use it for execute plus reconcile, and delete it afterward.
 
+### Monthly Climate 1x1 Live-Attempt Harness
+
+Use `scripts/monthly_climate_live_attempt_harness.sh` for a single-shot, monthly-climate-only pilot attempt under the existing safety model.
+By default it runs in non-ordering `pre_submit_smoke` mode.
+
+What it does:
+
+1. refreshes climate-router availability for `monthly_climate_anomaly`
+2. runs `kalshi-micro-prior-trader` in live mode using a temporary env copy
+3. keeps pilot limits at `1x1` (`max-orders=1`, `contracts=1`, pilot cap `1`, family allowlist `monthly_climate_anomaly`)
+4. writes pilot evidence plus a compact harness summary
+
+Example:
+
+```bash
+scripts/monthly_climate_live_attempt_harness.sh
+```
+
+Explicit live mode (only if you intentionally want real submission behavior):
+
+```bash
+MONTHLY_ATTEMPT_MODE=live scripts/monthly_climate_live_attempt_harness.sh
+```
+
+Outputs:
+
+- `outputs/monthly_climate_live_attempt_summary_*.json`
+- `outputs/monthly_climate_live_attempt_summary_latest.json`
+- `outputs/pilot_execution_evidence_latest.json`
+
 Output:
 
 - `outputs/kalshi_micro_prior_trader_summary_*.json`

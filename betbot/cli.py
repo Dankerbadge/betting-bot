@@ -46,6 +46,7 @@ from betbot.kalshi_nonsports_scan import run_kalshi_nonsports_scan
 from betbot.kalshi_nonsports_thresholds import run_kalshi_nonsports_thresholds
 from betbot.kalshi_weather_catalog import run_kalshi_weather_catalog
 from betbot.kalshi_weather_priors import run_kalshi_weather_priors, run_kalshi_weather_station_history_prewarm
+from betbot.kalshi_climate_availability import run_kalshi_climate_realtime_router
 from betbot.live_candidates import run_live_candidates
 from betbot.live_paper import run_live_paper
 from betbot.sports_archive import run_sports_archive
@@ -1248,6 +1249,36 @@ def build_parser() -> argparse.ArgumentParser:
         help="Max age for cached station-history snapshots before forcing a fresh CDO pull",
     )
     kalshi_weather_priors.add_argument(
+        "--disable-nws-gridpoint-data",
+        action="store_true",
+        help="Disable NWS forecastGridData enrichment for rain/temperature priors",
+    )
+    kalshi_weather_priors.add_argument(
+        "--disable-nws-observations",
+        action="store_true",
+        help="Disable NWS station observations enrichment for rain/temperature priors",
+    )
+    kalshi_weather_priors.add_argument(
+        "--disable-nws-alerts",
+        action="store_true",
+        help="Disable NWS active alerts enrichment for rain/temperature priors",
+    )
+    kalshi_weather_priors.add_argument(
+        "--disable-ncei-normals",
+        action="store_true",
+        help="Disable NCEI daily normals enrichment for station/day priors",
+    )
+    kalshi_weather_priors.add_argument(
+        "--disable-mrms-qpe",
+        action="store_true",
+        help="Disable NOAA MRMS QPE metadata enrichment for rain priors",
+    )
+    kalshi_weather_priors.add_argument(
+        "--disable-nbm-snapshot",
+        action="store_true",
+        help="Disable NOAA NBM snapshot metadata enrichment for weather priors",
+    )
+    kalshi_weather_priors.add_argument(
         "--disable-protect-manual",
         action="store_true",
         help="Allow generated weather priors to overwrite manual rows (disabled by default for safety)",
@@ -1630,6 +1661,68 @@ def build_parser() -> argparse.ArgumentParser:
         default=900.0,
         help="Maximum allowed age for daily-weather board snapshot before live daily-weather gating blocks",
     )
+    kalshi_micro_prior_execute.add_argument(
+        "--climate-router-pilot-enabled",
+        action="store_true",
+        help="Promote climate-router tradable rows into a capped pilot lane before execution",
+    )
+    kalshi_micro_prior_execute.add_argument(
+        "--climate-router-summary-json",
+        default=None,
+        help="Optional explicit climate-router summary JSON path; defaults to latest router summary in output-dir",
+    )
+    kalshi_micro_prior_execute.add_argument(
+        "--climate-router-pilot-max-orders-per-run",
+        type=int,
+        default=1,
+        help="Maximum promoted router pilot orders per run",
+    )
+    kalshi_micro_prior_execute.add_argument(
+        "--climate-router-pilot-contracts-cap",
+        type=int,
+        default=1,
+        help="Maximum contracts per promoted router pilot order",
+    )
+    kalshi_micro_prior_execute.add_argument(
+        "--climate-router-pilot-required-ev-dollars",
+        type=float,
+        default=0.01,
+        help="Minimum expected value dollars per promoted router pilot order",
+    )
+    kalshi_micro_prior_execute.add_argument(
+        "--climate-router-pilot-allowed-classes",
+        default="tradable",
+        help=(
+            "Comma-separated climate opportunity classes eligible for pilot promotion "
+            "(e.g. tradable,hot_positive)"
+        ),
+    )
+    kalshi_micro_prior_execute.add_argument(
+        "--climate-router-pilot-allowed-families",
+        default="",
+        help="Optional comma-separated contract-family allowlist for pilot promotion",
+    )
+    kalshi_micro_prior_execute.add_argument(
+        "--climate-router-pilot-excluded-families",
+        default="",
+        help="Optional comma-separated contract-family denylist for pilot promotion",
+    )
+    kalshi_micro_prior_execute.add_argument(
+        "--climate-router-pilot-policy-scope-override-enabled",
+        dest="climate_router_pilot_policy_scope_override_enabled",
+        action="store_true",
+        help=(
+            "Allow climate-router pilot rows to bypass daily-weather-only scope under pilot safety caps "
+            "(max 1 order/run, contracts cap 1)"
+        ),
+    )
+    kalshi_micro_prior_execute.add_argument(
+        "--disable-climate-router-pilot-policy-scope-override",
+        dest="climate_router_pilot_policy_scope_override_enabled",
+        action="store_false",
+        help="Disable pilot-only policy-scope override and keep strict daily-weather-only gating",
+    )
+    kalshi_micro_prior_execute.set_defaults(climate_router_pilot_policy_scope_override_enabled=False)
     kalshi_micro_prior_execute.add_argument("--output-dir", default="outputs", help="Output directory")
 
     kalshi_micro_prior_trader = subparsers.add_parser(
@@ -1734,6 +1827,68 @@ def build_parser() -> argparse.ArgumentParser:
         default=900.0,
         help="Maximum allowed age for daily-weather board snapshot before live daily-weather gating blocks",
     )
+    kalshi_micro_prior_trader.add_argument(
+        "--climate-router-pilot-enabled",
+        action="store_true",
+        help="Promote climate-router tradable rows into a capped pilot lane before execution",
+    )
+    kalshi_micro_prior_trader.add_argument(
+        "--climate-router-summary-json",
+        default=None,
+        help="Optional explicit climate-router summary JSON path; defaults to latest router summary in output-dir",
+    )
+    kalshi_micro_prior_trader.add_argument(
+        "--climate-router-pilot-max-orders-per-run",
+        type=int,
+        default=1,
+        help="Maximum promoted router pilot orders per run",
+    )
+    kalshi_micro_prior_trader.add_argument(
+        "--climate-router-pilot-contracts-cap",
+        type=int,
+        default=1,
+        help="Maximum contracts per promoted router pilot order",
+    )
+    kalshi_micro_prior_trader.add_argument(
+        "--climate-router-pilot-required-ev-dollars",
+        type=float,
+        default=0.01,
+        help="Minimum expected value dollars per promoted router pilot order",
+    )
+    kalshi_micro_prior_trader.add_argument(
+        "--climate-router-pilot-allowed-classes",
+        default="tradable",
+        help=(
+            "Comma-separated climate opportunity classes eligible for pilot promotion "
+            "(e.g. tradable,hot_positive)"
+        ),
+    )
+    kalshi_micro_prior_trader.add_argument(
+        "--climate-router-pilot-allowed-families",
+        default="",
+        help="Optional comma-separated contract-family allowlist for pilot promotion",
+    )
+    kalshi_micro_prior_trader.add_argument(
+        "--climate-router-pilot-excluded-families",
+        default="",
+        help="Optional comma-separated contract-family denylist for pilot promotion",
+    )
+    kalshi_micro_prior_trader.add_argument(
+        "--climate-router-pilot-policy-scope-override-enabled",
+        dest="climate_router_pilot_policy_scope_override_enabled",
+        action="store_true",
+        help=(
+            "Allow climate-router pilot rows to bypass daily-weather-only scope under pilot safety caps "
+            "(max 1 order/run, contracts cap 1)"
+        ),
+    )
+    kalshi_micro_prior_trader.add_argument(
+        "--disable-climate-router-pilot-policy-scope-override",
+        dest="climate_router_pilot_policy_scope_override_enabled",
+        action="store_false",
+        help="Disable pilot-only policy-scope override and keep strict daily-weather-only gating",
+    )
+    kalshi_micro_prior_trader.set_defaults(climate_router_pilot_policy_scope_override_enabled=False)
     kalshi_micro_prior_trader.add_argument(
         "--allow-live-orders",
         action="store_true",
@@ -3764,6 +3919,143 @@ def build_parser() -> argparse.ArgumentParser:
     )
     kalshi_ws_state_collect.add_argument("--output-dir", default="outputs", help="Output directory")
 
+    kalshi_climate_realtime_router = subparsers.add_parser(
+        "kalshi-climate-realtime-router",
+        help="Ingest real-time climate availability and route climate opportunities by modeled edge + market availability",
+    )
+    kalshi_climate_realtime_router.add_argument(
+        "--env-file",
+        default="data/research/account_onboarding.env.template",
+        help="Path to env-style file containing KALSHI credentials and environment",
+    )
+    kalshi_climate_realtime_router.add_argument(
+        "--priors-csv",
+        default="data/research/kalshi_nonsports_priors.csv",
+        help="Path to priors CSV (includes weather priors rows)",
+    )
+    kalshi_climate_realtime_router.add_argument(
+        "--history-csv",
+        default="outputs/kalshi_nonsports_history.csv",
+        help="Path to persistent non-sports history CSV",
+    )
+    kalshi_climate_realtime_router.add_argument(
+        "--availability-db-path",
+        default=None,
+        help="Optional explicit SQLite path for climate availability store (default: outputs/kalshi_climate_availability.sqlite3)",
+    )
+    kalshi_climate_realtime_router.add_argument(
+        "--market-tickers",
+        default="",
+        help="Optional comma-separated market tickers to monitor; defaults to top climate rows by edge",
+    )
+    kalshi_climate_realtime_router.add_argument(
+        "--ws-channels",
+        default="orderbook_snapshot,orderbook_delta,ticker,public_trades,user_fills,market_positions",
+        help="Comma-separated websocket channels to subscribe during realtime ingest",
+    )
+    kalshi_climate_realtime_router.add_argument(
+        "--run-seconds",
+        type=float,
+        default=45.0,
+        help="Realtime websocket ingest duration in seconds",
+    )
+    kalshi_climate_realtime_router.add_argument(
+        "--max-markets",
+        type=int,
+        default=40,
+        help="Maximum climate market tickers to monitor when market-tickers is not provided",
+    )
+    kalshi_climate_realtime_router.add_argument(
+        "--seed-recent-markets",
+        dest="seed_recent_markets",
+        action="store_true",
+        default=True,
+        help="Seed monitored tickers with recently updated open markets using GET /markets?min_updated_ts",
+    )
+    kalshi_climate_realtime_router.add_argument(
+        "--no-seed-recent-markets",
+        dest="seed_recent_markets",
+        action="store_false",
+        help="Disable recent-market discovery seeding and rely on priors-ranked climate rows only",
+    )
+    kalshi_climate_realtime_router.add_argument(
+        "--recent-markets-min-updated-seconds",
+        type=float,
+        default=900.0,
+        help="Recency window (seconds) forwarded to Kalshi recent-market discovery min_updated_ts",
+    )
+    kalshi_climate_realtime_router.add_argument(
+        "--recent-markets-timeout-seconds",
+        type=float,
+        default=8.0,
+        help="HTTP timeout for recent-market discovery requests",
+    )
+    kalshi_climate_realtime_router.add_argument(
+        "--ws-state-max-age-seconds",
+        type=float,
+        default=30.0,
+        help="Staleness threshold forwarded to websocket collector health checks",
+    )
+    kalshi_climate_realtime_router.add_argument(
+        "--min-theoretical-edge-net-fees",
+        type=float,
+        default=0.005,
+        help="Minimum net edge used to classify modeled-positive opportunities",
+    )
+    kalshi_climate_realtime_router.add_argument(
+        "--max-quote-age-seconds",
+        type=float,
+        default=900.0,
+        help="Reserved for downstream quote-freshness routing guardrail",
+    )
+    kalshi_climate_realtime_router.add_argument(
+        "--planning-bankroll",
+        type=float,
+        default=40.0,
+        help="Planning bankroll context for routing summaries",
+    )
+    kalshi_climate_realtime_router.add_argument(
+        "--daily-risk-cap",
+        type=float,
+        default=3.0,
+        help="Total routed risk cap for tradable climate opportunities",
+    )
+    kalshi_climate_realtime_router.add_argument(
+        "--max-risk-per-bet",
+        type=float,
+        default=1.0,
+        help="Maximum routed risk dollars per climate opportunity",
+    )
+    kalshi_climate_realtime_router.add_argument(
+        "--availability-lookback-days",
+        type=float,
+        default=7.0,
+        help="Lookback horizon for availability-rate metrics",
+    )
+    kalshi_climate_realtime_router.add_argument(
+        "--availability-recent-seconds",
+        type=float,
+        default=900.0,
+        help="Recency window for tradable/priced classification",
+    )
+    kalshi_climate_realtime_router.add_argument(
+        "--availability-hot-trade-window-seconds",
+        type=float,
+        default=300.0,
+        help="Recency window for public-trade activity to classify hot strips",
+    )
+    kalshi_climate_realtime_router.add_argument(
+        "--include-contract-families",
+        default="daily_rain,daily_temperature,daily_snow,monthly_climate_anomaly",
+        help="Comma-separated climate contract families to include in routing",
+    )
+    kalshi_climate_realtime_router.add_argument(
+        "--skip-realtime-collect",
+        action="store_true",
+        help="Skip websocket ingest and run routing from persisted availability DB + priors only",
+    )
+    kalshi_climate_realtime_router.add_argument("--output-dir", default="outputs", help="Output directory")
+
     kalshi_micro_status = subparsers.add_parser(
         "kalshi-micro-status",
         help="Run a fresh read-only micro status cycle and summarize whether to hold, watch, or act",
@@ -4299,6 +4591,12 @@ def main() -> None:
             timeout_seconds=args.timeout_seconds,
             historical_lookback_years=args.historical_lookback_years,
             station_history_cache_max_age_hours=args.station_history_cache_max_age_hours,
+            include_nws_gridpoint_data=not args.disable_nws_gridpoint_data,
+            include_nws_observations=not args.disable_nws_observations,
+            include_nws_alerts=not args.disable_nws_alerts,
+            include_ncei_normals=not args.disable_ncei_normals,
+            include_mrms_qpe=not args.disable_mrms_qpe,
+            include_nbm_snapshot=not args.disable_nbm_snapshot,
             protect_manual=not args.disable_protect_manual,
             write_back_to_priors=not args.dry_run,
             top_n=args.top_n,
@@ -4342,6 +4640,21 @@ def main() -> None:
             include_incentives=args.include_incentives,
         )
     elif args.command == "kalshi-micro-prior-execute":
+        climate_router_pilot_allowed_classes = tuple(
+            value.strip()
+            for value in str(args.climate_router_pilot_allowed_classes or "").split(",")
+            if value.strip()
+        )
+        climate_router_pilot_allowed_families = tuple(
+            value.strip()
+            for value in str(args.climate_router_pilot_allowed_families or "").split(",")
+            if value.strip()
+        )
+        climate_router_pilot_excluded_families = tuple(
+            value.strip()
+            for value in str(args.climate_router_pilot_excluded_families or "").split(",")
+            if value.strip()
+        )
         summary = run_kalshi_micro_prior_execute(
             env_file=args.env_file,
             priors_csv=args.priors_csv,
@@ -4379,12 +4692,38 @@ def main() -> None:
             enforce_daily_weather_live_only=not args.disable_daily_weather_live_only,
             require_daily_weather_board_coverage_for_live=not args.disable_daily_weather_board_coverage,
             daily_weather_board_max_age_seconds=args.daily_weather_board_max_age_seconds,
+            climate_router_pilot_enabled=args.climate_router_pilot_enabled,
+            climate_router_summary_json=args.climate_router_summary_json,
+            climate_router_pilot_max_orders_per_run=args.climate_router_pilot_max_orders_per_run,
+            climate_router_pilot_contracts_cap=args.climate_router_pilot_contracts_cap,
+            climate_router_pilot_required_ev_dollars=args.climate_router_pilot_required_ev_dollars,
+            climate_router_pilot_allowed_classes=climate_router_pilot_allowed_classes,
+            climate_router_pilot_allowed_families=climate_router_pilot_allowed_families,
+            climate_router_pilot_excluded_families=climate_router_pilot_excluded_families,
+            climate_router_pilot_policy_scope_override_enabled=(
+                args.climate_router_pilot_policy_scope_override_enabled
+            ),
             include_incentives=args.include_incentives,
         )
     elif args.command == "kalshi-micro-prior-trader":
         auto_weather_allowed_contract_families = tuple(
             value.strip()
             for value in str(args.auto_weather_allowed_contract_families or "").split(",")
+            if value.strip()
+        )
+        climate_router_pilot_allowed_classes = tuple(
+            value.strip()
+            for value in str(args.climate_router_pilot_allowed_classes or "").split(",")
+            if value.strip()
+        )
+        climate_router_pilot_allowed_families = tuple(
+            value.strip()
+            for value in str(args.climate_router_pilot_allowed_families or "").split(",")
+            if value.strip()
+        )
+        climate_router_pilot_excluded_families = tuple(
+            value.strip()
+            for value in str(args.climate_router_pilot_excluded_families or "").split(",")
             if value.strip()
         )
         summary = run_kalshi_micro_prior_trader(
@@ -4432,6 +4771,17 @@ def main() -> None:
             enforce_daily_weather_live_only=not args.disable_daily_weather_live_only,
             require_daily_weather_board_coverage_for_live=not args.disable_daily_weather_board_coverage,
             daily_weather_board_max_age_seconds=args.daily_weather_board_max_age_seconds,
+            climate_router_pilot_enabled=args.climate_router_pilot_enabled,
+            climate_router_summary_json=args.climate_router_summary_json,
+            climate_router_pilot_max_orders_per_run=args.climate_router_pilot_max_orders_per_run,
+            climate_router_pilot_contracts_cap=args.climate_router_pilot_contracts_cap,
+            climate_router_pilot_required_ev_dollars=args.climate_router_pilot_required_ev_dollars,
+            climate_router_pilot_allowed_classes=climate_router_pilot_allowed_classes,
+            climate_router_pilot_allowed_families=climate_router_pilot_allowed_families,
+            climate_router_pilot_excluded_families=climate_router_pilot_excluded_families,
+            climate_router_pilot_policy_scope_override_enabled=(
+                args.climate_router_pilot_policy_scope_override_enabled
+            ),
             capture_before_execute=not args.skip_capture,
             capture_max_hours_to_close=args.max_hours_to_close,
             capture_page_limit=args.page_limit,
@@ -4829,6 +5179,34 @@ def main() -> None:
             flush_state_every_seconds=args.flush_state_every_seconds,
             reconnect_max_attempts=args.reconnect_max_attempts,
             reconnect_backoff_seconds=args.reconnect_backoff_seconds,
+        )
+    elif args.command == "kalshi-climate-realtime-router":
+        summary = run_kalshi_climate_realtime_router(
+            env_file=args.env_file,
+            priors_csv=args.priors_csv,
+            history_csv=args.history_csv,
+            output_dir=args.output_dir,
+            availability_db_path=args.availability_db_path,
+            market_tickers=tuple(item.strip() for item in args.market_tickers.split(",") if item.strip()),
+            ws_channels=tuple(item.strip() for item in args.ws_channels.split(",") if item.strip()),
+            run_seconds=args.run_seconds,
+            max_markets=args.max_markets,
+            seed_recent_markets=args.seed_recent_markets,
+            recent_markets_min_updated_seconds=args.recent_markets_min_updated_seconds,
+            recent_markets_timeout_seconds=args.recent_markets_timeout_seconds,
+            ws_state_max_age_seconds=args.ws_state_max_age_seconds,
+            min_theoretical_edge_net_fees=args.min_theoretical_edge_net_fees,
+            max_quote_age_seconds=args.max_quote_age_seconds,
+            planning_bankroll_dollars=args.planning_bankroll,
+            daily_risk_cap_dollars=args.daily_risk_cap,
+            max_risk_per_bet_dollars=args.max_risk_per_bet,
+            availability_lookback_days=args.availability_lookback_days,
+            availability_recent_seconds=args.availability_recent_seconds,
+            availability_hot_trade_window_seconds=args.availability_hot_trade_window_seconds,
+            include_contract_families=tuple(
+                item.strip() for item in args.include_contract_families.split(",") if item.strip()
+            ),
+            skip_realtime_collect=args.skip_realtime_collect,
         )
     elif args.command == "kalshi-micro-status":
         summary = run_kalshi_micro_status(
