@@ -296,6 +296,8 @@ payload = {
         "reason": "skipped_locked",
         "comparison_basis": "same_snapshot_same_filters",
         "executed_lane": "maker_edge",
+        "fully_frozen": False,
+        "snapshot_inputs": {},
         "maker_edge": {
             "picked_ticker": None,
             "picked_side": None,
@@ -648,6 +650,81 @@ def _file_meta(path: Path) -> dict[str, Any]:
         "age_seconds": round(age, 3),
         "size_bytes": int(path.stat().st_size),
     }
+
+
+def _file_sha256(path: Path) -> str | None:
+    try:
+        hasher = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                if not chunk:
+                    break
+                hasher.update(chunk)
+        return hasher.hexdigest()
+    except OSError:
+        return None
+
+
+def _snapshot_lane_input_artifact(
+    *,
+    artifact_name: str,
+    source_path: Path | None,
+    snapshot_dir: Path,
+    snapshot_filename: str,
+    required_for_run: bool,
+    errors: list[str],
+    missing_error_key: str,
+    copy_error_prefix: str,
+) -> tuple[Path | None, dict[str, Any]]:
+    source = source_path if isinstance(source_path, Path) else None
+    snapshot_path = snapshot_dir / snapshot_filename
+    info: dict[str, Any] = {
+        "artifact": artifact_name,
+        "required_for_run": bool(required_for_run),
+        "used_snapshot": False,
+        "frozen": False,
+        "source_path": str(source) if isinstance(source, Path) else None,
+        "snapshot_path": str(snapshot_path),
+        "source_exists": bool(source.exists()) if isinstance(source, Path) else False,
+        "snapshot_exists": False,
+        "source_size_bytes": int(source.stat().st_size) if isinstance(source, Path) and source.exists() else None,
+        "snapshot_size_bytes": None,
+        "source_sha256": None,
+        "snapshot_sha256": None,
+        "sha256": None,
+        "error": None,
+    }
+    if not isinstance(source, Path) or not source.exists():
+        if required_for_run:
+            errors.append(missing_error_key)
+            info["error"] = "missing_source"
+        return source if isinstance(source, Path) and source.exists() else None, info
+
+    try:
+        snapshot_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, snapshot_path)
+    except Exception as exc:  # pragma: no cover - observer-only hardening
+        errors.append(f"{copy_error_prefix}:{exc}")
+        info["error"] = f"copy_failed:{exc}"
+        return source, info
+
+    info["snapshot_exists"] = snapshot_path.exists()
+    if snapshot_path.exists():
+        info["snapshot_size_bytes"] = int(snapshot_path.stat().st_size)
+    source_sha = _file_sha256(source)
+    snapshot_sha = _file_sha256(snapshot_path) if snapshot_path.exists() else None
+    info["source_sha256"] = source_sha
+    info["snapshot_sha256"] = snapshot_sha
+    info["sha256"] = snapshot_sha or source_sha
+    if source_sha and snapshot_sha and source_sha == snapshot_sha:
+        info["frozen"] = True
+        info["used_snapshot"] = True
+        return snapshot_path, info
+
+    if required_for_run:
+        errors.append(f"{copy_error_prefix}:hash_mismatch_or_unreadable")
+        info["error"] = "hash_mismatch_or_unreadable"
+    return source, info
 
 
 def _choose_betbot_launcher(repo_root: Path) -> list[str]:
@@ -6590,6 +6667,8 @@ def _default_lane_comparison(
         "reason": reason,
         "comparison_basis": comparison_basis,
         "executed_lane": executed_lane,
+        "fully_frozen": False,
+        "snapshot_inputs": {},
         "maker_edge": _default_lane_comparison_lane(),
         "probability_first": _default_lane_comparison_lane(),
         "delta": {
@@ -6686,6 +6765,8 @@ def _build_lane_comparison(
     comparison_basis: str = "same_snapshot_same_filters",
     reason: str | None = None,
     errors: list[str] | None = None,
+    fully_frozen: bool = False,
+    snapshot_inputs: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     payload = _default_lane_comparison(
         status="ready",
@@ -6693,6 +6774,8 @@ def _build_lane_comparison(
         executed_lane=executed_lane,
         comparison_basis=comparison_basis,
     )
+    payload["fully_frozen"] = bool(fully_frozen)
+    payload["snapshot_inputs"] = dict(snapshot_inputs or {})
     payload["maker_edge"] = _lane_snapshot_from_execute_summary(maker_edge_summary)
     payload["probability_first"] = _lane_snapshot_from_execute_summary(probability_first_summary)
     payload["delta"] = {
@@ -9170,39 +9253,106 @@ def main() -> int:
         default=True,
     )
     if lane_comparison_enabled:
-        lane_compare_priors_csv = priors_csv
-        lane_compare_history_csv = history_csv
-        lane_compare_snapshot_frozen = False
         lane_compare_snapshot_dir = run_logs / "lane_comparison_snapshot"
-        try:
-            lane_compare_snapshot_dir.mkdir(parents=True, exist_ok=True)
-            lane_compare_priors_snapshot = lane_compare_snapshot_dir / "kalshi_nonsports_priors.snapshot.csv"
-            lane_compare_history_snapshot = lane_compare_snapshot_dir / "kalshi_nonsports_history.snapshot.csv"
-            if priors_csv.exists():
-                shutil.copy2(priors_csv, lane_compare_priors_snapshot)
-                lane_compare_priors_csv = lane_compare_priors_snapshot
-            else:
-                lane_comparison_errors.append("lane_compare_priors_snapshot_missing_source")
-            if history_csv.exists():
-                shutil.copy2(history_csv, lane_compare_history_snapshot)
-                lane_compare_history_csv = lane_compare_history_snapshot
-            else:
-                lane_comparison_errors.append("lane_compare_history_snapshot_missing_source")
-            lane_compare_snapshot_frozen = (
-                lane_compare_priors_csv == lane_compare_priors_snapshot
-                and lane_compare_history_csv == lane_compare_history_snapshot
-            )
-        except Exception as exc:
-            lane_comparison_errors.append(f"lane_compare_snapshot_copy_failed:{exc}")
+        lane_snapshot_inputs: dict[str, Any] = {}
+        lane_compare_priors_csv, priors_snapshot_info = _snapshot_lane_input_artifact(
+            artifact_name="priors_csv",
+            source_path=priors_csv,
+            snapshot_dir=lane_compare_snapshot_dir,
+            snapshot_filename="kalshi_nonsports_priors.snapshot.csv",
+            required_for_run=True,
+            errors=lane_comparison_errors,
+            missing_error_key="lane_compare_priors_snapshot_missing_source",
+            copy_error_prefix="lane_compare_priors_snapshot_copy_failed",
+        )
+        lane_snapshot_inputs["priors_csv"] = priors_snapshot_info
+
+        lane_compare_history_csv, history_snapshot_info = _snapshot_lane_input_artifact(
+            artifact_name="history_csv",
+            source_path=history_csv,
+            snapshot_dir=lane_compare_snapshot_dir,
+            snapshot_filename="kalshi_nonsports_history.snapshot.csv",
+            required_for_run=True,
+            errors=lane_comparison_errors,
+            missing_error_key="lane_compare_history_snapshot_missing_source",
+            copy_error_prefix="lane_compare_history_snapshot_copy_failed",
+        )
+        lane_snapshot_inputs["history_csv"] = history_snapshot_info
+
+        lane_compare_frontier_source_path: Path | None = None
+        if bool(frontier_refresh_step.get("ok")) and frontier_report_path:
+            frontier_candidate = Path(frontier_report_path)
+            if not frontier_candidate.is_absolute():
+                frontier_candidate = (repo_root / frontier_candidate).resolve()
+            if frontier_candidate.exists():
+                lane_compare_frontier_source_path = frontier_candidate
+        lane_compare_frontier_report_json, frontier_snapshot_info = _snapshot_lane_input_artifact(
+            artifact_name="execution_frontier_report_json",
+            source_path=lane_compare_frontier_source_path,
+            snapshot_dir=lane_compare_snapshot_dir,
+            snapshot_filename="execution_frontier_report.snapshot.json",
+            required_for_run=lane_compare_frontier_source_path is not None,
+            errors=lane_comparison_errors,
+            missing_error_key="lane_compare_frontier_snapshot_missing_source",
+            copy_error_prefix="lane_compare_frontier_snapshot_copy_failed",
+        )
+        lane_snapshot_inputs["execution_frontier_report_json"] = frontier_snapshot_info
+
+        lane_compare_climate_summary_source_path: Path | None = None
+        if climate_router_pilot_summary_json:
+            lane_compare_climate_summary_source_path = Path(climate_router_pilot_summary_json)
+            if not lane_compare_climate_summary_source_path.is_absolute():
+                lane_compare_climate_summary_source_path = (repo_root / lane_compare_climate_summary_source_path).resolve()
+        lane_compare_climate_summary_json, climate_summary_snapshot_info = _snapshot_lane_input_artifact(
+            artifact_name="climate_router_summary_json",
+            source_path=lane_compare_climate_summary_source_path,
+            snapshot_dir=lane_compare_snapshot_dir,
+            snapshot_filename="climate_router_summary.snapshot.json",
+            required_for_run=lane_compare_climate_summary_source_path is not None,
+            errors=lane_comparison_errors,
+            missing_error_key="lane_compare_climate_summary_snapshot_missing_source",
+            copy_error_prefix="lane_compare_climate_summary_snapshot_copy_failed",
+        )
+        lane_snapshot_inputs["climate_router_summary_json"] = climate_summary_snapshot_info
+
+        lane_compare_ws_state_source_text = str(
+            os.environ.get("BETBOT_WS_STATE_JSON") or (output_dir / "kalshi_ws_state_latest.json")
+        ).strip()
+        lane_compare_ws_state_source_path = Path(lane_compare_ws_state_source_text).expanduser()
+        if not lane_compare_ws_state_source_path.is_absolute():
+            lane_compare_ws_state_source_path = (repo_root / lane_compare_ws_state_source_path).resolve()
+        lane_compare_ws_state_json, ws_state_snapshot_info = _snapshot_lane_input_artifact(
+            artifact_name="ws_state_json",
+            source_path=lane_compare_ws_state_source_path,
+            snapshot_dir=lane_compare_snapshot_dir,
+            snapshot_filename="kalshi_ws_state_latest.snapshot.json",
+            required_for_run=True,
+            errors=lane_comparison_errors,
+            missing_error_key="lane_compare_ws_state_snapshot_missing_source",
+            copy_error_prefix="lane_compare_ws_state_snapshot_copy_failed",
+        )
+        lane_snapshot_inputs["ws_state_json"] = ws_state_snapshot_info
+
+        required_lane_snapshot_inputs = [
+            item for item in lane_snapshot_inputs.values() if isinstance(item, dict) and bool(item.get("required_for_run"))
+        ]
+        lane_compare_fully_frozen = bool(required_lane_snapshot_inputs) and all(
+            bool(item.get("frozen")) and bool(item.get("used_snapshot")) for item in required_lane_snapshot_inputs
+        )
+        lane_compare_comparison_basis = (
+            "same_snapshot_same_filters_frozen_artifacts"
+            if lane_compare_fully_frozen
+            else "same_snapshot_same_filters_partial_freeze"
+        )
 
         lane_compare_execute_common_args = [
             "kalshi-micro-prior-execute",
             "--env-file",
             str(env_file),
             "--priors-csv",
-            str(lane_compare_priors_csv),
+            str(lane_compare_priors_csv or priors_csv),
             "--history-csv",
-            str(lane_compare_history_csv),
+            str(lane_compare_history_csv or history_csv),
             "--output-dir",
             str(output_dir),
             "--timeout-seconds",
@@ -9211,14 +9361,16 @@ def main() -> int:
             "--daily-weather-board-max-age-seconds",
             str(max(0.0, float(os.environ.get("BETBOT_DAILY_WEATHER_BOARD_MAX_AGE_SECONDS", "900")))),
         ]
+        if isinstance(lane_compare_ws_state_json, Path):
+            lane_compare_execute_common_args.extend(["--ws-state-json", str(lane_compare_ws_state_json)])
         if disable_daily_weather_live_only:
             lane_compare_execute_common_args.append("--disable-daily-weather-live-only")
         if climate_router_pilot_enabled:
             lane_compare_execute_common_args.append("--climate-router-pilot-enabled")
         if climate_router_pilot_enabled and climate_router_pilot_policy_scope_override_enabled:
             lane_compare_execute_common_args.append("--climate-router-pilot-policy-scope-override-enabled")
-        if climate_router_pilot_summary_json:
-            lane_compare_execute_common_args.extend(["--climate-router-summary-json", climate_router_pilot_summary_json])
+        if isinstance(lane_compare_climate_summary_json, Path):
+            lane_compare_execute_common_args.extend(["--climate-router-summary-json", str(lane_compare_climate_summary_json)])
         lane_compare_execute_common_args.extend(
             [
                 "--climate-router-pilot-max-orders-per-run",
@@ -9241,11 +9393,11 @@ def main() -> int:
             lane_compare_execute_common_args.extend(
                 ["--climate-router-pilot-excluded-families", climate_router_pilot_excluded_families]
             )
-        if bool(frontier_refresh_step.get("ok")) and frontier_report_path and Path(frontier_report_path).exists():
+        if isinstance(lane_compare_frontier_report_json, Path):
             lane_compare_execute_common_args.extend(
                 [
                     "--execution-frontier-report-json",
-                    frontier_report_path,
+                    str(lane_compare_frontier_report_json),
                     "--execution-frontier-max-report-age-seconds",
                     str(max(0.0, float(os.environ.get("BETBOT_FRONTIER_MAX_AGE_SECONDS", "10800")))),
                 ]
@@ -9274,9 +9426,10 @@ def main() -> int:
             run_dir=run_logs,
             env_overrides=env_file_values,
         )
-        lane_compare_maker_step["snapshot_frozen"] = lane_compare_snapshot_frozen
-        lane_compare_maker_step["snapshot_priors_csv"] = str(lane_compare_priors_csv)
-        lane_compare_maker_step["snapshot_history_csv"] = str(lane_compare_history_csv)
+        lane_compare_maker_step["snapshot_frozen"] = lane_compare_fully_frozen
+        lane_compare_maker_step["snapshot_priors_csv"] = str(lane_compare_priors_csv or priors_csv)
+        lane_compare_maker_step["snapshot_history_csv"] = str(lane_compare_history_csv or history_csv)
+        lane_compare_maker_step["snapshot_inputs"] = lane_snapshot_inputs
         lane_compare_maker_step["diagnostic_only"] = True
         if not bool(lane_compare_maker_step.get("ok")):
             lane_compare_maker_step["status"] = (
@@ -9302,9 +9455,10 @@ def main() -> int:
             run_dir=run_logs,
             env_overrides=env_file_values,
         )
-        lane_compare_probability_step["snapshot_frozen"] = lane_compare_snapshot_frozen
-        lane_compare_probability_step["snapshot_priors_csv"] = str(lane_compare_priors_csv)
-        lane_compare_probability_step["snapshot_history_csv"] = str(lane_compare_history_csv)
+        lane_compare_probability_step["snapshot_frozen"] = lane_compare_fully_frozen
+        lane_compare_probability_step["snapshot_priors_csv"] = str(lane_compare_priors_csv or priors_csv)
+        lane_compare_probability_step["snapshot_history_csv"] = str(lane_compare_history_csv or history_csv)
+        lane_compare_probability_step["snapshot_inputs"] = lane_snapshot_inputs
         lane_compare_probability_step["diagnostic_only"] = True
         if not bool(lane_compare_probability_step.get("ok")):
             lane_compare_probability_step["status"] = (
@@ -9352,8 +9506,10 @@ def main() -> int:
             maker_edge_summary=lane_compare_maker_summary,
             probability_first_summary=lane_compare_probability_summary,
             executed_lane=executed_lane,
-            comparison_basis="same_snapshot_same_filters",
+            comparison_basis=lane_compare_comparison_basis,
             errors=lane_comparison_errors,
+            fully_frozen=lane_compare_fully_frozen,
+            snapshot_inputs=lane_snapshot_inputs,
         )
     else:
         lane_comparison = _default_lane_comparison(
