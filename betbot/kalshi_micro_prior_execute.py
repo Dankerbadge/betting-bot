@@ -722,6 +722,7 @@ def build_prior_trade_gate_decision(
     open_positions_count: int,
     min_live_maker_edge: float,
     min_live_maker_edge_net_fees: float,
+    min_live_selected_fair_probability: float | None = None,
     allowed_canonical_niches: tuple[str, ...] | None = None,
     top_market_contract_family: str | None = None,
     top_market_weather_history_status: str | None = None,
@@ -735,6 +736,12 @@ def build_prior_trade_gate_decision(
     require_daily_weather_board_coverage: bool = False,
     require_daily_weather_board_freshness: bool = False,
 ) -> dict[str, Any]:
+    min_live_selected_fair_probability_effective = _as_float(min_live_selected_fair_probability)
+    if isinstance(min_live_selected_fair_probability_effective, float) and (
+        min_live_selected_fair_probability_effective < 0.0
+        or min_live_selected_fair_probability_effective > 1.0
+    ):
+        raise ValueError("min_live_selected_fair_probability must be between 0 and 1")
     live_submissions_today = int(ledger_summary.get("live_submissions_today") or 0)
     live_submitted_cost_today = float(ledger_summary.get("live_submitted_cost_today") or 0.0)
     live_submissions_remaining_today = int(
@@ -778,6 +785,9 @@ def build_prior_trade_gate_decision(
     top_market_canonical_policy_applied = plan_summary.get("top_market_canonical_policy_applied")
     top_market_maker_entry_edge = plan_summary.get("top_market_maker_entry_edge")
     top_market_maker_entry_edge_net_fees = plan_summary.get("top_market_maker_entry_edge_net_fees")
+    top_market_fair_probability = _as_float(plan_summary.get("top_market_fair_probability"))
+    if top_market_fair_probability is None:
+        top_market_fair_probability = _as_float(plan_summary.get("top_market_fair_probability_conservative"))
     funding_gap_dollars = plan_summary.get("funding_gap_dollars")
     actual_live_balance_dollars = plan_summary.get("actual_live_balance_dollars")
     daily_weather_markets_total = int((daily_weather_board_summary or {}).get("daily_weather_markets_total") or 0)
@@ -837,6 +847,17 @@ def build_prior_trade_gate_decision(
         ):
             blockers.append(
                 f"Top prior-backed maker edge net fees is below the live minimum of {min_live_maker_edge_net_fees:.3f}."
+            )
+        if (
+            isinstance(min_live_selected_fair_probability_effective, float)
+            and (
+                not isinstance(top_market_fair_probability, float)
+                or top_market_fair_probability < min_live_selected_fair_probability_effective
+            )
+        ):
+            blockers.append(
+                "Top prior-backed selected fair probability is below the live minimum of "
+                f"{min_live_selected_fair_probability_effective:.3f}."
             )
     normalized_allowed_niches = (
         {value.strip().lower() for value in allowed_canonical_niches if value.strip()}
@@ -939,6 +960,14 @@ def build_prior_trade_gate_decision(
             gate_status = "no_candidates"
         elif positive_maker_entry_markets <= 0:
             gate_status = "no_edge"
+        elif (
+            isinstance(min_live_selected_fair_probability_effective, float)
+            and (
+                not isinstance(top_market_fair_probability, float)
+                or top_market_fair_probability < min_live_selected_fair_probability_effective
+            )
+        ):
+            gate_status = "probability_too_low"
         else:
             gate_status = "edge_too_small"
 
@@ -1000,6 +1029,7 @@ def build_prior_trade_gate_decision(
         "top_market_maker_entry_price_dollars": plan_summary.get("top_market_maker_entry_price_dollars"),
         "top_market_maker_entry_edge": top_market_maker_entry_edge,
         "top_market_maker_entry_edge_net_fees": top_market_maker_entry_edge_net_fees,
+        "min_live_selected_fair_probability": min_live_selected_fair_probability_effective,
         "top_market_estimated_entry_cost_dollars": plan_summary.get("top_market_estimated_entry_cost_dollars"),
         "top_market_estimated_entry_fee_dollars": plan_summary.get("top_market_estimated_entry_fee_dollars"),
         "top_market_expected_value_dollars": plan_summary.get("top_market_expected_value_dollars"),
@@ -1013,7 +1043,7 @@ def build_prior_trade_gate_decision(
         "top_market_estimated_max_profit_dollars": plan_summary.get("top_market_estimated_max_profit_dollars"),
         "top_market_estimated_max_loss_dollars": plan_summary.get("top_market_estimated_max_loss_dollars"),
         "top_market_max_profit_roi_on_cost": plan_summary.get("top_market_max_profit_roi_on_cost"),
-        "top_market_fair_probability": plan_summary.get("top_market_fair_probability"),
+        "top_market_fair_probability": top_market_fair_probability,
         "top_market_fair_probability_conservative": plan_summary.get("top_market_fair_probability_conservative"),
         "top_market_confidence": plan_summary.get("top_market_confidence"),
         "top_market_thesis": plan_summary.get("top_market_thesis"),
@@ -1032,6 +1062,8 @@ def run_kalshi_micro_prior_execute(
     max_orders: int = 3,
     min_maker_edge: float = 0.005,
     min_maker_edge_net_fees: float = 0.0,
+    selection_lane: str = "maker_edge",
+    min_selected_fair_probability: float | None = None,
     max_entry_price_dollars: float = 0.99,
     min_live_entry_price_dollars: float = 0.03,
     max_live_entry_price_dollars: float = 0.95,
@@ -1052,6 +1084,7 @@ def run_kalshi_micro_prior_execute(
     auto_cancel_duplicate_open_orders: bool = True,
     min_live_maker_edge: float = 0.01,
     min_live_maker_edge_net_fees: float = 0.0,
+    min_live_selected_fair_probability: float | None = None,
     include_incentives: bool = False,
     ledger_csv: str | None = None,
     book_db_path: str | None = None,
@@ -1108,6 +1141,14 @@ def run_kalshi_micro_prior_execute(
         allowed_live_canonical_niches = (
             LIVE_ALLOWED_CANONICAL_NICHES if (allow_live_orders or enforce_canonical_dataset_effective) else None
         )
+    effective_min_live_selected_fair_probability = _as_float(min_live_selected_fair_probability)
+    if effective_min_live_selected_fair_probability is None:
+        effective_min_live_selected_fair_probability = _as_float(min_selected_fair_probability)
+    if isinstance(effective_min_live_selected_fair_probability, float) and (
+        effective_min_live_selected_fair_probability < 0.0
+        or effective_min_live_selected_fair_probability > 1.0
+    ):
+        raise ValueError("min_live_selected_fair_probability must be between 0 and 1")
     enforce_live_quality_filters = bool(allow_live_orders or enforce_canonical_dataset_effective)
     effective_min_entry_price_dollars = (
         max(0.0, float(min_live_entry_price_dollars)) if enforce_live_quality_filters else 0.0
@@ -1167,6 +1208,8 @@ def run_kalshi_micro_prior_execute(
         max_orders=max_orders,
         min_maker_edge=min_maker_edge,
         min_maker_edge_net_fees=min_maker_edge_net_fees,
+        selection_lane=selection_lane,
+        min_selected_fair_probability=min_selected_fair_probability,
         min_entry_price_dollars=effective_min_entry_price_dollars,
         max_entry_price_dollars=effective_max_entry_price_dollars,
         routine_max_hours_to_close=effective_routine_max_hours_to_close,
@@ -1257,6 +1300,7 @@ def run_kalshi_micro_prior_execute(
         open_positions_count=open_positions_count,
         min_live_maker_edge=min_live_maker_edge,
         min_live_maker_edge_net_fees=min_live_maker_edge_net_fees,
+        min_live_selected_fair_probability=effective_min_live_selected_fair_probability,
         allowed_canonical_niches=allowed_live_canonical_niches,
         top_market_contract_family=top_market_contract_family or None,
         top_market_weather_history_status=top_market_weather_history_status,
@@ -1367,6 +1411,9 @@ def run_kalshi_micro_prior_execute(
         "env_file": env_file,
         "allow_live_orders_requested": allow_live_orders,
         "allow_live_orders_effective": effective_allow_live_orders,
+        "selection_lane": str(selection_lane or "").strip().lower() or "maker_edge",
+        "min_selected_fair_probability": _as_float(min_selected_fair_probability),
+        "min_live_selected_fair_probability": effective_min_live_selected_fair_probability,
         "enforce_live_quality_filters": enforce_live_quality_filters,
         "effective_min_entry_price_dollars": effective_min_entry_price_dollars,
         "effective_max_entry_price_dollars": effective_max_entry_price_dollars,

@@ -1414,6 +1414,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Minimum maker-entry edge net estimated fees required to include a prior-backed plan",
     )
     kalshi_micro_prior_plan.add_argument(
+        "--selection-lane",
+        choices=["maker_edge", "probability_first"],
+        default="maker_edge",
+        help="Plan ranking lane: default maker-edge lane, or probability-first compounding lane",
+    )
+    kalshi_micro_prior_plan.add_argument(
+        "--min-selected-fair-probability",
+        type=float,
+        default=None,
+        help="Optional minimum selected-side fair probability gate (0-1)",
+    )
+    kalshi_micro_prior_plan.add_argument(
         "--max-entry-price",
         type=float,
         default=0.99,
@@ -1511,6 +1523,24 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=0.0,
         help="Minimum maker-entry edge net estimated fees required to include a prior-backed plan",
+    )
+    kalshi_micro_prior_execute.add_argument(
+        "--selection-lane",
+        choices=["maker_edge", "probability_first"],
+        default="maker_edge",
+        help="Plan ranking lane: default maker-edge lane, or probability-first compounding lane",
+    )
+    kalshi_micro_prior_execute.add_argument(
+        "--min-selected-fair-probability",
+        type=float,
+        default=None,
+        help="Optional minimum selected-side fair probability gate for planning (0-1)",
+    )
+    kalshi_micro_prior_execute.add_argument(
+        "--min-live-selected-fair-probability",
+        type=float,
+        default=None,
+        help="Optional minimum selected-side fair probability gate for live trade admission (0-1)",
     )
     kalshi_micro_prior_execute.add_argument(
         "--max-entry-price",
@@ -4630,6 +4660,8 @@ def main() -> None:
             max_orders=args.max_orders,
             min_maker_edge=args.min_maker_edge,
             min_maker_edge_net_fees=args.min_maker_edge_net_fees,
+            selection_lane=args.selection_lane,
+            min_selected_fair_probability=args.min_selected_fair_probability,
             max_entry_price_dollars=args.max_entry_price,
             canonical_mapping_csv=args.canonical_mapping_csv,
             canonical_threshold_csv=args.canonical_threshold_csv,
@@ -4666,6 +4698,8 @@ def main() -> None:
             max_orders=args.max_orders,
             min_maker_edge=args.min_maker_edge,
             min_maker_edge_net_fees=args.min_maker_edge_net_fees,
+            selection_lane=args.selection_lane,
+            min_selected_fair_probability=args.min_selected_fair_probability,
             max_entry_price_dollars=args.max_entry_price,
             canonical_mapping_csv=args.canonical_mapping_csv,
             canonical_threshold_csv=args.canonical_threshold_csv,
@@ -4678,6 +4712,7 @@ def main() -> None:
             max_live_cost_per_day_dollars=args.max_live_cost_per_day,
             auto_cancel_duplicate_open_orders=not args.disable_auto_duplicate_janitor,
             min_live_maker_edge_net_fees=args.min_live_maker_edge_net_fees,
+            min_live_selected_fair_probability=args.min_live_selected_fair_probability,
             timeout_seconds=args.timeout_seconds,
             ledger_csv=args.ledger_csv,
             book_db_path=args.book_db_path,

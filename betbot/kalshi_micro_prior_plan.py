@@ -27,6 +27,7 @@ LIVE_ALLOWED_CANONICAL_NICHES = ("macro_release", "weather_energy_transmission",
 _DAILY_WEATHER_CONTRACT_FAMILIES = {"daily_rain", "daily_temperature", "daily_snow"}
 _PRODUCTION_DAILY_WEATHER_CONTRACT_FAMILIES = {"daily_rain", "daily_temperature"}
 _DAILY_WEATHER_QUOTE_STALE_MAX_AGE_SECONDS = 900.0
+_MICRO_PRIOR_SELECTION_LANES = {"maker_edge", "probability_first"}
 
 
 def _latest_market_rows(history_rows: list[dict[str, str]]) -> dict[str, dict[str, str]]:
@@ -931,6 +932,28 @@ def _row_canonical_niche(
     return fallback_niche or None
 
 
+def _row_selected_side_probability(
+    row: dict[str, Any],
+    side: str,
+    *,
+    conservative: bool,
+) -> float | None:
+    normalized_side = str(side or "").strip().lower()
+    if normalized_side == "yes":
+        keys = ("fair_yes_probability_conservative", "fair_yes_probability_low", "fair_yes_probability")
+    elif normalized_side == "no":
+        keys = ("fair_no_probability_conservative", "fair_no_probability_low", "fair_no_probability")
+    else:
+        return None
+    if not conservative:
+        keys = (keys[-1], keys[0], keys[1])
+    for key in keys:
+        parsed = _as_float(row.get(key))
+        if isinstance(parsed, float):
+            return parsed
+    return None
+
+
 def build_micro_prior_plans(
     *,
     enriched_rows: list[dict[str, Any]],
@@ -953,6 +976,8 @@ def build_micro_prior_plans(
     require_canonical_mapping: bool = False,
     allowed_canonical_niches: set[str] | None = None,
     require_weather_history_live_ready_for_daily_weather: bool = False,
+    selection_lane: str = "maker_edge",
+    min_selected_fair_probability: float | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, int]]:
     if planning_bankroll_dollars <= 0:
         raise ValueError("planning_bankroll_dollars must be positive")
@@ -962,6 +987,20 @@ def build_micro_prior_plans(
         raise ValueError("contracts_per_order must be positive")
     if max_orders <= 0:
         raise ValueError("max_orders must be positive")
+    normalized_selection_lane = str(selection_lane or "maker_edge").strip().lower()
+    if normalized_selection_lane not in _MICRO_PRIOR_SELECTION_LANES:
+        supported = ", ".join(sorted(_MICRO_PRIOR_SELECTION_LANES))
+        raise ValueError(f"selection_lane must be one of: {supported}")
+    if isinstance(min_selected_fair_probability, bool):
+        raise ValueError("min_selected_fair_probability must be numeric between 0 and 1")
+    min_selected_fair_probability_effective = (
+        float(min_selected_fair_probability)
+        if isinstance(min_selected_fair_probability, (int, float))
+        else None
+    )
+    if isinstance(min_selected_fair_probability_effective, float):
+        if min_selected_fair_probability_effective < 0.0 or min_selected_fair_probability_effective > 1.0:
+            raise ValueError("min_selected_fair_probability must be between 0 and 1")
 
     remaining_risk = round(daily_risk_cap_dollars, 4)
     plans: list[dict[str, Any]] = []
@@ -986,6 +1025,7 @@ def build_micro_prior_plans(
         "canonical_per_market_risk_cap": 0,
         "canonical_release_cluster_risk_cap": 0,
         "canonical_correlated_risk_cap": 0,
+        "selected_fair_probability_below_min": 0,
     }
     release_cluster_spent_dollars: dict[str, float] = {}
     correlated_group_spent_dollars: dict[str, float] = {}
@@ -1010,38 +1050,79 @@ def build_micro_prior_plans(
         )
         ranked_rows_with_candidates.append((row, conservative_candidate))
 
+    def _incentive_bonus_for_row(row: dict[str, Any]) -> float:
+        if not isinstance(incentive_bonus_per_contract_by_ticker, dict):
+            return 0.0
+        return float(incentive_bonus_per_contract_by_ticker.get(str(row.get("market_ticker") or ""), 0.0))
+
+    def _candidate_metric(
+        candidate: dict[str, float | str] | None,
+        key: str,
+        *,
+        default: float = -999.0,
+    ) -> float:
+        if not isinstance(candidate, dict):
+            return default
+        value = candidate.get(key)
+        return float(value) if isinstance(value, (int, float)) else default
+
+    def _candidate_selected_fair_probability(candidate: dict[str, float | str] | None) -> float:
+        fair_probability_conservative = _candidate_metric(candidate, "fair_probability_conservative", default=-999.0)
+        if fair_probability_conservative > -999.0:
+            return fair_probability_conservative
+        return _candidate_metric(candidate, "fair_probability_midpoint", default=-999.0)
+
+    def _maker_edge_rank_key(item: tuple[dict[str, Any], dict[str, float | str] | None]) -> tuple[float, ...]:
+        row, candidate = item
+        maker_edge_conservative = _candidate_metric(candidate, "maker_entry_edge_conservative", default=-999.0)
+        maker_entry_price = _candidate_metric(candidate, "maker_entry_price_dollars", default=-999.0)
+        maker_edge_conservative_per_cost = (
+            maker_edge_conservative / maker_entry_price
+            if maker_edge_conservative > -999.0 and maker_entry_price > 0
+            else -999.0
+        )
+        maker_edge_conservative_per_cost_per_day = -999.0
+        hours_to_close = _as_float(row.get("hours_to_close"))
+        if (
+            maker_edge_conservative_per_cost > -999.0
+            and isinstance(hours_to_close, float)
+            and hours_to_close > 0
+        ):
+            maker_edge_conservative_per_cost_per_day = maker_edge_conservative_per_cost / (hours_to_close / 24.0)
+        maker_edge_conservative_net_fees = _candidate_metric(
+            candidate,
+            "maker_entry_edge_conservative_net_fees",
+            default=-999.0,
+        )
+        if maker_edge_conservative_net_fees > -999.0:
+            maker_edge_conservative_net_fees += _incentive_bonus_for_row(row)
+        return (
+            float(bool(row.get("matched_live_market"))),
+            maker_edge_conservative_net_fees,
+            maker_edge_conservative,
+            maker_edge_conservative_per_cost,
+            maker_edge_conservative_per_cost_per_day,
+        )
+
+    def _probability_first_rank_key(item: tuple[dict[str, Any], dict[str, float | str] | None]) -> tuple[float, ...]:
+        row, candidate = item
+        maker_edge_rank_key = _maker_edge_rank_key(item)
+        return (
+            float(bool(row.get("matched_live_market"))),
+            _candidate_selected_fair_probability(candidate),
+            _candidate_metric(candidate, "fair_probability_midpoint", default=-999.0),
+            maker_edge_rank_key[1],
+            maker_edge_rank_key[2],
+            maker_edge_rank_key[3],
+            maker_edge_rank_key[4],
+        )
+
+    rank_key_fn = _maker_edge_rank_key
+    if normalized_selection_lane == "probability_first":
+        rank_key_fn = _probability_first_rank_key
+
     ranked_rows_with_candidates.sort(
-        key=lambda item: (
-            bool(item[0].get("matched_live_market")),
-            (
-                float(item[1]["maker_entry_edge_conservative_net_fees"])
-                + (
-                    float(incentive_bonus_per_contract_by_ticker.get(str(item[0].get("market_ticker") or ""), 0.0))
-                    if isinstance(incentive_bonus_per_contract_by_ticker, dict)
-                    else 0.0
-                )
-            )
-            if isinstance(item[1], dict)
-            else -999.0,
-            float(item[1]["maker_entry_edge_conservative"]) if isinstance(item[1], dict) else -999.0,
-            (
-                float(item[1]["maker_entry_edge_conservative"]) / float(item[1]["maker_entry_price_dollars"])
-                if isinstance(item[1], dict)
-                and float(item[1]["maker_entry_price_dollars"]) > 0
-                else -999.0
-            ),
-            (
-                (
-                    (float(item[1]["maker_entry_edge_conservative"]) / float(item[1]["maker_entry_price_dollars"]))
-                    / (float(item[0]["hours_to_close"]) / 24.0)
-                )
-                if isinstance(item[1], dict)
-                and float(item[1]["maker_entry_price_dollars"]) > 0
-                and isinstance(item[0].get("hours_to_close"), (int, float))
-                and float(item[0]["hours_to_close"]) > 0
-                else -999.0
-            ),
-        ),
+        key=rank_key_fn,
         reverse=True,
     )
 
@@ -1088,6 +1169,18 @@ def build_micro_prior_plans(
             or not isinstance(maker_edge_conservative_net, (int, float))
         ):
             skip_counts["missing_maker_side"] += 1
+            continue
+        selected_fair_probability = conservative_candidate.get("fair_probability_conservative")
+        if not isinstance(selected_fair_probability, (int, float)):
+            selected_fair_probability = conservative_candidate.get("fair_probability_midpoint")
+        if (
+            isinstance(min_selected_fair_probability_effective, float)
+            and (
+                not isinstance(selected_fair_probability, (int, float))
+                or float(selected_fair_probability) < min_selected_fair_probability_effective
+            )
+        ):
+            skip_counts["selected_fair_probability_below_min"] += 1
             continue
         ticker = str(row.get("market_ticker") or "")
         canonical_policy, canonical_mapping_match_type, canonical_mapping_match_key = _resolve_canonical_policy_for_ticker(
@@ -1363,6 +1456,12 @@ def build_micro_prior_plans(
                     else ""
                 ),
                 "incentive_bonus_per_contract_dollars": round(incentive_bonus_per_contract, 6),
+                "selection_lane": normalized_selection_lane,
+                "selected_fair_probability_minimum": (
+                    round(min_selected_fair_probability_effective, 6)
+                    if isinstance(min_selected_fair_probability_effective, float)
+                    else ""
+                ),
                 "fair_probability": fair_probability,
                 "fair_probability_conservative": fair_probability_conservative,
                 "confidence": row.get("confidence"),
@@ -1455,6 +1554,8 @@ def _write_plan_csv(path: Path, plans: list[dict[str, Any]]) -> None:
         "effective_release_cluster_risk_cap_dollars",
         "effective_same_day_correlated_risk_cap_dollars",
         "incentive_bonus_per_contract_dollars",
+        "selection_lane",
+        "selected_fair_probability_minimum",
         "fair_probability",
         "fair_probability_conservative",
         "confidence",
@@ -1507,6 +1608,8 @@ def run_kalshi_micro_prior_plan(
     max_orders: int = 3,
     min_maker_edge: float = 0.005,
     min_maker_edge_net_fees: float = 0.0,
+    selection_lane: str = "maker_edge",
+    min_selected_fair_probability: float | None = None,
     min_entry_price_dollars: float = 0.0,
     max_entry_price_dollars: float = 0.99,
     routine_max_hours_to_close: float | None = None,
@@ -1592,6 +1695,8 @@ def run_kalshi_micro_prior_plan(
             max_orders=effective_max_orders,
             min_maker_edge=min_maker_edge,
             min_maker_edge_net_fees=min_maker_edge_net_fees,
+            selection_lane=selection_lane,
+            min_selected_fair_probability=min_selected_fair_probability,
             min_entry_price_dollars=min_entry_price_dollars,
             max_entry_price_dollars=max_entry_price_dollars,
             routine_max_hours_to_close=routine_max_hours_to_close,
@@ -1846,6 +1951,39 @@ def run_kalshi_micro_prior_plan(
         if ticker and ticker != top_market_ticker:
             next_live_ready_daily_weather_candidate = row
             break
+    maker_edge_reference_top_markets: list[dict[str, Any]] = []
+    for row in enriched_rows:
+        if not bool(row.get("matched_live_market")):
+            continue
+        side = str(row.get("best_maker_entry_side") or "").strip().lower()
+        if side not in {"yes", "no"}:
+            continue
+        maker_edge = _as_float(row.get("best_maker_entry_edge"))
+        maker_edge_net_fees = _as_float(row.get("best_maker_entry_edge_net_fees"))
+        if not isinstance(maker_edge, float) and not isinstance(maker_edge_net_fees, float):
+            continue
+        maker_edge_reference_top_markets.append(
+            {
+                "market_ticker": str(row.get("market_ticker") or "").strip() or None,
+                "market_title": str(row.get("market_title") or "").strip() or None,
+                "side": side,
+                "maker_entry_edge": maker_edge,
+                "maker_entry_edge_net_fees": maker_edge_net_fees,
+                "fair_probability": _row_selected_side_probability(row, side, conservative=False),
+                "fair_probability_conservative": _row_selected_side_probability(row, side, conservative=True),
+            }
+        )
+    maker_edge_reference_top_markets.sort(
+        key=lambda item: (
+            float(item["maker_entry_edge_net_fees"])
+            if isinstance(item.get("maker_entry_edge_net_fees"), float)
+            else -999.0,
+            float(item["maker_entry_edge"])
+            if isinstance(item.get("maker_entry_edge"), float)
+            else -999.0,
+        ),
+        reverse=True,
+    )
 
     summary = {
         "captured_at": captured_at.isoformat(),
@@ -1859,6 +1997,13 @@ def run_kalshi_micro_prior_plan(
         "canonical_policy_reason": canonical_policy_diagnostics.get("canonical_policy_reason"),
         "prefer_canonical_thresholds": prefer_canonical_thresholds,
         "require_canonical_mapping": require_canonical_mapping,
+        "selection_lane": str(selection_lane or "").strip().lower() or "maker_edge",
+        "selection_lane_supported": sorted(_MICRO_PRIOR_SELECTION_LANES),
+        "min_selected_fair_probability": (
+            float(min_selected_fair_probability)
+            if isinstance(min_selected_fair_probability, (int, float))
+            else None
+        ),
         "min_entry_price_dollars": min_entry_price_dollars,
         "routine_max_hours_to_close": routine_max_hours_to_close,
         "max_hours_to_close_by_canonical_niche": max_hours_to_close_by_canonical_niche,
@@ -2152,6 +2297,7 @@ def run_kalshi_micro_prior_plan(
         "incentive_markets_loaded": len(incentive_bonus_per_contract_by_ticker),
         "skip_counts": skip_counts,
         "canonical_covered_planned_tickers": sorted(ticker for ticker in canonical_covered_tickers if ticker),
+        "maker_edge_reference_top_markets": maker_edge_reference_top_markets[:top_n],
         "top_plans": plans[:top_n],
         "status": "no_candidates" if not plans else "ready",
         "orders": plans,

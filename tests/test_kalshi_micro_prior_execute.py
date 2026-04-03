@@ -1038,6 +1038,124 @@ class KalshiMicroPriorExecuteTests(unittest.TestCase):
             self.assertFalse(summary["prior_trade_gate_summary"]["gate_pass"])
             self.assertFalse(summary["allow_live_orders_effective"])
 
+    def test_run_kalshi_micro_prior_execute_blocks_live_when_probability_below_minimum(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            env_file = base / "env.txt"
+            priors_csv = base / "priors.csv"
+            history_csv = base / "history.csv"
+            env_file.write_text(
+                (
+                    "KALSHI_ENV=prod\n"
+                    "BETBOT_JURISDICTION=new_jersey\n"
+                    "BETBOT_ENABLE_LIVE_ORDERS=1\n"
+                    "KALSHI_ACCESS_KEY_ID=key123\n"
+                    "KALSHI_PRIVATE_KEY_PATH=/tmp/key.pem\n"
+                ),
+                encoding="utf-8",
+            )
+            with priors_csv.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(
+                    handle,
+                    fieldnames=["market_ticker", "fair_yes_probability", "confidence", "thesis", "source_note", "updated_at"],
+                )
+                writer.writeheader()
+                writer.writerow(
+                    {
+                        "market_ticker": "KXTEST-1",
+                        "fair_yes_probability": "0.55",
+                        "confidence": "0.8",
+                        "thesis": "Test",
+                        "source_note": "Note",
+                        "updated_at": "2026-03-27T21:00:00+00:00",
+                    }
+                )
+            with history_csv.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(
+                    handle,
+                    fieldnames=["captured_at", "category", "market_ticker", "market_title", "yes_bid_dollars", "yes_ask_dollars"],
+                )
+                writer.writeheader()
+                writer.writerow(
+                    {
+                        "captured_at": "2026-03-27T21:00:00+00:00",
+                        "category": "Politics",
+                        "market_ticker": "KXTEST-1",
+                        "market_title": "Test Market",
+                        "yes_bid_dollars": "0.50",
+                        "yes_ask_dollars": "0.51",
+                    }
+                )
+
+            plan_summary = {
+                "status": "ready",
+                "planned_orders": 1,
+                "positive_maker_entry_markets": 1,
+                "positive_maker_entry_markets_with_canonical_policy": 1,
+                "top_market_ticker": "KXTEST-1",
+                "top_market_title": "Test Market",
+                "top_market_side": "yes",
+                "top_market_canonical_ticker": "PX-TEST",
+                "top_market_canonical_niche": "weather_climate",
+                "top_market_canonical_policy_applied": True,
+                "top_market_maker_entry_price_dollars": 0.50,
+                "top_market_maker_entry_edge": 0.02,
+                "top_market_maker_entry_edge_net_fees": 0.02,
+                "top_market_estimated_entry_cost_dollars": 0.50,
+                "top_market_estimated_entry_fee_dollars": 0.0,
+                "top_market_expected_value_dollars": 0.02,
+                "top_market_expected_value_net_dollars": 0.02,
+                "top_market_expected_roi_on_cost": 0.04,
+                "top_market_expected_roi_on_cost_net": 0.04,
+                "top_market_expected_value_per_day_dollars": 0.04,
+                "top_market_expected_value_per_day_net_dollars": 0.04,
+                "top_market_expected_roi_per_day": 0.08,
+                "top_market_expected_roi_per_day_net": 0.08,
+                "top_market_estimated_max_profit_dollars": 0.5,
+                "top_market_estimated_max_loss_dollars": 0.5,
+                "top_market_max_profit_roi_on_cost": 1.0,
+                "top_market_fair_probability": 0.55,
+                "top_market_confidence": 0.8,
+                "top_market_thesis": "Test",
+                "actual_live_balance_dollars": 100.0,
+                "funding_gap_dollars": 0.0,
+                "output_file": str(base / "plan.json"),
+            }
+            execute_summary = {
+                "status": "dry_run",
+                "planned_orders": 1,
+                "total_planned_cost_dollars": 0.50,
+                "actual_live_balance_dollars": 100.0,
+                "actual_live_balance_source": "live",
+                "balance_live_verified": True,
+                "output_file": str(base / "execute.json"),
+                "output_csv": str(base / "execute.csv"),
+                "attempts": [],
+            }
+
+            with (
+                patch("betbot.kalshi_micro_prior_execute.run_kalshi_micro_prior_plan", return_value=plan_summary),
+                patch("betbot.kalshi_micro_prior_execute.run_kalshi_micro_execute", return_value=execute_summary),
+            ):
+                summary = run_kalshi_micro_prior_execute(
+                    env_file=str(env_file),
+                    priors_csv=str(priors_csv),
+                    history_csv=str(history_csv),
+                    output_dir=str(base),
+                    allow_live_orders=True,
+                    enforce_canonical_dataset=False,
+                    min_live_selected_fair_probability=0.60,
+                    now=datetime(2026, 3, 27, 21, 0, tzinfo=timezone.utc),
+                )
+
+            self.assertEqual(summary["status"], "blocked_prior_trade_gate")
+            self.assertFalse(summary["allow_live_orders_effective"])
+            self.assertEqual(summary["prior_trade_gate_summary"]["gate_status"], "probability_too_low")
+            self.assertIn(
+                "selected fair probability is below the live minimum",
+                " ".join(summary["prior_trade_gate_summary"]["gate_blockers"]).lower(),
+            )
+
     def test_run_kalshi_micro_prior_execute_requires_canonical_mapping_for_live(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
