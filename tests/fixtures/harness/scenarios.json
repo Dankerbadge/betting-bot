@@ -1,0 +1,19 @@
+{
+  "scenarios": [
+    {
+      "id": "all_healthy",
+      "expected_status": "ok",
+      "observed_status": "ok"
+    },
+    {
+      "id": "book_partial",
+      "expected_status": "degraded",
+      "observed_status": "degraded"
+    },
+    {
+      "id": "mapping_block",
+      "expected_status": "blocked",
+      "observed_status": "blocked"
+    }
+  ]
+}

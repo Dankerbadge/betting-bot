@@ -1,0 +1,13 @@
+{
+  "schema_version": "1.0",
+  "runtime": {
+    "event_schema_version": "1.0",
+    "default_lane": "research",
+    "default_output_dir": "outputs"
+  },
+  "policy": {
+    "lane_policy_path": "data/policy/lanes.yaml",
+    "news_allowlist_path": "data/policy/news_sources.yaml",
+    "approval_required": true
+  }
+}

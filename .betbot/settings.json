@@ -1,0 +1,22 @@
+{
+  "policy": {
+    "hard_required_sources": [
+      "kalshi_market_data",
+      "venue_balances",
+      "order_permissions",
+      "market_open_status",
+      "compliance_gate"
+    ],
+    "degraded_mode": {
+      "penalty_optional_sources": [
+        "opticodds_consensus",
+        "curated_news",
+        "secondary_metadata"
+      ],
+      "informational_sources": [
+        "dashboard",
+        "trend_views"
+      ]
+    }
+  }
+}

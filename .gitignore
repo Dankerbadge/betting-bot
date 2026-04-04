@@ -37,3 +37,6 @@ outputs/
 # IDE/editor
 .idea/
 .vscode/
+
+# Betbot local runtime overrides
+.betbot/settings.local.json

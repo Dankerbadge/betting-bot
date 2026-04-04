@@ -10,6 +10,7 @@ from betbot.alpha_scoreboard import run_alpha_scoreboard
 from betbot.backtest import run_backtest
 from betbot.bayes import conservative_planning_p
 from betbot.canonical_universe import run_canonical_universe
+from betbot.commands.runtime_ops import run_effective_config, run_policy_check, run_render_board
 from betbot.config import load_config
 from betbot.dns_guard import run_dns_doctor
 from betbot.io import load_candidates
@@ -135,6 +136,47 @@ def build_parser() -> argparse.ArgumentParser:
         help="Credible interval confidence for Bayesian estimate",
     )
     analyze.add_argument("--output-dir", default="outputs", help="Output directory")
+
+    effective_config = subparsers.add_parser(
+        "effective-config",
+        help="Render merged runtime config with deterministic fingerprints",
+    )
+    effective_config.add_argument(
+        "--repo-root",
+        default=None,
+        help="Optional repository root override for config resolution",
+    )
+
+    policy_check = subparsers.add_parser(
+        "policy-check",
+        help="Validate lane permissions and emit policy snapshot",
+    )
+    policy_check.add_argument(
+        "--lane",
+        default="research",
+        help="Permission lane to evaluate",
+    )
+    policy_check.add_argument(
+        "--lane-policy-path",
+        default=None,
+        help="Optional path to lane policy YAML",
+    )
+
+    render_board = subparsers.add_parser(
+        "render-board",
+        help="Render board projection from runtime cycle/board JSON",
+    )
+    render_board.add_argument(
+        "--board-json",
+        default=None,
+        help="Optional explicit board JSON path",
+    )
+    render_board.add_argument(
+        "--cycle-json",
+        default=None,
+        help="Optional explicit cycle JSON path",
+    )
+    render_board.add_argument("--output-dir", default="outputs", help="Output directory")
 
     alpha_scoreboard = subparsers.add_parser(
         "alpha-scoreboard",
@@ -4313,6 +4355,19 @@ def main() -> None:
         output_path = out_dir / f"probability_analysis_{stamp}.json"
         output_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
         summary["output_file"] = str(output_path)
+    elif args.command == "effective-config":
+        summary = run_effective_config(repo_root=args.repo_root)
+    elif args.command == "policy-check":
+        summary = run_policy_check(
+            lane=args.lane,
+            lane_policy_path=args.lane_policy_path,
+        )
+    elif args.command == "render-board":
+        summary = run_render_board(
+            board_json=args.board_json,
+            cycle_json=args.cycle_json,
+            output_dir=args.output_dir,
+        )
     elif args.command == "alpha-scoreboard":
         summary = run_alpha_scoreboard(
             output_dir=args.output_dir,
