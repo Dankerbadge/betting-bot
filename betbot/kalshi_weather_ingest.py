@@ -6,9 +6,11 @@ import math
 import os
 from pathlib import Path
 import re
+import time
 from typing import Any, Callable
 import xml.etree.ElementTree as ET
 from urllib.parse import urlencode
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from betbot.dns_guard import urlopen_with_dns_recovery
@@ -52,6 +54,29 @@ _NCEI_CDO_STATION_BY_ICAO = {
     "KSLC": "GHCND:USW00024127",
     "KPDX": "GHCND:USW00024229",
 }
+
+_HTTP_ERROR_STATUS_RE = re.compile(r"\bhttp error\s+(\d{3})\b", flags=re.IGNORECASE)
+
+
+def _http_status_from_exception(exc: BaseException) -> int | None:
+    if isinstance(exc, HTTPError):
+        try:
+            return int(exc.code)
+        except (TypeError, ValueError):
+            return None
+    raw_code = getattr(exc, "code", None)
+    try:
+        if raw_code is not None:
+            return int(raw_code)
+    except (TypeError, ValueError):
+        pass
+    match = _HTTP_ERROR_STATUS_RE.search(str(exc or ""))
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except (TypeError, ValueError):
+        return None
 
 
 def _resolve_cdo_station_id(station_id: str) -> str:
@@ -916,6 +941,10 @@ def fetch_ncei_normals_station_day(
     day: int,
     timeout_seconds: float = 12.0,
     cdo_token: str | None = None,
+    rate_limit_retries: int = 3,
+    rate_limit_backoff_seconds: float = 1.0,
+    rate_limit_backoff_cap_seconds: float = 8.0,
+    sleep_fn: Callable[[float], None] = time.sleep,
     http_get_json_with_headers: JsonGetterWithHeaders = _http_get_json_with_headers,
 ) -> dict[str, Any]:
     clean_station_id = str(station_id or "").strip().upper()
@@ -984,21 +1013,58 @@ def fetch_ncei_normals_station_day(
     ]
     params.extend(("datatypeid", datatype) for datatype in datatypes)
     source_url = f"https://www.ncei.noaa.gov/cdo-web/api/v2/data?{urlencode(params, doseq=True)}"
-    status, payload = http_get_json_with_headers(
-        source_url,
-        timeout_seconds,
-        {"token": token},
+    safe_rate_limit_retries = max(0, int(rate_limit_retries))
+    safe_rate_limit_backoff_seconds = max(0.0, float(rate_limit_backoff_seconds))
+    safe_rate_limit_backoff_cap_seconds = max(
+        safe_rate_limit_backoff_seconds,
+        float(rate_limit_backoff_cap_seconds),
     )
+    rate_limit_retries_used = 0
+    status = 0
+    payload: dict[str, Any] | list[Any] | Any = {}
+    for attempt in range(safe_rate_limit_retries + 1):
+        try:
+            status, payload = http_get_json_with_headers(
+                source_url,
+                timeout_seconds,
+                {"token": token},
+            )
+        except Exception as exc:
+            inferred_status = _http_status_from_exception(exc)
+            if inferred_status is None:
+                raise
+            status = inferred_status
+            payload = {
+                "error": str(exc),
+            }
+        if status != 429:
+            break
+        if attempt >= safe_rate_limit_retries:
+            break
+        backoff_seconds = min(
+            safe_rate_limit_backoff_cap_seconds,
+            safe_rate_limit_backoff_seconds * (2**attempt),
+        )
+        if backoff_seconds > 0:
+            sleep_fn(backoff_seconds)
+        rate_limit_retries_used += 1
     if status != 200 or not isinstance(payload, dict):
+        failed_status = "rate_limited" if int(status) == 429 else "normals_unavailable"
+        failed_error = (
+            "NCEI normals request exhausted rate-limit retries."
+            if int(status) == 429
+            else "NCEI normals request failed."
+        )
         return {
-            "status": "normals_unavailable",
+            "status": failed_status,
             "station_id": clean_station_id,
             "cdo_station_id": cdo_station_id,
             "month": int(month_value),
             "day": int(day_value),
             "http_status": int(status),
             "source_url": source_url,
-            "error": "NCEI normals request failed.",
+            "rate_limit_retries_used": int(rate_limit_retries_used),
+            "error": failed_error,
         }
 
     results = payload.get("results")
@@ -1119,6 +1185,10 @@ def fetch_ncei_cdo_station_daily_history(
     cache_dir: str | None = None,
     cache_max_age_hours: float = 24.0,
     enable_access_data_service_fallback: bool = True,
+    rate_limit_retries: int = 3,
+    rate_limit_backoff_seconds: float = 1.0,
+    rate_limit_backoff_cap_seconds: float = 8.0,
+    sleep_fn: Callable[[float], None] = time.sleep,
     now: datetime | None = None,
     http_get_json_with_headers: JsonGetterWithHeaders = _http_get_json_with_headers,
 ) -> dict[str, Any]:
@@ -1297,6 +1367,13 @@ def fetch_ncei_cdo_station_daily_history(
 
     source_url = "https://www.ncei.noaa.gov/cdo-web/api/v2/data"
     request_headers = {"token": token}
+    safe_rate_limit_retries = max(0, int(rate_limit_retries))
+    safe_rate_limit_backoff_seconds = max(0.0, float(rate_limit_backoff_seconds))
+    safe_rate_limit_backoff_cap_seconds = max(
+        safe_rate_limit_backoff_seconds,
+        float(rate_limit_backoff_cap_seconds),
+    )
+    rate_limit_retries_used = 0
 
     daily_samples: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
@@ -1316,8 +1393,29 @@ def fetch_ncei_cdo_station_daily_history(
             ("datatypeid", "PRCP"),
         ]
         url = f"{source_url}?{urlencode(params, doseq=True)}"
-        request_count += 1
-        status, payload = http_get_json_with_headers(url, timeout_seconds, request_headers)
+        status = 0
+        payload: dict[str, Any] | list[Any] | Any = {}
+        for attempt in range(safe_rate_limit_retries + 1):
+            request_count += 1
+            try:
+                status, payload = http_get_json_with_headers(url, timeout_seconds, request_headers)
+            except Exception as exc:
+                inferred_status = _http_status_from_exception(exc)
+                if inferred_status is None:
+                    raise
+                status = inferred_status
+                payload = {"error": str(exc)}
+            if status != 429:
+                break
+            if attempt >= safe_rate_limit_retries:
+                break
+            backoff_seconds = min(
+                safe_rate_limit_backoff_cap_seconds,
+                safe_rate_limit_backoff_seconds * (2**attempt),
+            )
+            if backoff_seconds > 0:
+                sleep_fn(backoff_seconds)
+            rate_limit_retries_used += 1
         if status == 429:
             if cache_payload is not None:
                 cached_status = str(cache_payload.get("status") or "").strip().lower()
@@ -1328,6 +1426,7 @@ def fetch_ncei_cdo_station_daily_history(
                     stale_result["cache_fresh"] = False
                     stale_result["cache_age_seconds"] = round(float(cache_age_seconds or 0.0), 3)
                     stale_result["cache_warning"] = "Using cached station history because CDO returned HTTP 429."
+                    stale_result["rate_limit_retries_used"] = int(rate_limit_retries_used)
                     return stale_result
             return {
                 "status": "rate_limited",
@@ -1339,6 +1438,7 @@ def fetch_ncei_cdo_station_daily_history(
                 "sample_years": len(daily_samples),
                 "request_count": request_count,
                 "source_url": source_url,
+                "rate_limit_retries_used": int(rate_limit_retries_used),
                 "error": f"CDO rate-limited request for {date_stamp}.",
                 "cache_hit": False,
                 "cache_fallback_used": False,
@@ -1400,6 +1500,7 @@ def fetch_ncei_cdo_station_daily_history(
                 _write_cdo_cache_entry(cache_file, result, current_time)
             except OSError:
                 pass
+        result["rate_limit_retries_used"] = int(rate_limit_retries_used)
         return result
 
     result = _build_station_daily_history_result(
@@ -1422,4 +1523,5 @@ def fetch_ncei_cdo_station_daily_history(
             _write_cdo_cache_entry(cache_file, result, current_time)
         except OSError:
             pass
+    result["rate_limit_retries_used"] = int(rate_limit_retries_used)
     return result

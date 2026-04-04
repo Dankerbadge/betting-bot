@@ -304,6 +304,40 @@ class KalshiWeatherIngestTests(unittest.TestCase):
         self.assertEqual(payload["tmin_normal_f"], 37.9)
         self.assertAlmostEqual(float(payload["rain_day_frequency"]), 0.377)
 
+    def test_fetch_ncei_normals_station_day_retries_rate_limited_exception(self) -> None:
+        calls = 0
+
+        def fake_http_get_json_with_headers(url: str, timeout_seconds: float, headers: dict[str, str] | None):
+            nonlocal calls
+            calls += 1
+            if calls <= 2:
+                raise RuntimeError("HTTP Error 429: ")
+            return (
+                200,
+                {
+                    "results": [
+                        {"datatype": "DLY-TMAX-NORMAL", "value": 53.0},
+                        {"datatype": "DLY-TMIN-NORMAL", "value": 37.9},
+                        {"datatype": "DLY-PRCP-PCTALL-GE001HI", "value": 377},
+                    ]
+                },
+            )
+
+        payload = fetch_ncei_normals_station_day(
+            station_id="KJFK",
+            month=3,
+            day=29,
+            timeout_seconds=5.0,
+            cdo_token="demo-token",
+            rate_limit_retries=2,
+            rate_limit_backoff_seconds=0.0,
+            rate_limit_backoff_cap_seconds=0.0,
+            sleep_fn=lambda _: None,
+            http_get_json_with_headers=fake_http_get_json_with_headers,
+        )
+        self.assertEqual(payload["status"], "ready")
+        self.assertEqual(calls, 3)
+
     def test_fetch_noaa_global_land_ocean_anomaly_series_ready(self) -> None:
         def fake_http_get_json(url: str, timeout_seconds: float):
             self.assertIn("anomaly_globe-land_ocean.json", url)
@@ -365,6 +399,49 @@ class KalshiWeatherIngestTests(unittest.TestCase):
         self.assertEqual(payload["tmax_values_f"], [68.0, 71.0])
         self.assertEqual(payload["tmin_values_f"], [53.0, 49.0])
         self.assertAlmostEqual(payload["rain_day_frequency"], 0.5)
+
+    def test_fetch_ncei_cdo_station_daily_history_retries_rate_limited_exception(self) -> None:
+        calls_by_date: dict[str, int] = {}
+
+        def fake_http_get_json_with_headers(url: str, timeout_seconds: float, headers: dict[str, str] | None):
+            parsed = urlparse(url)
+            params = parse_qs(parsed.query)
+            startdate = params.get("startdate", [""])[0]
+            calls_by_date[startdate] = calls_by_date.get(startdate, 0) + 1
+            if startdate == "2025-03-29" and calls_by_date[startdate] <= 2:
+                raise RuntimeError("HTTP Error 429: ")
+            if startdate == "2025-03-29":
+                return (
+                    200,
+                    {
+                        "results": [
+                            {"datatype": "TMAX", "value": 71.0},
+                            {"datatype": "TMIN", "value": 49.0},
+                            {"datatype": "PRCP", "value": 0.0},
+                        ]
+                    },
+                )
+            return (200, {"results": []})
+
+        payload = fetch_ncei_cdo_station_daily_history(
+            station_id="KJFK",
+            month=3,
+            day=29,
+            lookback_years=3,
+            timeout_seconds=5.0,
+            cdo_token="demo-token",
+            now=datetime(2026, 3, 30, 0, 0, tzinfo=timezone.utc),
+            rate_limit_retries=2,
+            rate_limit_backoff_seconds=0.0,
+            rate_limit_backoff_cap_seconds=0.0,
+            sleep_fn=lambda _: None,
+            http_get_json_with_headers=fake_http_get_json_with_headers,
+        )
+
+        self.assertEqual(payload["status"], "ready")
+        self.assertEqual(payload["sample_years"], 1)
+        self.assertEqual(payload["rate_limit_retries_used"], 2)
+        self.assertEqual(payload["request_count"], 5)
 
     def test_fetch_ncei_cdo_station_daily_history_missing_token(self) -> None:
         def fake_http_get_json_with_headers(url: str, timeout_seconds: float, headers: dict[str, str] | None):
