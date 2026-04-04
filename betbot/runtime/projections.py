@@ -56,7 +56,9 @@ def build_cycle_projection(events: list[EventEnvelope]) -> dict[str, object]:
 def build_board_projection(cycle_projection: dict[str, object]) -> dict[str, object]:
     source_health = dict(cycle_projection.get("source_health") or {})
     degraded_sources = sorted(
-        key for key, value in source_health.items() if value in {"partial", "degraded", "failed", "blocked"}
+        key
+        for key, value in source_health.items()
+        if value in {"partial", "degraded", "failed", "blocked", "missing"}
     )
     return {
         "run_id": cycle_projection.get("run_id"),

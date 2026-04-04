@@ -41,6 +41,19 @@ class DegradedModeTests(unittest.TestCase):
         )
         self.assertEqual(summary.overall_status, "degraded")
 
+    def test_missing_required_source_blocks(self) -> None:
+        source_results = {
+            "opticodds_consensus": SourceResult(provider="opticodds_consensus", status="ok", payload={}),
+        }
+        summary = summarize_source_results(
+            source_results=source_results,
+            phase="sources.ready",
+            hard_required_sources=("kalshi_market_data",),
+        )
+        self.assertEqual(summary.overall_status, "blocked")
+        self.assertEqual(summary.blocker_type, "required_source_missing")
+        self.assertIn("kalshi_market_data", summary.missing_required_sources)
+
 
 if __name__ == "__main__":
     unittest.main()

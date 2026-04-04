@@ -63,6 +63,26 @@ class CycleRunnerTests(unittest.TestCase):
             self.assertTrue(source_events)
             self.assertEqual(source_events[0]["severity"], "error")
 
+    def test_missing_required_source_blocks_and_emits_missing_status(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            runner = CycleRunner(
+                adapters=[_StaticAdapter("opticodds_consensus", "ok")],
+                hard_required_sources=("kalshi_market_data",),
+            )
+            report = runner.run(CycleRunnerConfig(lane="research", output_dir=str(output_dir), repo_root=str(Path.cwd())))
+
+            self.assertEqual(report["overall_status"], "blocked")
+            self.assertIn("kalshi_market_data", report["degraded_summary"]["missing_required_sources"])
+            self.assertEqual(report["source_health"]["kalshi_market_data"], "missing")
+
+            event_lines = (output_dir / "runtime_events_latest.jsonl").read_text(encoding="utf-8").splitlines()
+            source_events = [json.loads(line) for line in event_lines if json.loads(line).get("event_type") == "source_result"]
+            missing_events = [row for row in source_events if row.get("source") == "kalshi_market_data"]
+            self.assertTrue(missing_events)
+            self.assertEqual(missing_events[0]["data"]["status"], "missing")
+            self.assertEqual(missing_events[0]["severity"], "block")
+
 
 if __name__ == "__main__":
     unittest.main()

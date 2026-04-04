@@ -47,6 +47,15 @@
         "kalshi_market_data": "ok",
         "therundown_mapping": "failed"
       }
+    },
+    {
+      "id": "missing_required_source",
+      "expected_status": "blocked",
+      "hard_required_sources": ["kalshi_market_data", "therundown_mapping"],
+      "source_statuses": {
+        "opticodds_consensus": "ok",
+        "therundown_mapping": "ok"
+      }
     }
   ]
 }

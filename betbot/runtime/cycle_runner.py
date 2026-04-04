@@ -114,8 +114,14 @@ class CycleRunner:
             output_dir=str(output_dir),
         )
         source_results = {adapter.provider: run_adapter(adapter, adapter_context) for adapter in self.adapters}
+        missing_required_sources = tuple(
+            provider for provider in hard_required_sources if provider not in source_results
+        )
 
-        any_partial = any(result.status in {"partial", "degraded"} for result in source_results.values())
+        any_partial = bool(missing_required_sources) or any(
+            result.status in {"partial", "degraded", "failed", "blocked"}
+            for result in source_results.values()
+        )
         state.transition("sources.partial" if any_partial else "sources.ready")
 
         for provider, result in source_results.items():
@@ -138,6 +144,26 @@ class CycleRunner:
                 )
             )
 
+        for provider in missing_required_sources:
+            events.append(
+                new_event(
+                    run_id=run_id,
+                    cycle_id=cycle_id,
+                    event_type="source_result",
+                    phase=state.current_phase,
+                    lane=config.lane,
+                    source=provider,
+                    severity="block",
+                    data={
+                        "status": "missing",
+                        "coverage_ratio": 0.0,
+                        "stale_seconds": None,
+                        "warnings": [],
+                        "errors": ["required_source_missing"],
+                    },
+                )
+            )
+
         if state.current_phase == "sources.partial":
             state.transition("sources.ready")
 
@@ -145,6 +171,7 @@ class CycleRunner:
             source_results=source_results,
             phase=state.current_phase,
             hard_required_sources=hard_required_sources,
+            missing_required_sources=missing_required_sources,
         )
 
         state.transition("news.enriching")

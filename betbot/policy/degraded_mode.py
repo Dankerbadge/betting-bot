@@ -10,6 +10,7 @@ class DegradedSummary:
     overall_status: str
     phase: str
     source_statuses: dict[str, str]
+    missing_required_sources: list[str]
     candidate_count_before_penalties: int
     candidate_count_after_penalties: int
     blocked_markets: list[str]
@@ -22,6 +23,7 @@ class DegradedSummary:
             "overall_status": self.overall_status,
             "phase": self.phase,
             "source_statuses": dict(self.source_statuses),
+            "missing_required_sources": list(self.missing_required_sources),
             "candidate_count_before_penalties": self.candidate_count_before_penalties,
             "candidate_count_after_penalties": self.candidate_count_after_penalties,
             "blocked_markets": list(self.blocked_markets),
@@ -42,15 +44,33 @@ def summarize_source_results(
     penalties_applied: dict[str, float] | None = None,
     blocker_type: str | None = None,
     recovery_recommendation: str | None = None,
+    missing_required_sources: tuple[str, ...] | list[str] | None = None,
 ) -> DegradedSummary:
     source_statuses = {provider: result.status for provider, result in source_results.items()}
     hard_required = set(hard_required_sources)
+    explicit_missing_required = tuple(
+        str(item).strip()
+        for item in (missing_required_sources or ())
+        if str(item).strip()
+    )
+    detected_missing_required = sorted(
+        provider for provider in hard_required if provider not in source_statuses
+    )
+    all_missing_required = sorted(set(explicit_missing_required) | set(detected_missing_required))
+    for provider in all_missing_required:
+        source_statuses[provider] = "missing"
 
     hard_block = any(
         provider in hard_required and status in {"failed", "blocked"}
         for provider, status in source_statuses.items()
     )
-    any_problem = any(status in {"partial", "degraded", "failed", "blocked"} for status in source_statuses.values())
+    if all_missing_required:
+        hard_block = True
+
+    any_problem = any(
+        status in {"partial", "degraded", "failed", "blocked", "missing"}
+        for status in source_statuses.values()
+    )
 
     if hard_block:
         overall_status = "blocked"
@@ -59,11 +79,15 @@ def summarize_source_results(
     else:
         overall_status = "ok"
 
+    if blocker_type is None and all_missing_required:
+        blocker_type = "required_source_missing"
     if blocker_type is None and hard_block:
         blocker_type = "required_source_failure"
 
     if recovery_recommendation is None and overall_status == "degraded":
         recovery_recommendation = "Retry degraded sources and continue with policy penalties."
+    if recovery_recommendation is None and blocker_type == "required_source_missing":
+        recovery_recommendation = "Restore missing hard-required sources before continuing cycle."
     if recovery_recommendation is None and overall_status == "blocked":
         recovery_recommendation = "Resolve hard-required source failures before next cycle."
 
@@ -71,6 +95,7 @@ def summarize_source_results(
         overall_status=overall_status,
         phase=phase,
         source_statuses=source_statuses,
+        missing_required_sources=list(all_missing_required),
         candidate_count_before_penalties=int(candidate_count_before_penalties),
         candidate_count_after_penalties=int(candidate_count_after_penalties),
         blocked_markets=list(blocked_markets or []),
