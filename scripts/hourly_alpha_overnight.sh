@@ -96,6 +96,9 @@ export BETBOT_PAPER_LIVE_MAX_STRIP_RISK_PCT="${BETBOT_PAPER_LIVE_MAX_STRIP_RISK_
 export BETBOT_PAPER_LIVE_MAX_SINGLE_POSITION_RISK_PCT="${BETBOT_PAPER_LIVE_MAX_SINGLE_POSITION_RISK_PCT:-0.06}"
 export BETBOT_PAPER_LIVE_MAX_NEW_ATTEMPTS_PER_RUN="${BETBOT_PAPER_LIVE_MAX_NEW_ATTEMPTS_PER_RUN:-8}"
 export BETBOT_PAPER_LIVE_FAMILY_ALLOWLIST="${BETBOT_PAPER_LIVE_FAMILY_ALLOWLIST:-monthly_climate_anomaly}"
+export BETBOT_PAPER_LIVE_ALLOW_RANDOM_CANCELS="${BETBOT_PAPER_LIVE_ALLOW_RANDOM_CANCELS:-0}"
+export BETBOT_PAPER_LIVE_SIZE_FROM_CURRENT_EQUITY="${BETBOT_PAPER_LIVE_SIZE_FROM_CURRENT_EQUITY:-1}"
+export BETBOT_PAPER_LIVE_REQUIRE_LIVE_ELIGIBLE_HINT="${BETBOT_PAPER_LIVE_REQUIRE_LIVE_ELIGIBLE_HINT:-0}"
 export BETBOT_MIN_SECONDS_BETWEEN_RUNS="${BETBOT_MIN_SECONDS_BETWEEN_RUNS:-2700}"
 
 RUN_ROOT="$BETBOT_OUTPUT_DIR/overnight_alpha"
@@ -149,6 +152,15 @@ paper_live_family_allowlist = [
     for value in str(os.environ.get("BETBOT_PAPER_LIVE_FAMILY_ALLOWLIST", "monthly_climate_anomaly") or "").split(",")
     if value.strip()
 ]
+paper_live_allow_random_cancels = str(
+    os.environ.get("BETBOT_PAPER_LIVE_ALLOW_RANDOM_CANCELS", "0")
+).strip().lower() not in {"0", "false", "no", "off"}
+paper_live_size_from_current_equity = str(
+    os.environ.get("BETBOT_PAPER_LIVE_SIZE_FROM_CURRENT_EQUITY", "1")
+).strip().lower() not in {"0", "false", "no", "off"}
+paper_live_require_live_eligible_hint = str(
+    os.environ.get("BETBOT_PAPER_LIVE_REQUIRE_LIVE_ELIGIBLE_HINT", "0")
+).strip().lower() not in {"0", "false", "no", "off"}
 payload = {
     "run_id": f"hourly_alpha_overnight::{run_started_dt.strftime('%Y%m%d_%H%M%S_%f')[:-3]}",
     "run_started_at_utc": captured_at,
@@ -189,9 +201,14 @@ payload = {
     "paper_live_max_single_position_risk_pct": round(max(0.0, paper_live_max_single_position_risk_pct), 4),
     "paper_live_max_new_attempts_per_run": max(1, paper_live_max_new_attempts_per_run),
     "paper_live_family_allowlist": paper_live_family_allowlist,
+    "paper_live_allow_random_cancels": paper_live_allow_random_cancels,
+    "paper_live_size_from_current_equity": paper_live_size_from_current_equity,
+    "paper_live_require_live_eligible_hint": paper_live_require_live_eligible_hint,
     "paper_live_state_file": paper_live_state_file,
     "paper_live_balance_start_dollars": paper_live_start_dollars,
     "paper_live_balance_current_dollars": paper_live_start_dollars,
+    "paper_live_sizing_balance_dollars": paper_live_start_dollars,
+    "paper_live_post_trade_sizing_balance_dollars": paper_live_start_dollars,
     "paper_live_strategy_equity_dollars": paper_live_start_dollars,
     "paper_live_realized_trade_pnl_dollars": 0.0,
     "paper_live_mark_to_market_pnl_dollars": 0.0,
@@ -3110,6 +3127,9 @@ def _paper_live_defaults(
     max_single_position_risk_pct: float = 0.06,
     max_new_attempts_per_run: int = 8,
     family_allowlist: list[str] | None = None,
+    allow_random_cancels: bool = False,
+    size_from_current_equity: bool = True,
+    require_live_eligible_hint: bool = False,
 ) -> dict[str, Any]:
     start = round(max(0.0, float(start_dollars)), 4)
     normalized_allowlist = [
@@ -3133,9 +3153,14 @@ def _paper_live_defaults(
         "max_single_position_risk_pct": round(max(0.0, float(max_single_position_risk_pct)), 6),
         "max_new_attempts_per_run": max(1, int(max_new_attempts_per_run)),
         "family_allowlist": normalized_allowlist,
+        "allow_random_cancels": bool(allow_random_cancels),
+        "size_from_current_equity": bool(size_from_current_equity),
+        "require_live_eligible_hint": bool(require_live_eligible_hint),
         "state_file": str(state_file) if isinstance(state_file, Path) else None,
         "start_dollars": start,
         "current_dollars": start,
+        "sizing_balance_dollars": start,
+        "post_trade_sizing_balance_dollars": start,
         "realized_trade_pnl_dollars": 0.0,
         "mark_to_market_pnl_dollars": 0.0,
         "drawdown_pct": 0.0,
@@ -3406,6 +3431,9 @@ def _paper_live_update(
     max_single_position_risk_pct: float = 0.06,
     max_new_attempts_per_run: int = 8,
     family_allowlist: list[str] | None = None,
+    allow_random_cancels: bool = False,
+    size_from_current_equity: bool = True,
+    require_live_eligible_hint: bool = False,
 ) -> dict[str, Any]:
     snapshot = _paper_live_defaults(
         enabled=enabled,
@@ -3422,6 +3450,9 @@ def _paper_live_update(
         max_single_position_risk_pct=max_single_position_risk_pct,
         max_new_attempts_per_run=max_new_attempts_per_run,
         family_allowlist=family_allowlist,
+        allow_random_cancels=allow_random_cancels,
+        size_from_current_equity=size_from_current_equity,
+        require_live_eligible_hint=require_live_eligible_hint,
     )
     if not enabled:
         snapshot["status"] = "disabled"
@@ -3531,6 +3562,9 @@ def _paper_live_update(
         min(normalized_max_strip_risk_pct, float(max_single_position_risk_pct)),
     )
     normalized_max_new_attempts_per_run = max(1, int(max_new_attempts_per_run))
+    normalized_allow_random_cancels = bool(allow_random_cancels)
+    normalized_size_from_current_equity = bool(size_from_current_equity)
+    normalized_require_live_eligible_hint = bool(require_live_eligible_hint)
 
     candidate_pool = _paper_live_candidate_pool(
         climate_router_pilot=pilot,
@@ -3591,6 +3625,10 @@ def _paper_live_update(
             continue
         open_mark_to_model_pre += float(_parse_float(position.get("mark_to_model_pnl_dollars")) or 0.0)
     pre_trade_balance = float(start) + float(realized_trade_total) + float(open_mark_to_model_pre)
+    sizing_balance_dollars = float(pre_trade_balance) if normalized_size_from_current_equity else float(start)
+    if sizing_balance_dollars <= 0.0:
+        sizing_balance_dollars = float(start)
+    sizing_balance_dollars = max(0.0, float(sizing_balance_dollars))
     peak_balance_for_risk = max(float(peak_balance), float(start), float(pre_trade_balance))
     pre_trade_drawdown_pct = (
         ((peak_balance_for_risk - pre_trade_balance) / peak_balance_for_risk * 100.0)
@@ -3603,12 +3641,12 @@ def _paper_live_update(
     if normalized_risk_profile != "growth_aggressive":
         run_attempt_limit = min(run_attempt_limit, 1)
 
-    open_risk_cap_dollars = max(0.0, float(start) * normalized_max_open_risk_pct * drawdown_risk_scale)
-    family_risk_cap_dollars = max(0.0, float(start) * normalized_max_family_risk_pct * drawdown_risk_scale)
-    strip_risk_cap_dollars = max(0.0, float(start) * normalized_max_strip_risk_pct * drawdown_risk_scale)
+    open_risk_cap_dollars = max(0.0, float(sizing_balance_dollars) * normalized_max_open_risk_pct * drawdown_risk_scale)
+    family_risk_cap_dollars = max(0.0, float(sizing_balance_dollars) * normalized_max_family_risk_pct * drawdown_risk_scale)
+    strip_risk_cap_dollars = max(0.0, float(sizing_balance_dollars) * normalized_max_strip_risk_pct * drawdown_risk_scale)
     single_position_risk_cap_dollars = max(
         0.0,
-        float(start) * normalized_max_single_position_risk_pct * drawdown_risk_scale,
+        float(sizing_balance_dollars) * normalized_max_single_position_risk_pct * drawdown_risk_scale,
     )
 
     per_attempt_kelly_used: list[float] = []
@@ -4115,7 +4153,7 @@ def _paper_live_update(
             score = _paper_live_deterministic_score(run_id, key, "resting_progress")
             partial_prob = 0.15
             fill_prob = 0.35
-            cancel_prob = 0.2
+            cancel_prob = 0.2 if normalized_allow_random_cancels else 0.0
             fill_time_seconds = (
                 max(0.0, (run_finished_at_dt - submitted_at_dt).total_seconds())
                 if isinstance(submitted_at_dt, datetime)
@@ -4165,7 +4203,7 @@ def _paper_live_update(
                     opportunity_class=str(order.get("opportunity_class") or "").strip() or None,
                     partial_fill=False,
                 )
-            elif score < partial_prob + fill_prob + cancel_prob:
+            elif normalized_allow_random_cancels and score < partial_prob + fill_prob + cancel_prob:
                 canceled_order = dict(order)
                 canceled_order["canceled_at_utc"] = run_finished_at_dt.astimezone(timezone.utc).isoformat()
                 canceled_order["cancel_reason"] = "resting_timeout_simulated"
@@ -4283,7 +4321,10 @@ def _paper_live_update(
         }
 
         # Growth-mode paper-live submission: risk-budget limited, family/strip capped, liquidity-aware.
-        can_attempt_live_path = _coerce_int(pilot.get("would_attempt_live_if_enabled"), 0) > 0
+        live_eligible_hint = _coerce_int(pilot.get("would_attempt_live_if_enabled"), 0) > 0
+        can_attempt_live_path = bool(candidate_pool) and (
+            live_eligible_hint or not normalized_require_live_eligible_hint
+        )
         for candidate in candidate_pool:
             if run_attempts >= run_attempt_limit:
                 break
@@ -4334,7 +4375,7 @@ def _paper_live_update(
             per_attempt_kelly_used.append(kelly_used)
 
             target_risk_pct = tier_risk_pct * (kelly_used / 0.5 if 0.5 > 0 else 1.0) * drawdown_risk_scale
-            target_risk_dollars = float(start) * max(0.0, target_risk_pct)
+            target_risk_dollars = float(sizing_balance_dollars) * max(0.0, target_risk_pct)
 
             remaining_total_risk = max(0.0, open_risk_cap_dollars - open_risk_total)
             effective_family_risk_cap_dollars = max(0.0, family_risk_cap_dollars * family_multiplier)
@@ -4351,7 +4392,7 @@ def _paper_live_update(
                 liquidity_cap_pct = 0.035
             elif availability_state in {"watch_only", "watch", "endpoint_only"}:
                 liquidity_cap_pct = 0.02
-            state_liquidity_cap = float(start) * liquidity_cap_pct
+            state_liquidity_cap = float(sizing_balance_dollars) * liquidity_cap_pct
             baseline_liquidity = max(reference_price, suggested_risk_dollars)
             liquidity_cap_dollars = max(
                 reference_price,
@@ -4386,7 +4427,11 @@ def _paper_live_update(
             size_pressure = max(0.0, min(1.0, notional_risk_dollars / max(1.0, liquidity_cap_dollars)))
             partial_prob = max(0.05, min(0.35, 0.08 + max(0.0, edge_net) * 0.4 + size_pressure * 0.05))
             fill_prob = max(0.10, min(0.85, 0.55 + max(0.0, edge_net) * 1.5 - size_pressure * 0.35))
-            cancel_prob = max(0.05, min(0.60, 0.12 + size_pressure * 0.25))
+            cancel_prob = (
+                max(0.05, min(0.60, 0.12 + size_pressure * 0.25))
+                if normalized_allow_random_cancels
+                else 0.0
+            )
             total_prob = partial_prob + fill_prob + cancel_prob
             if total_prob > 0.95:
                 scale = 0.95 / total_prob
@@ -4462,7 +4507,7 @@ def _paper_live_update(
                 open_risk_total += notional_risk_dollars
                 open_risk_by_family[family] = float(open_risk_by_family.get(family, 0.0)) + notional_risk_dollars
                 open_risk_by_strip[strip_budget_key] = float(open_risk_by_strip.get(strip_budget_key, 0.0)) + notional_risk_dollars
-            elif score < partial_prob + fill_prob + cancel_prob:
+            elif normalized_allow_random_cancels and score < partial_prob + fill_prob + cancel_prob:
                 orders_canceled_total += 1
                 run_canceled += 1
                 _update_attempt_event_status(
@@ -4595,6 +4640,12 @@ def _paper_live_update(
         mark_to_market_total += float(_parse_float(position.get("mark_to_model_pnl_dollars")) or 0.0)
 
     current_balance = float(start) + float(realized_trade_total) + float(mark_to_market_total)
+    post_trade_sizing_balance_dollars = (
+        float(current_balance) if normalized_size_from_current_equity else float(start)
+    )
+    if post_trade_sizing_balance_dollars <= 0.0:
+        post_trade_sizing_balance_dollars = float(start)
+    post_trade_sizing_balance_dollars = max(0.0, float(post_trade_sizing_balance_dollars))
     peak_balance = max(float(peak_balance), float(start), float(current_balance))
     drawdown_pct = ((peak_balance - current_balance) / peak_balance * 100.0) if peak_balance > 0.0 else 0.0
     drawdown_risk_scale, drawdown_throttle_state = _paper_live_drawdown_scale(drawdown_pct)
@@ -4625,9 +4676,15 @@ def _paper_live_update(
         open_risk_by_family_current[family] = float(open_risk_by_family_current.get(family, 0.0)) + risk
         open_risk_by_strip_current[strip_key] = float(open_risk_by_strip_current.get(strip_key, 0.0)) + risk
 
-    open_risk_cap_dollars = max(0.0, float(start) * normalized_max_open_risk_pct * drawdown_risk_scale)
-    family_risk_cap_dollars = max(0.0, float(start) * normalized_max_family_risk_pct * drawdown_risk_scale)
-    strip_risk_cap_dollars = max(0.0, float(start) * normalized_max_strip_risk_pct * drawdown_risk_scale)
+    open_risk_cap_dollars = max(
+        0.0, float(post_trade_sizing_balance_dollars) * normalized_max_open_risk_pct * drawdown_risk_scale
+    )
+    family_risk_cap_dollars = max(
+        0.0, float(post_trade_sizing_balance_dollars) * normalized_max_family_risk_pct * drawdown_risk_scale
+    )
+    strip_risk_cap_dollars = max(
+        0.0, float(post_trade_sizing_balance_dollars) * normalized_max_strip_risk_pct * drawdown_risk_scale
+    )
     open_risk_remaining_dollars = max(0.0, open_risk_cap_dollars - open_risk_total_current)
 
     family_open_risk_remaining_dollars: dict[str, float] = {}
@@ -4692,6 +4749,9 @@ def _paper_live_update(
             "execution_basis": "paper_live_balance",
             "risk_profile": normalized_risk_profile,
             "family_allowlist": normalized_family_allowlist,
+            "allow_random_cancels": normalized_allow_random_cancels,
+            "size_from_current_equity": normalized_size_from_current_equity,
+            "require_live_eligible_hint": normalized_require_live_eligible_hint,
             "kelly_fraction": round(float(normalized_kelly_fraction), 6),
             "kelly_high_conf_max": round(float(normalized_kelly_high_conf_max), 6),
             "max_open_risk_pct": round(float(normalized_max_open_risk_pct), 6),
@@ -4708,6 +4768,8 @@ def _paper_live_update(
             ),
             "start_dollars": round(float(start), 4),
             "current_dollars": round(float(current_balance), 4),
+            "sizing_balance_dollars": round(float(sizing_balance_dollars), 4),
+            "post_trade_sizing_balance_dollars": round(float(post_trade_sizing_balance_dollars), 4),
             "realized_trade_pnl_dollars": round(float(realized_trade_total), 4),
             "mark_to_market_pnl_dollars": round(float(mark_to_market_total), 4),
             "drawdown_pct": round(max(0.0, float(drawdown_pct)), 4),
@@ -4843,8 +4905,13 @@ def _paper_live_update(
         "paper_live_max_new_attempts_per_run": snapshot.get("max_new_attempts_per_run"),
         "paper_live_run_attempt_limit": snapshot.get("run_attempt_limit"),
         "paper_live_family_allowlist": snapshot.get("family_allowlist"),
+        "paper_live_allow_random_cancels": snapshot.get("allow_random_cancels"),
+        "paper_live_size_from_current_equity": snapshot.get("size_from_current_equity"),
+        "paper_live_require_live_eligible_hint": snapshot.get("require_live_eligible_hint"),
         "paper_live_used_kelly_fraction": snapshot.get("used_kelly_fraction"),
         "paper_live_avg_kelly_fraction_used": snapshot.get("avg_kelly_fraction_used"),
+        "paper_live_sizing_balance_dollars": snapshot.get("sizing_balance_dollars"),
+        "paper_live_post_trade_sizing_balance_dollars": snapshot.get("post_trade_sizing_balance_dollars"),
         "paper_live_open_risk_dollars": snapshot.get("open_risk_dollars"),
         "paper_live_open_risk_cap_dollars": snapshot.get("open_risk_cap_dollars"),
         "paper_live_open_risk_remaining_dollars": snapshot.get("open_risk_remaining_dollars"),
@@ -4937,8 +5004,13 @@ def _paper_live_report_fields(paper_live: dict[str, Any] | None) -> dict[str, An
         "paper_live_max_new_attempts_per_run": payload.get("max_new_attempts_per_run"),
         "paper_live_run_attempt_limit": payload.get("run_attempt_limit"),
         "paper_live_family_allowlist": payload.get("family_allowlist"),
+        "paper_live_allow_random_cancels": payload.get("allow_random_cancels"),
+        "paper_live_size_from_current_equity": payload.get("size_from_current_equity"),
+        "paper_live_require_live_eligible_hint": payload.get("require_live_eligible_hint"),
         "paper_live_used_kelly_fraction": payload.get("used_kelly_fraction"),
         "paper_live_avg_kelly_fraction_used": payload.get("avg_kelly_fraction_used"),
+        "paper_live_sizing_balance_dollars": payload.get("sizing_balance_dollars"),
+        "paper_live_post_trade_sizing_balance_dollars": payload.get("post_trade_sizing_balance_dollars"),
         "paper_live_open_risk_dollars": payload.get("open_risk_dollars"),
         "paper_live_open_risk_cap_dollars": payload.get("open_risk_cap_dollars"),
         "paper_live_open_risk_remaining_dollars": payload.get("open_risk_remaining_dollars"),
@@ -7981,6 +8053,18 @@ def main() -> int:
     ]
     if not paper_live_family_allowlist:
         paper_live_family_allowlist = ["monthly_climate_anomaly"]
+    paper_live_allow_random_cancels = _is_enabled(
+        os.environ.get("BETBOT_PAPER_LIVE_ALLOW_RANDOM_CANCELS"),
+        default=False,
+    )
+    paper_live_size_from_current_equity = _is_enabled(
+        os.environ.get("BETBOT_PAPER_LIVE_SIZE_FROM_CURRENT_EQUITY"),
+        default=True,
+    )
+    paper_live_require_live_eligible_hint = _is_enabled(
+        os.environ.get("BETBOT_PAPER_LIVE_REQUIRE_LIVE_ELIGIBLE_HINT"),
+        default=False,
+    )
     shadow_bankroll_state_file_raw = str(
         os.environ.get("BETBOT_SHADOW_BANKROLL_STATE_FILE")
         or (output_dir / "overnight_alpha" / "shadow_bankroll_state.json")
@@ -9634,6 +9718,9 @@ def main() -> int:
         max_single_position_risk_pct=paper_live_max_single_position_risk_pct,
         max_new_attempts_per_run=paper_live_max_new_attempts_per_run,
         family_allowlist=paper_live_family_allowlist,
+        allow_random_cancels=paper_live_allow_random_cancels,
+        size_from_current_equity=paper_live_size_from_current_equity,
+        require_live_eligible_hint=paper_live_require_live_eligible_hint,
     )
     pilot_execution_evidence_step = next((step for step in steps if step.get("name") == "pilot_execution_evidence"), None)
     pilot_execution_evidence = _top_level_pilot_execution_evidence(
