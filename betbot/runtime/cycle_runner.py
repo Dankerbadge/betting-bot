@@ -66,6 +66,34 @@ class CycleRunner:
             lane_policy_path = str(policy_payload.get("lane_policy_path") or "").strip() or None
         return load_lane_policy_set(path=lane_policy_path)
 
+    @staticmethod
+    def _coerce_source_tuple(raw: object) -> tuple[str, ...]:
+        if raw is None:
+            return ()
+        if isinstance(raw, (list, tuple, set)):
+            return tuple(str(item).strip() for item in raw if str(item).strip())
+        return ()
+
+    def _resolve_hard_required_sources(
+        self,
+        *,
+        config: CycleRunnerConfig,
+        policy_payload: dict[str, object],
+    ) -> tuple[str, ...]:
+        if config.hard_required_sources is not None:
+            return tuple(config.hard_required_sources)
+        if self.hard_required_sources:
+            return tuple(self.hard_required_sources)
+
+        by_lane_raw = policy_payload.get("hard_required_sources_by_lane")
+        if isinstance(by_lane_raw, dict):
+            lane_specific = self._coerce_source_tuple(by_lane_raw.get(config.lane))
+            if lane_specific:
+                return lane_specific
+
+        global_required = self._coerce_source_tuple(policy_payload.get("hard_required_sources"))
+        return global_required
+
     def run(self, config: CycleRunnerConfig) -> dict[str, object]:
         effective_config = load_effective_config(repo_root=config.repo_root)
         policy_payload = dict(effective_config.values.get("policy") or {})
@@ -74,8 +102,10 @@ class CycleRunner:
         if not lane_policy_set.is_known_lane(config.lane):
             raise ValueError(f"Unknown permission lane: {config.lane}")
 
-        hard_required_from_config = tuple(str(x) for x in (policy_payload.get("hard_required_sources") or []) if str(x))
-        hard_required_sources = tuple(config.hard_required_sources or self.hard_required_sources or hard_required_from_config)
+        hard_required_sources = self._resolve_hard_required_sources(
+            config=config,
+            policy_payload=policy_payload,
+        )
 
         run_id = f"runtime::{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
         cycle_id = str(uuid.uuid4())
@@ -310,6 +340,7 @@ class CycleRunner:
             "config_fingerprint": effective_config.config_fingerprint,
             "policy_fingerprint": effective_config.policy_fingerprint,
             "event_log_file": str(output_dir / config.event_log_file),
+            "hard_required_sources": list(hard_required_sources),
         }
 
         cycle_path = output_dir / config.cycle_report_file

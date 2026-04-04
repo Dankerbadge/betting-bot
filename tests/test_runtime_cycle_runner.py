@@ -83,6 +83,41 @@ class CycleRunnerTests(unittest.TestCase):
             self.assertEqual(missing_events[0]["data"]["status"], "missing")
             self.assertEqual(missing_events[0]["severity"], "block")
 
+    def test_lane_scoped_required_sources_research_not_blocked_by_live_only_dependencies(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            runner = CycleRunner(
+                adapters=[_StaticAdapter("kalshi_market_data", "ok")],
+            )
+            report = runner.run(
+                CycleRunnerConfig(
+                    lane="research",
+                    output_dir=str(output_dir),
+                    repo_root=str(Path.cwd()),
+                )
+            )
+            self.assertEqual(report["overall_status"], "ok")
+            self.assertEqual(report["hard_required_sources"], ["kalshi_market_data"])
+            self.assertEqual(report["degraded_summary"]["missing_required_sources"], [])
+
+    def test_lane_scoped_required_sources_live_execute_blocks_when_live_dependencies_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            runner = CycleRunner(
+                adapters=[_StaticAdapter("kalshi_market_data", "ok")],
+            )
+            report = runner.run(
+                CycleRunnerConfig(
+                    lane="live_execute",
+                    output_dir=str(output_dir),
+                    repo_root=str(Path.cwd()),
+                    request_live_submit=True,
+                )
+            )
+            self.assertEqual(report["overall_status"], "blocked")
+            self.assertIn("venue_balances", report["degraded_summary"]["missing_required_sources"])
+            self.assertIn("order_permissions", report["degraded_summary"]["missing_required_sources"])
+
 
 if __name__ == "__main__":
     unittest.main()

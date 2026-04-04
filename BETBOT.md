@@ -13,6 +13,7 @@
 
 ## Lane and Source Policy
 - Lane permissions are defined in `data/policy/lanes.yaml`.
+- Lane-scoped required sources are defined in `.betbot/settings.json` under `hard_required_sources_by_lane`.
 - News domain allowlist is defined in `data/policy/news_sources.yaml`.
 - Repo-local config layers must be fingerprinted per run.
 
