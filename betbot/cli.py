@@ -1415,9 +1415,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     kalshi_micro_prior_plan.add_argument(
         "--selection-lane",
-        choices=["maker_edge", "probability_first"],
+        choices=["maker_edge", "probability_first", "kelly_unified"],
         default="maker_edge",
-        help="Plan ranking lane: default maker-edge lane, or probability-first compounding lane",
+        help="Plan ranking lane: maker-edge, probability-first compounding, or Kelly-unified",
     )
     kalshi_micro_prior_plan.add_argument(
         "--min-selected-fair-probability",
@@ -1526,9 +1526,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     kalshi_micro_prior_execute.add_argument(
         "--selection-lane",
-        choices=["maker_edge", "probability_first"],
+        choices=["maker_edge", "probability_first", "kelly_unified"],
         default="maker_edge",
-        help="Plan ranking lane: default maker-edge lane, or probability-first compounding lane",
+        help="Plan ranking lane: maker-edge, probability-first compounding, or Kelly-unified",
     )
     kalshi_micro_prior_execute.add_argument(
         "--min-selected-fair-probability",

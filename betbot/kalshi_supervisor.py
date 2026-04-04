@@ -34,6 +34,7 @@ _NO_REAL_CANDIDATE_STATUSES = {
     "no_candidates",
     "no_edge",
     "edge_too_small",
+    "kelly_too_small",
 }
 _ARB_FAILURE_STATUSES = {
     "upstream_error",

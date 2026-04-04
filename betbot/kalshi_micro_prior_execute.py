@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from betbot.kalshi_book import count_open_positions, default_book_db_path
+from betbot.kelly_unified import DEFAULT_MIN_KELLY_USED as KELLY_UNIFIED_MIN_LIVE_USED_DEFAULT
 from betbot.kalshi_micro_execute import (
     AuthenticatedRequester,
     TimeSleeper,
@@ -766,6 +767,7 @@ def build_prior_trade_gate_decision(
     )
 
     planned_orders = int(plan_summary.get("planned_orders") or 0)
+    selection_lane = str(plan_summary.get("selection_lane") or "maker_edge").strip().lower() or "maker_edge"
     positive_maker_entry_markets_total = int(plan_summary.get("positive_maker_entry_markets") or 0)
     positive_maker_entry_markets = int(
         plan_summary.get("positive_maker_entry_markets_with_canonical_policy") or positive_maker_entry_markets_total
@@ -785,6 +787,8 @@ def build_prior_trade_gate_decision(
     top_market_canonical_policy_applied = plan_summary.get("top_market_canonical_policy_applied")
     top_market_maker_entry_edge = plan_summary.get("top_market_maker_entry_edge")
     top_market_maker_entry_edge_net_fees = plan_summary.get("top_market_maker_entry_edge_net_fees")
+    top_market_kelly_used = _as_float(plan_summary.get("top_market_kelly_used"))
+    top_market_kelly_reject_reason = str(plan_summary.get("top_market_kelly_reject_reason") or "").strip() or None
     top_market_fair_probability = _as_float(plan_summary.get("top_market_fair_probability"))
     if top_market_fair_probability is None:
         top_market_fair_probability = _as_float(plan_summary.get("top_market_fair_probability_conservative"))
@@ -839,15 +843,37 @@ def build_prior_trade_gate_decision(
     if planned_orders > 0:
         if top_market_side not in {"yes", "no"}:
             blockers.append("Top prior-backed plan does not specify a tradable side.")
-        if not isinstance(top_market_maker_entry_edge, (int, float)) or top_market_maker_entry_edge < min_live_maker_edge:
-            blockers.append(f"Top prior-backed maker edge is below the live minimum of {min_live_maker_edge:.3f}.")
-        if (
-            not isinstance(top_market_maker_entry_edge_net_fees, (int, float))
-            or top_market_maker_entry_edge_net_fees < min_live_maker_edge_net_fees
-        ):
-            blockers.append(
-                f"Top prior-backed maker edge net fees is below the live minimum of {min_live_maker_edge_net_fees:.3f}."
-            )
+        if selection_lane == "kelly_unified":
+            if (
+                not isinstance(top_market_maker_entry_edge_net_fees, (int, float))
+                or top_market_maker_entry_edge_net_fees < min_live_maker_edge_net_fees
+            ):
+                blockers.append(
+                    f"Top prior-backed maker edge net fees is below the live minimum of {min_live_maker_edge_net_fees:.3f}."
+                )
+            if top_market_kelly_reject_reason:
+                blockers.append(
+                    "Top prior-backed Kelly gate rejected candidate "
+                    f"({top_market_kelly_reject_reason})."
+                )
+            if (
+                not isinstance(top_market_kelly_used, float)
+                or top_market_kelly_used < KELLY_UNIFIED_MIN_LIVE_USED_DEFAULT
+            ):
+                blockers.append(
+                    "Top prior-backed Kelly used fraction is below the live minimum of "
+                    f"{KELLY_UNIFIED_MIN_LIVE_USED_DEFAULT:.3f}."
+                )
+        else:
+            if not isinstance(top_market_maker_entry_edge, (int, float)) or top_market_maker_entry_edge < min_live_maker_edge:
+                blockers.append(f"Top prior-backed maker edge is below the live minimum of {min_live_maker_edge:.3f}.")
+            if (
+                not isinstance(top_market_maker_entry_edge_net_fees, (int, float))
+                or top_market_maker_entry_edge_net_fees < min_live_maker_edge_net_fees
+            ):
+                blockers.append(
+                    f"Top prior-backed maker edge net fees is below the live minimum of {min_live_maker_edge_net_fees:.3f}."
+                )
         if (
             isinstance(min_live_selected_fair_probability_effective, float)
             and (
@@ -968,6 +994,12 @@ def build_prior_trade_gate_decision(
             )
         ):
             gate_status = "probability_too_low"
+        elif selection_lane == "kelly_unified" and (
+            top_market_kelly_reject_reason is not None
+            or not isinstance(top_market_kelly_used, float)
+            or top_market_kelly_used < KELLY_UNIFIED_MIN_LIVE_USED_DEFAULT
+        ):
+            gate_status = "kelly_too_small"
         else:
             gate_status = "edge_too_small"
 
@@ -996,6 +1028,7 @@ def build_prior_trade_gate_decision(
         "live_cost_remaining_today": round(live_cost_remaining_today, 4),
         "live_cost_remaining_dollars": round(live_cost_budget_remaining, 4),
         "planned_orders": planned_orders,
+        "selection_lane": selection_lane,
         "positive_maker_entry_markets_total": positive_maker_entry_markets_total,
         "positive_maker_entry_markets": positive_maker_entry_markets,
         "top_market_ticker": plan_summary.get("top_market_ticker"),
@@ -1029,6 +1062,8 @@ def build_prior_trade_gate_decision(
         "top_market_maker_entry_price_dollars": plan_summary.get("top_market_maker_entry_price_dollars"),
         "top_market_maker_entry_edge": top_market_maker_entry_edge,
         "top_market_maker_entry_edge_net_fees": top_market_maker_entry_edge_net_fees,
+        "top_market_kelly_used": top_market_kelly_used,
+        "top_market_kelly_reject_reason": top_market_kelly_reject_reason,
         "min_live_selected_fair_probability": min_live_selected_fair_probability_effective,
         "top_market_estimated_entry_cost_dollars": plan_summary.get("top_market_estimated_entry_cost_dollars"),
         "top_market_estimated_entry_fee_dollars": plan_summary.get("top_market_estimated_entry_fee_dollars"),

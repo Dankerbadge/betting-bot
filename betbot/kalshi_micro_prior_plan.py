@@ -10,6 +10,13 @@ from typing import Any
 from betbot.kalshi_book import default_book_db_path, record_decisions
 from betbot.kalshi_fees import estimate_trade_fee
 from betbot.kalshi_incentives import fetch_incentive_map
+from betbot.kelly_unified import (
+    DEFAULT_FEE_RATE as KELLY_UNIFIED_DEFAULT_FEE_RATE,
+    DEFAULT_KELLY_FRACTION as KELLY_UNIFIED_DEFAULT_KELLY_FRACTION,
+    DEFAULT_MIN_KELLY_USED as KELLY_UNIFIED_DEFAULT_MIN_KELLY_USED,
+    KellyConfig,
+    score_candidate,
+)
 from betbot.kalshi_micro_execute import _http_request_json
 from betbot.kalshi_micro_plan import (
     default_balance_cache_path,
@@ -27,7 +34,7 @@ LIVE_ALLOWED_CANONICAL_NICHES = ("macro_release", "weather_energy_transmission",
 _DAILY_WEATHER_CONTRACT_FAMILIES = {"daily_rain", "daily_temperature", "daily_snow"}
 _PRODUCTION_DAILY_WEATHER_CONTRACT_FAMILIES = {"daily_rain", "daily_temperature"}
 _DAILY_WEATHER_QUOTE_STALE_MAX_AGE_SECONDS = 900.0
-_MICRO_PRIOR_SELECTION_LANES = {"maker_edge", "probability_first"}
+_MICRO_PRIOR_SELECTION_LANES = {"maker_edge", "probability_first", "kelly_unified"}
 
 
 def _latest_market_rows(history_rows: list[dict[str, str]]) -> dict[str, dict[str, str]]:
@@ -1002,6 +1009,14 @@ def build_micro_prior_plans(
         if min_selected_fair_probability_effective < 0.0 or min_selected_fair_probability_effective > 1.0:
             raise ValueError("min_selected_fair_probability must be between 0 and 1")
 
+    kelly_observer_config = KellyConfig(
+        fee_rate=KELLY_UNIFIED_DEFAULT_FEE_RATE,
+        kelly_fraction=KELLY_UNIFIED_DEFAULT_KELLY_FRACTION,
+        min_kelly_used=0.0,
+        min_edge_net_fees=-1.0,
+        min_fair_prob=0.0,
+    )
+
     remaining_risk = round(daily_risk_cap_dollars, 4)
     plans: list[dict[str, Any]] = []
     skip_counts = {
@@ -1026,6 +1041,7 @@ def build_micro_prior_plans(
         "canonical_release_cluster_risk_cap": 0,
         "canonical_correlated_risk_cap": 0,
         "selected_fair_probability_below_min": 0,
+        "kelly_rejected": 0,
     }
     release_cluster_spent_dollars: dict[str, float] = {}
     correlated_group_spent_dollars: dict[str, float] = {}
@@ -1072,6 +1088,45 @@ def build_micro_prior_plans(
             return fair_probability_conservative
         return _candidate_metric(candidate, "fair_probability_midpoint", default=-999.0)
 
+    def _candidate_kelly_snapshot(
+        item: tuple[dict[str, Any], dict[str, float | str] | None],
+    ) -> tuple[float, float, float, str | None]:
+        row, candidate = item
+        price = _candidate_metric(candidate, "maker_entry_price_dollars", default=-1.0)
+        fair_probability = _candidate_selected_fair_probability(candidate)
+        edge_net_fees = _candidate_metric(candidate, "maker_entry_edge_conservative_net_fees", default=-999.0)
+        side = str(candidate.get("side") or "").strip().lower() if isinstance(candidate, dict) else ""
+        if side not in {"yes", "no"}:
+            side = "yes"
+        if not (0.0 < price < 1.0 and 0.0 <= fair_probability <= 1.0):
+            return -999.0, -999.0, -999.0, "invalid_price_or_prob"
+        try:
+            scored = score_candidate(
+                price=float(price),
+                fair_prob=float(fair_probability),
+                edge_net_fees=float(edge_net_fees),
+                bankroll=float(planning_bankroll_dollars),
+                config=kelly_observer_config,
+                ticker=str(row.get("market_ticker") or ""),
+                side=side,
+                lane="kelly_unified",
+                edge_gross=_candidate_metric(candidate, "maker_entry_edge_conservative", default=0.0),
+            )
+        except ValueError:
+            return -999.0, -999.0, -999.0, "invalid_price_or_prob"
+        return (
+            float(scored.kelly_full),
+            float(scored.kelly_used),
+            float(scored.kelly_ev_per_dollar),
+            scored.kelly_reject_reason,
+        )
+
+    def _kelly_reject_reason_to_skip_key(reason: str | None) -> str:
+        token = str(reason or "").split("(", 1)[0].strip().lower().replace(" ", "_")
+        if not token:
+            return "kelly_reject_unknown"
+        return f"kelly_{token}"
+
     def _maker_edge_rank_key(item: tuple[dict[str, Any], dict[str, float | str] | None]) -> tuple[float, ...]:
         row, candidate = item
         maker_edge_conservative = _candidate_metric(candidate, "maker_entry_edge_conservative", default=-999.0)
@@ -1117,9 +1172,25 @@ def build_micro_prior_plans(
             maker_edge_rank_key[4],
         )
 
+    def _kelly_unified_rank_key(item: tuple[dict[str, Any], dict[str, float | str] | None]) -> tuple[float, ...]:
+        row, _ = item
+        maker_edge_rank_key = _maker_edge_rank_key(item)
+        _, kelly_used, kelly_ev_per_dollar, _ = _candidate_kelly_snapshot(item)
+        return (
+            float(bool(row.get("matched_live_market"))),
+            kelly_used,
+            kelly_ev_per_dollar,
+            maker_edge_rank_key[1],
+            maker_edge_rank_key[2],
+            maker_edge_rank_key[3],
+            maker_edge_rank_key[4],
+        )
+
     rank_key_fn = _maker_edge_rank_key
     if normalized_selection_lane == "probability_first":
         rank_key_fn = _probability_first_rank_key
+    elif normalized_selection_lane == "kelly_unified":
+        rank_key_fn = _kelly_unified_rank_key
 
     ranked_rows_with_candidates.sort(
         key=rank_key_fn,
@@ -1173,11 +1244,14 @@ def build_micro_prior_plans(
         selected_fair_probability = conservative_candidate.get("fair_probability_conservative")
         if not isinstance(selected_fair_probability, (int, float)):
             selected_fair_probability = conservative_candidate.get("fair_probability_midpoint")
+        selected_fair_probability_value = (
+            float(selected_fair_probability) if isinstance(selected_fair_probability, (int, float)) else None
+        )
         if (
             isinstance(min_selected_fair_probability_effective, float)
             and (
-                not isinstance(selected_fair_probability, (int, float))
-                or float(selected_fair_probability) < min_selected_fair_probability_effective
+                not isinstance(selected_fair_probability_value, float)
+                or selected_fair_probability_value < min_selected_fair_probability_effective
             )
         ):
             skip_counts["selected_fair_probability_below_min"] += 1
@@ -1269,6 +1343,51 @@ def build_micro_prior_plans(
             continue
         if price > effective_max_entry_price_dollars:
             skip_counts["entry_price_above_max"] += 1
+            continue
+
+        kelly_full: float | None = None
+        kelly_used: float | None = None
+        kelly_dollar: float | None = None
+        kelly_ev_per_dollar: float | None = None
+        kelly_rank_score: float | None = None
+        kelly_reject_reason: str | None = None
+        if isinstance(selected_fair_probability_value, float):
+            try:
+                kelly_lane_config = KellyConfig(
+                    fee_rate=KELLY_UNIFIED_DEFAULT_FEE_RATE,
+                    kelly_fraction=KELLY_UNIFIED_DEFAULT_KELLY_FRACTION,
+                    min_kelly_used=KELLY_UNIFIED_DEFAULT_MIN_KELLY_USED,
+                    min_edge_net_fees=effective_min_maker_edge_net_fees,
+                    min_fair_prob=(
+                        float(min_selected_fair_probability_effective)
+                        if isinstance(min_selected_fair_probability_effective, float)
+                        else 0.0
+                    ),
+                )
+                kelly_scored = score_candidate(
+                    price=float(price),
+                    fair_prob=selected_fair_probability_value,
+                    edge_net_fees=float(maker_edge_conservative_net_with_incentive),
+                    bankroll=float(planning_bankroll_dollars),
+                    config=kelly_lane_config,
+                    ticker=ticker,
+                    side=side,
+                    lane="kelly_unified",
+                    edge_gross=float(maker_edge_conservative),
+                )
+                kelly_full = float(kelly_scored.kelly_full)
+                kelly_used = float(kelly_scored.kelly_used)
+                kelly_dollar = float(kelly_scored.kelly_dollar)
+                kelly_ev_per_dollar = float(kelly_scored.kelly_ev_per_dollar)
+                kelly_rank_score = float(kelly_scored.kelly_rank_score)
+                kelly_reject_reason = kelly_scored.kelly_reject_reason
+            except ValueError:
+                kelly_reject_reason = "invalid_price_or_prob"
+
+        if normalized_selection_lane == "kelly_unified" and kelly_reject_reason:
+            skip_counts["kelly_rejected"] = skip_counts.get("kelly_rejected", 0) + 1
+            reason_key = _kelly_reject_reason_to_skip_key(kelly_reject_reason)
+            skip_counts[reason_key] = skip_counts.get(reason_key, 0) + 1
             continue
 
         if isinstance(routine_max_hours_to_close, (int, float)) and routine_max_hours_to_close > 0:
@@ -1462,6 +1581,16 @@ def build_micro_prior_plans(
                     if isinstance(min_selected_fair_probability_effective, float)
                     else ""
                 ),
+                "kelly_fee_rate": round(KELLY_UNIFIED_DEFAULT_FEE_RATE, 6),
+                "kelly_fraction": round(KELLY_UNIFIED_DEFAULT_KELLY_FRACTION, 6),
+                "kelly_full": round(kelly_full, 6) if isinstance(kelly_full, float) else "",
+                "kelly_used": round(kelly_used, 6) if isinstance(kelly_used, float) else "",
+                "kelly_dollar": round(kelly_dollar, 4) if isinstance(kelly_dollar, float) else "",
+                "kelly_ev_per_dollar": (
+                    round(kelly_ev_per_dollar, 6) if isinstance(kelly_ev_per_dollar, float) else ""
+                ),
+                "kelly_rank_score": round(kelly_rank_score, 6) if isinstance(kelly_rank_score, float) else "",
+                "kelly_reject_reason": kelly_reject_reason or "",
                 "fair_probability": fair_probability,
                 "fair_probability_conservative": fair_probability_conservative,
                 "confidence": row.get("confidence"),
@@ -1556,6 +1685,14 @@ def _write_plan_csv(path: Path, plans: list[dict[str, Any]]) -> None:
         "incentive_bonus_per_contract_dollars",
         "selection_lane",
         "selected_fair_probability_minimum",
+        "kelly_fee_rate",
+        "kelly_fraction",
+        "kelly_full",
+        "kelly_used",
+        "kelly_dollar",
+        "kelly_ev_per_dollar",
+        "kelly_rank_score",
+        "kelly_reject_reason",
         "fair_probability",
         "fair_probability_conservative",
         "confidence",
@@ -2273,6 +2410,14 @@ def run_kalshi_micro_prior_plan(
         "top_market_estimated_max_profit_dollars": top_plan.get("estimated_max_profit_dollars") if plans else None,
         "top_market_estimated_max_loss_dollars": top_plan.get("estimated_max_loss_dollars") if plans else None,
         "top_market_max_profit_roi_on_cost": top_plan.get("max_profit_roi_on_cost") if plans else None,
+        "top_market_kelly_fee_rate": top_plan.get("kelly_fee_rate") if plans else None,
+        "top_market_kelly_fraction": top_plan.get("kelly_fraction") if plans else None,
+        "top_market_kelly_full": top_plan.get("kelly_full") if plans else None,
+        "top_market_kelly_used": top_plan.get("kelly_used") if plans else None,
+        "top_market_kelly_dollar": top_plan.get("kelly_dollar") if plans else None,
+        "top_market_kelly_ev_per_dollar": top_plan.get("kelly_ev_per_dollar") if plans else None,
+        "top_market_kelly_rank_score": top_plan.get("kelly_rank_score") if plans else None,
+        "top_market_kelly_reject_reason": top_plan.get("kelly_reject_reason") if plans else None,
         "top_market_fair_probability": top_plan.get("fair_probability") if plans else None,
         "top_market_fair_probability_conservative": (
             top_plan.get("fair_probability_conservative") if plans else None
