@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 import uuid
 
 from betbot.adapters.base import Adapter, AdapterContext, run_adapter
+from betbot.execution.live_executor import LiveExecutor
+from betbot.execution.ticket import TicketProposal, create_ticket_proposal
+from betbot.policy.approvals import ApprovalRecord
 from betbot.policy.degraded_mode import DegradedSummary, summarize_source_results
 from betbot.policy.engine import PolicyDecision, evaluate_policy_gate
 from betbot.policy.lanes import LanePolicySet, load_lane_policy_set
@@ -28,6 +31,11 @@ class CycleRunnerConfig:
     lane_policy_path: str | None = None
     request_live_submit: bool = False
     hard_required_sources: tuple[str, ...] | None = None
+    approval_json_path: str | None = None
+    ticket_market: str = "SIM-MARKET"
+    ticket_side: str = "yes"
+    ticket_max_cost: float = 1.0
+    ticket_expires_at: str | None = None
 
 
 class CycleRunner:
@@ -87,12 +95,35 @@ class CycleRunner:
 
         by_lane_raw = policy_payload.get("hard_required_sources_by_lane")
         if isinstance(by_lane_raw, dict):
-            lane_specific = self._coerce_source_tuple(by_lane_raw.get(config.lane))
-            if lane_specific:
-                return lane_specific
+            if config.lane in by_lane_raw:
+                return self._coerce_source_tuple(by_lane_raw.get(config.lane))
 
         global_required = self._coerce_source_tuple(policy_payload.get("hard_required_sources"))
         return global_required
+
+    @staticmethod
+    def _resolve_ticket_expires_at(ticket_expires_at: str | None) -> str:
+        if ticket_expires_at:
+            return str(ticket_expires_at)
+        return (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()
+
+    @staticmethod
+    def _load_approval_record(approval_json_path: str | None) -> ApprovalRecord | None:
+        if not approval_json_path:
+            return None
+        path = Path(approval_json_path)
+        if not path.exists():
+            return None
+        payload = dict(json.loads(path.read_text(encoding="utf-8")))
+        return ApprovalRecord(
+            ticket_hash=str(payload.get("ticket_hash") or ""),
+            market=str(payload.get("market") or ""),
+            side=str(payload.get("side") or ""),
+            max_cost=float(payload.get("max_cost") or 0.0),
+            issued_at=str(payload.get("issued_at") or ""),
+            expires_at=str(payload.get("expires_at") or ""),
+            approved_by=str(payload.get("approved_by") or "unknown"),
+        )
 
     def run(self, config: CycleRunnerConfig) -> dict[str, object]:
         effective_config = load_effective_config(repo_root=config.repo_root)
@@ -246,6 +277,8 @@ class CycleRunner:
         ticket_status = "not_built"
         approval_status = "not_requested"
         order_status = "not_submitted"
+        execution_reason = "not_requested"
+        ticket: TicketProposal | None = None
 
         if policy_decision.status == "blocked":
             state.transition("ticket.blocked")
@@ -269,6 +302,15 @@ class CycleRunner:
         else:
             state.transition("ticket.ready")
             ticket_status = "ready"
+            ticket_expires_at = self._resolve_ticket_expires_at(config.ticket_expires_at)
+            ticket = create_ticket_proposal(
+                market=config.ticket_market,
+                side=config.ticket_side,
+                max_cost=config.ticket_max_cost,
+                lane=config.lane,
+                source_run_id=run_id,
+                expires_at=ticket_expires_at,
+            )
             events.append(
                 new_event(
                     run_id=run_id,
@@ -277,12 +319,20 @@ class CycleRunner:
                     phase=state.current_phase,
                     lane=config.lane,
                     severity="warn" if policy_decision.status == "degraded" else "info",
-                    data={"reason": policy_decision.reason},
+                    data={
+                        "reason": policy_decision.reason,
+                        "ticket_hash": ticket.ticket_hash,
+                        "market": ticket.market,
+                        "side": ticket.side,
+                        "max_cost": ticket.max_cost,
+                        "expires_at": ticket.expires_at,
+                    },
                 )
             )
             if config.request_live_submit:
                 state.transition("approval.waiting")
-                approval_status = "required" if approval_required else "not_required"
+                approval = self._load_approval_record(config.approval_json_path)
+                approval_status = "provided" if approval is not None else ("required" if approval_required else "not_required")
                 events.append(
                     new_event(
                         run_id=run_id,
@@ -291,11 +341,66 @@ class CycleRunner:
                         phase=state.current_phase,
                         lane=config.lane,
                         severity="warn" if approval_required else "info",
-                        data={"approval_required": approval_required},
+                        data={
+                            "approval_required": approval_required,
+                            "approval_provided": approval is not None,
+                            "approval_json_path": config.approval_json_path,
+                        },
                     )
                 )
-            state.transition("cycle.finished")
-            final_overall_status = "degraded" if policy_decision.status == "degraded" else "ok"
+                executor = LiveExecutor(lane_policy_set)
+                execution_result = executor.submit(
+                    lane=config.lane,
+                    ticket=ticket,
+                    approval=approval,
+                )
+                execution_reason = execution_result.reason
+                if execution_result.status == "submitted":
+                    state.transition("order.submitted")
+                    order_status = "submitted"
+                    approval_status = "approved" if approval_required else approval_status
+                    events.append(
+                        new_event(
+                            run_id=run_id,
+                            cycle_id=cycle_id,
+                            event_type="order_submitted",
+                            phase=state.current_phase,
+                            lane=config.lane,
+                            severity="info",
+                            data={
+                                "market": execution_result.market,
+                                "side": execution_result.side,
+                                "submitted_at": execution_result.submitted_at,
+                            },
+                        )
+                    )
+                    state.transition("cycle.finished")
+                    final_overall_status = "degraded" if policy_decision.status == "degraded" else "ok"
+                else:
+                    order_status = "blocked"
+                    if execution_result.reason.startswith("approval_"):
+                        approval_status = execution_result.reason
+                    events.append(
+                        new_event(
+                            run_id=run_id,
+                            cycle_id=cycle_id,
+                            event_type="order_blocked",
+                            phase=state.current_phase,
+                            lane=config.lane,
+                            severity="block",
+                            data={
+                                "reason": execution_result.reason,
+                                "market": execution_result.market,
+                                "side": execution_result.side,
+                            },
+                        )
+                    )
+                    state.transition("cycle.finished")
+                    final_overall_status = "blocked"
+            else:
+                execution_reason = "live_submit_not_requested"
+                state.transition("cycle.finished")
+                final_overall_status = "degraded" if policy_decision.status == "degraded" else "ok"
 
         events.append(
             new_event(
@@ -308,6 +413,7 @@ class CycleRunner:
                 data={
                     "overall_status": final_overall_status,
                     "policy_status": policy_decision.status,
+                    "execution_reason": execution_reason,
                     "recovery_recommendation": degraded_summary.recovery_recommendation,
                 },
             )
@@ -335,6 +441,8 @@ class CycleRunner:
             "ticket_status": ticket_status,
             "approval_status": approval_status,
             "order_status": order_status,
+            "execution_reason": execution_reason,
+            "ticket_proposal": (None if ticket is None else ticket.to_dict()),
             "recovery_recommendation": degraded_summary.recovery_recommendation,
             "citations": [],
             "config_fingerprint": effective_config.config_fingerprint,
