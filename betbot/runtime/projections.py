@@ -27,13 +27,17 @@ def build_cycle_projection(events: list[EventEnvelope]) -> dict[str, object]:
             if maybe_status:
                 source_health[event.source] = maybe_status
 
-    overall_status = "ok"
-    if any(sev in {"error", "block"} for sev in severity_counts):
-        overall_status = "degraded"
-    if any(event.phase == "ticket.blocked" for event in events):
-        overall_status = "blocked"
-    if last.phase == "cycle.failed":
-        overall_status = "failed"
+    declared_status = str(last.data.get("overall_status") or "").strip().lower()
+    if declared_status in {"ok", "degraded", "blocked", "failed"}:
+        overall_status = declared_status
+    else:
+        overall_status = "ok"
+        if any(sev in {"error", "block"} for sev in severity_counts):
+            overall_status = "degraded"
+        if any(event.phase == "ticket.blocked" for event in events):
+            overall_status = "blocked"
+        if last.phase == "cycle.failed":
+            overall_status = "failed"
 
     return {
         "run_id": first.run_id,

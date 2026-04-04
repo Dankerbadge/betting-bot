@@ -13,6 +13,9 @@ class AdapterHarnessTests(unittest.TestCase):
         second = run_adapter_harness(scenarios_file, seed=42)
         self.assertEqual(first, second)
         self.assertTrue(all(item.passed for item in first))
+        self.assertEqual(first[0].overall_status, "ok")
+        self.assertEqual(first[1].overall_status, "degraded")
+        self.assertEqual(first[2].overall_status, "blocked")
 
 
 if __name__ == "__main__":

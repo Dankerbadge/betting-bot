@@ -38,6 +38,7 @@ def main() -> None:
                 "scenario_id": item.scenario_id,
                 "observed_status": item.overall_status,
                 "expected_status": item.expected_status,
+                "source_statuses": item.source_statuses,
                 "passed": item.passed,
             }
             for item in results
