@@ -422,6 +422,176 @@ class CycleRunnerTests(unittest.TestCase):
             event_types = [json.loads(line).get("event_type") for line in event_lines]
             self.assertIn("order_reconcile_mismatch", event_types)
 
+    def test_live_execute_reconcile_filled_emits_position_opened(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            expires_at = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()
+            reference_ticket = create_ticket_proposal(
+                market="MKT-FILLED",
+                side="yes",
+                max_cost=1.0,
+                lane="live_execute",
+                source_run_id="ref-filled",
+                expires_at=expires_at,
+            )
+            approval_path = output_dir / "approval_filled.json"
+            approval_path.write_text(
+                json.dumps(
+                    {
+                        "ticket_hash": reference_ticket.ticket_hash,
+                        "market": "MKT-FILLED",
+                        "side": "yes",
+                        "max_cost": 1.0,
+                        "issued_at": datetime.now(timezone.utc).isoformat(),
+                        "expires_at": expires_at,
+                        "approved_by": "tester",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            runner = CycleRunner(
+                adapters=[_StaticAdapter("kalshi_market_data", "ok")],
+                hard_required_sources=("kalshi_market_data",),
+                live_venue_adapter=LocalLiveVenueAdapter(reconcile_outcome="filled"),
+            )
+            report = runner.run(
+                CycleRunnerConfig(
+                    lane="live_execute",
+                    output_dir=str(output_dir),
+                    repo_root=str(Path.cwd()),
+                    request_live_submit=True,
+                    approval_json_path=str(approval_path),
+                    ticket_market="MKT-FILLED",
+                    ticket_side="yes",
+                    ticket_max_cost=1.0,
+                    ticket_expires_at=expires_at,
+                )
+            )
+            self.assertEqual(report["overall_status"], "ok")
+            self.assertEqual(report["order_status"], "submitted")
+            self.assertEqual(report["reconciliation_status"], "filled")
+            self.assertEqual(report["position_status"], "open")
+            self.assertEqual(report["reconciliation_filled_quantity"], 1.0)
+            self.assertEqual(report["reconciliation_remaining_quantity"], 0.0)
+
+            event_lines = (output_dir / "runtime_events_latest.jsonl").read_text(encoding="utf-8").splitlines()
+            event_types = [json.loads(line).get("event_type") for line in event_lines]
+            self.assertIn("order_filled", event_types)
+            self.assertIn("position_opened", event_types)
+
+    def test_live_execute_reconcile_partially_filled_emits_position_opened(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            expires_at = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()
+            reference_ticket = create_ticket_proposal(
+                market="MKT-PARTIAL",
+                side="yes",
+                max_cost=1.0,
+                lane="live_execute",
+                source_run_id="ref-partial",
+                expires_at=expires_at,
+            )
+            approval_path = output_dir / "approval_partial.json"
+            approval_path.write_text(
+                json.dumps(
+                    {
+                        "ticket_hash": reference_ticket.ticket_hash,
+                        "market": "MKT-PARTIAL",
+                        "side": "yes",
+                        "max_cost": 1.0,
+                        "issued_at": datetime.now(timezone.utc).isoformat(),
+                        "expires_at": expires_at,
+                        "approved_by": "tester",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            runner = CycleRunner(
+                adapters=[_StaticAdapter("kalshi_market_data", "ok")],
+                hard_required_sources=("kalshi_market_data",),
+                live_venue_adapter=LocalLiveVenueAdapter(reconcile_outcome="partially_filled"),
+            )
+            report = runner.run(
+                CycleRunnerConfig(
+                    lane="live_execute",
+                    output_dir=str(output_dir),
+                    repo_root=str(Path.cwd()),
+                    request_live_submit=True,
+                    approval_json_path=str(approval_path),
+                    ticket_market="MKT-PARTIAL",
+                    ticket_side="yes",
+                    ticket_max_cost=1.0,
+                    ticket_expires_at=expires_at,
+                )
+            )
+            self.assertEqual(report["overall_status"], "ok")
+            self.assertEqual(report["order_status"], "submitted")
+            self.assertEqual(report["reconciliation_status"], "partially_filled")
+            self.assertEqual(report["position_status"], "open")
+            self.assertEqual(report["reconciliation_filled_quantity"], 0.5)
+            self.assertEqual(report["reconciliation_remaining_quantity"], 0.5)
+
+            event_lines = (output_dir / "runtime_events_latest.jsonl").read_text(encoding="utf-8").splitlines()
+            event_types = [json.loads(line).get("event_type") for line in event_lines]
+            self.assertIn("order_partially_filled", event_types)
+            self.assertIn("position_opened", event_types)
+
+    def test_live_execute_reconcile_canceled_emits_order_canceled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            expires_at = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()
+            reference_ticket = create_ticket_proposal(
+                market="MKT-CANCELED",
+                side="yes",
+                max_cost=1.0,
+                lane="live_execute",
+                source_run_id="ref-canceled",
+                expires_at=expires_at,
+            )
+            approval_path = output_dir / "approval_canceled.json"
+            approval_path.write_text(
+                json.dumps(
+                    {
+                        "ticket_hash": reference_ticket.ticket_hash,
+                        "market": "MKT-CANCELED",
+                        "side": "yes",
+                        "max_cost": 1.0,
+                        "issued_at": datetime.now(timezone.utc).isoformat(),
+                        "expires_at": expires_at,
+                        "approved_by": "tester",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            runner = CycleRunner(
+                adapters=[_StaticAdapter("kalshi_market_data", "ok")],
+                hard_required_sources=("kalshi_market_data",),
+                live_venue_adapter=LocalLiveVenueAdapter(reconcile_outcome="canceled"),
+            )
+            report = runner.run(
+                CycleRunnerConfig(
+                    lane="live_execute",
+                    output_dir=str(output_dir),
+                    repo_root=str(Path.cwd()),
+                    request_live_submit=True,
+                    approval_json_path=str(approval_path),
+                    ticket_market="MKT-CANCELED",
+                    ticket_side="yes",
+                    ticket_max_cost=1.0,
+                    ticket_expires_at=expires_at,
+                )
+            )
+            self.assertEqual(report["overall_status"], "ok")
+            self.assertEqual(report["order_status"], "submitted")
+            self.assertEqual(report["reconciliation_status"], "canceled")
+            self.assertEqual(report["position_status"], "none")
+            self.assertEqual(report["reconciliation_filled_quantity"], 0.0)
+            self.assertEqual(report["reconciliation_remaining_quantity"], 0.0)
+
+            event_lines = (output_dir / "runtime_events_latest.jsonl").read_text(encoding="utf-8").splitlines()
+            event_types = [json.loads(line).get("event_type") for line in event_lines]
+            self.assertIn("order_canceled", event_types)
+
 
 if __name__ == "__main__":
     unittest.main()

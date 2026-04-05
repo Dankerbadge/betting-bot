@@ -193,6 +193,96 @@ class LiveExecutorTests(unittest.TestCase):
         self.assertEqual(reconciliation.reason, "reconcile_mismatch")
         self.assertEqual(reconciliation.mismatches, 1)
 
+    def test_reconcile_filled_outcome(self) -> None:
+        lane_policy_set = load_lane_policy_set()
+        executor = LiveExecutor(
+            lane_policy_set,
+            venue_adapter=LocalLiveVenueAdapter(reconcile_outcome="filled"),
+        )
+        ticket = create_ticket_proposal(
+            market="MKT",
+            side="yes",
+            max_cost=1.0,
+            lane="live_execute",
+            source_run_id="run-reconcile-filled",
+        )
+        submission = executor.submit(
+            lane="live_execute",
+            ticket=ticket,
+            approval=None,
+            approval_required=False,
+        )
+        self.assertEqual(submission.status, "submitted")
+        reconciliation = executor.reconcile(
+            lane="live_execute",
+            ticket=ticket,
+            external_order_id=submission.external_order_id,
+        )
+        self.assertEqual(reconciliation.status, "filled")
+        self.assertEqual(reconciliation.reason, "reconciled_filled")
+        self.assertEqual(reconciliation.filled_quantity, 1.0)
+        self.assertEqual(reconciliation.remaining_quantity, 0.0)
+
+    def test_reconcile_partially_filled_outcome(self) -> None:
+        lane_policy_set = load_lane_policy_set()
+        executor = LiveExecutor(
+            lane_policy_set,
+            venue_adapter=LocalLiveVenueAdapter(reconcile_outcome="partially_filled"),
+        )
+        ticket = create_ticket_proposal(
+            market="MKT",
+            side="yes",
+            max_cost=1.0,
+            lane="live_execute",
+            source_run_id="run-reconcile-partial",
+        )
+        submission = executor.submit(
+            lane="live_execute",
+            ticket=ticket,
+            approval=None,
+            approval_required=False,
+        )
+        self.assertEqual(submission.status, "submitted")
+        reconciliation = executor.reconcile(
+            lane="live_execute",
+            ticket=ticket,
+            external_order_id=submission.external_order_id,
+        )
+        self.assertEqual(reconciliation.status, "partially_filled")
+        self.assertEqual(reconciliation.reason, "reconciled_partially_filled")
+        self.assertEqual(reconciliation.filled_quantity, 0.5)
+        self.assertEqual(reconciliation.remaining_quantity, 0.5)
+
+    def test_reconcile_canceled_outcome(self) -> None:
+        lane_policy_set = load_lane_policy_set()
+        executor = LiveExecutor(
+            lane_policy_set,
+            venue_adapter=LocalLiveVenueAdapter(reconcile_outcome="canceled"),
+        )
+        ticket = create_ticket_proposal(
+            market="MKT",
+            side="yes",
+            max_cost=1.0,
+            lane="live_execute",
+            source_run_id="run-reconcile-canceled",
+        )
+        submission = executor.submit(
+            lane="live_execute",
+            ticket=ticket,
+            approval=None,
+            approval_required=False,
+        )
+        self.assertEqual(submission.status, "submitted")
+        reconciliation = executor.reconcile(
+            lane="live_execute",
+            ticket=ticket,
+            external_order_id=submission.external_order_id,
+        )
+        self.assertEqual(reconciliation.status, "canceled")
+        self.assertEqual(reconciliation.reason, "reconciled_canceled")
+        self.assertEqual(reconciliation.filled_quantity, 0.0)
+        self.assertEqual(reconciliation.remaining_quantity, 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()
