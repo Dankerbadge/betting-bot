@@ -1,0 +1,14 @@
+sports_injuries:
+  - espn.com
+  - cbssports.com
+  - rotowire.com
+league_official:
+  - mlb.com
+  - nba.com
+  - nfl.com
+  - nhl.com
+exchange_official:
+  - kalshi.com
+general_news:
+  - apnews.com
+  - reuters.com

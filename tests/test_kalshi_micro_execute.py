@@ -12,6 +12,7 @@ from urllib.error import URLError
 from betbot.kalshi_execution_journal import append_execution_events
 from betbot.kalshi_book import ensure_book_schema
 from betbot.kalshi_micro_execute import (
+    _build_climate_router_pilot_execute_funnel,
     _execution_policy_metrics,
     _build_empirical_fill_training_rows,
     _http_request_json,
@@ -685,6 +686,131 @@ class KalshiMicroExecuteTests(unittest.TestCase):
             self.assertTrue(summary["attempts"][0]["execution_untrusted_bucket_probe"])
             self.assertEqual(summary["attempts"][0]["execution_policy_reason"], "submit_probe_untrusted_bucket")
 
+    def test_run_kalshi_micro_execute_allows_climate_router_pilot_frontier_bootstrap_probe(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            env_file = base / "env.txt"
+            env_file.write_text(
+                (
+                    "KALSHI_ENV=prod\n"
+                    "BETBOT_JURISDICTION=new_jersey\n"
+                    "BETBOT_ENABLE_LIVE_ORDERS=1\n"
+                    "KALSHI_ACCESS_KEY_ID=key123\n"
+                    "KALSHI_PRIVATE_KEY_PATH=/tmp/key.pem\n"
+                ),
+                encoding="utf-8",
+            )
+            (base / "execution_frontier_report_20260327_205959_000.json").write_text(
+                json.dumps(
+                    {
+                        "trusted_break_even_edge_by_bucket": {},
+                        "bucket_markout_trust_by_bucket": {},
+                        "bucket_rows": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            def fake_http_request_json(
+                url: str,
+                method: str,
+                headers: dict[str, str],
+                body: object | None,
+                timeout_seconds: float,
+            ) -> tuple[int, object]:
+                _ = headers
+                _ = body
+                _ = timeout_seconds
+                if method == "GET" and url.endswith("/exchange/status"):
+                    return 200, {"trading_active": True, "exchange_active": True}
+                if method == "GET" and url.endswith("/orderbook?depth=1"):
+                    return 200, {
+                        "orderbook_fp": {
+                            "yes_dollars": [["0.4200", "120.00"]],
+                            "no_dollars": [["0.5600", "120.00"]],
+                        }
+                    }
+                if method == "POST" and url.endswith("/portfolio/orders"):
+                    return 201, {"order": {"order_id": "order-bootstrap", "status": "executed"}}
+                return 404, {"error": "not found"}
+
+            summary = run_kalshi_micro_execute(
+                env_file=str(env_file),
+                output_dir=str(base),
+                allow_live_orders=True,
+                enforce_trade_gate=True,
+                http_request_json=fake_http_request_json,
+                plan_runner=lambda **kwargs: {
+                    "status": "ready",
+                    "planned_orders": 1,
+                    "total_planned_cost_dollars": 0.69,
+                    "actual_live_balance_dollars": 40.0,
+                    "actual_live_balance_source": "live",
+                    "balance_live_verified": True,
+                    "funding_gap_dollars": 0.0,
+                    "board_warning": None,
+                    "output_file": str(base / "plan.json"),
+                    "output_csv": str(base / "plan.csv"),
+                    "orders": [
+                        {
+                            "plan_rank": 1,
+                            "category": "Climate",
+                            "canonical_niche": "weather_climate",
+                            "contract_family": "daily_rain",
+                            "market_ticker": "KXTEST-RAIN",
+                            "side": "yes",
+                            "contracts_per_order": 1,
+                            "hours_to_close": 12.0,
+                            "confidence": 0.7,
+                            "maker_entry_price_dollars": 0.42,
+                            "maker_yes_price_dollars": 0.42,
+                            "yes_ask_dollars": 0.43,
+                            "maker_entry_edge_conservative_net_total": 0.08,
+                            "estimated_entry_cost_dollars": 0.42,
+                            "source_strategy": "climate_router_pilot",
+                            "router_opportunity_class": "tradable_positive",
+                            "router_expected_value_dollars": 0.1708,
+                            "order_payload_preview": {
+                                "ticker": "KXTEST-RAIN",
+                                "side": "yes",
+                                "action": "buy",
+                                "count": 1,
+                                "yes_price_dollars": "0.4200",
+                                "time_in_force": "good_till_canceled",
+                                "post_only": True,
+                                "cancel_order_on_pause": True,
+                                "self_trade_prevention_type": "maker",
+                            },
+                        }
+                    ],
+                },
+                quality_runner=lambda **kwargs: {"meaningful_markets": 2},
+                signal_runner=lambda **kwargs: {"eligible_markets": 2},
+                persistence_runner=lambda **kwargs: {"persistent_tradeable_markets": 1},
+                delta_runner=lambda **kwargs: {
+                    "improved_two_sided_markets": 1,
+                    "newly_tradeable_markets": 0,
+                    "board_change_label": "improving",
+                },
+                category_runner=lambda **kwargs: {
+                    "tradeable_categories": 1,
+                    "watch_categories": 0,
+                    "top_categories": [{"category": "Climate", "category_label": "Climate"}],
+                    "concentration_warning": "",
+                },
+                pressure_runner=lambda **kwargs: {"build_markets": 1, "watch_markets": 0},
+                sign_request=lambda *_: "signed",
+                now=datetime(2026, 3, 27, 21, 0, tzinfo=timezone.utc),
+            )
+
+            self.assertIn(summary["status"], {"live_submitted", "live_submitted_and_canceled"})
+            self.assertEqual(summary["climate_router_pilot_frontier_bootstrap_submitted_attempts"], 1)
+            self.assertEqual(summary["attempts"][0]["execution_frontier_bootstrap_probe"], True)
+            self.assertEqual(
+                summary["attempts"][0]["execution_policy_reason"],
+                "submit_pilot_frontier_bootstrap_probe_frontier_insufficient_data",
+            )
+
     def test_execution_policy_metrics_prefers_learned_hazard_when_trusted(self) -> None:
         metrics = _execution_policy_metrics(
             plan={
@@ -757,6 +883,61 @@ class KalshiMicroExecuteTests(unittest.TestCase):
         )
         self.assertFalse(blocked)
         self.assertTrue(blocked_reason.startswith("probe_edge_buffer_not_met:"))
+
+    def test_build_climate_router_pilot_execute_funnel_splits_dry_run_from_policy_scope(self) -> None:
+        funnel = _build_climate_router_pilot_execute_funnel(
+            [
+                {
+                    "source_strategy": "climate_router_pilot",
+                    "result": "dry_run_ready",
+                    "run_mode": "dry_run",
+                    "allow_live_orders_requested": False,
+                    "execution_policy_decision": "submit",
+                    "execution_policy_reason": "positive_ev_submit",
+                }
+            ]
+        )
+
+        self.assertEqual(funnel["climate_router_pilot_execute_considered_rows"], 1)
+        self.assertFalse(funnel["climate_router_pilot_live_mode_enabled"])
+        self.assertEqual(funnel["climate_router_pilot_live_eligible_rows"], 0)
+        self.assertEqual(funnel["climate_router_pilot_would_attempt_live_if_enabled"], 1)
+        self.assertEqual(funnel["climate_router_pilot_blocked_dry_run_only_rows"], 1)
+        self.assertEqual(funnel["climate_router_pilot_non_policy_gates_passed_rows"], 1)
+        self.assertEqual(funnel["climate_router_pilot_attempted_orders"], 0)
+        self.assertEqual(funnel["climate_router_pilot_blocked_research_dry_run_only"], 1)
+        self.assertEqual(funnel["climate_router_pilot_blocked_policy_scope"], 0)
+        self.assertEqual(
+            funnel["climate_router_pilot_blocked_research_dry_run_only_reason_counts"],
+            {"would_attempt_live_if_enabled": 1},
+        )
+        self.assertEqual(
+            funnel["climate_router_pilot_blocked_post_promotion_reason_counts"].get(
+                "blocked_research_dry_run_only"
+            ),
+            1,
+        )
+
+    def test_build_climate_router_pilot_execute_funnel_keeps_policy_scope_for_live_mode(self) -> None:
+        funnel = _build_climate_router_pilot_execute_funnel(
+            [
+                {
+                    "source_strategy": "climate_router_pilot",
+                    "result": "blocked_trade_gate",
+                    "run_mode": "live",
+                    "allow_live_orders_requested": True,
+                    "execution_policy_decision": "submit",
+                    "execution_policy_reason": "",
+                }
+            ]
+        )
+
+        self.assertTrue(funnel["climate_router_pilot_live_mode_enabled"])
+        self.assertEqual(funnel["climate_router_pilot_live_eligible_rows"], 0)
+        self.assertEqual(funnel["climate_router_pilot_would_attempt_live_if_enabled"], 0)
+        self.assertEqual(funnel["climate_router_pilot_blocked_dry_run_only_rows"], 0)
+        self.assertEqual(funnel["climate_router_pilot_blocked_research_dry_run_only"], 0)
+        self.assertEqual(funnel["climate_router_pilot_blocked_policy_scope"], 1)
 
     def test_run_kalshi_micro_execute_blocks_negative_ev_submit_policy(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

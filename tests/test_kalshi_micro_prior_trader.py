@@ -71,6 +71,144 @@ class KalshiMicroPriorTraderTests(unittest.TestCase):
             self.assertEqual(seen_ws_flags, [True])
             self.assertTrue(summary["enforce_ws_state_authority"])
 
+    def test_run_kalshi_micro_prior_trader_passes_climate_router_pilot_controls(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            seen_kwargs: list[dict[str, object]] = []
+
+            def fake_prior_execute_runner(**kwargs):
+                seen_kwargs.append(dict(kwargs))
+                return {
+                    "status": "dry_run",
+                    "actual_live_balance_dollars": 40.0,
+                    "actual_live_balance_source": "live",
+                    "balance_live_verified": True,
+                    "climate_router_pilot_status": "ready",
+                    "climate_router_pilot_submitted_rows": 1,
+                    "climate_router_pilot_promoted_rows": 1,
+                    "climate_router_pilot_considered_rows": 2,
+                    "climate_router_pilot_execute_considered_rows": 1,
+                    "climate_router_pilot_live_mode_enabled": True,
+                    "climate_router_pilot_live_eligible_rows": 1,
+                    "climate_router_pilot_would_attempt_live_if_enabled": 0,
+                    "climate_router_pilot_blocked_dry_run_only_rows": 0,
+                    "climate_router_pilot_blocked_research_dry_run_only_reason_counts": {},
+                    "climate_router_pilot_non_policy_gates_passed_rows": 1,
+                    "climate_router_pilot_attempted_orders": 1,
+                    "climate_router_pilot_acked_orders": 1,
+                    "climate_router_pilot_resting_orders": 1,
+                    "climate_router_pilot_filled_orders": 0,
+                    "climate_router_pilot_blocked_post_promotion_reason_counts": {},
+                    "climate_router_pilot_blocked_research_dry_run_only": 0,
+                    "climate_router_pilot_blocked_live_disabled": 0,
+                    "climate_router_pilot_expected_value_dollars": 0.08,
+                    "climate_router_pilot_blocked_reason_counts": {"pilot_limit_reached": 1},
+                    "climate_router_pilot_selected_tickers": ["KXTEST-1"],
+                    "climate_router_pilot_allowed_families_effective": ["monthly_climate_anomaly"],
+                    "climate_router_pilot_excluded_families_effective": ["daily_rain"],
+                    "climate_router_pilot_policy_scope_override_enabled": True,
+                    "climate_router_pilot_policy_scope_override_active": True,
+                    "climate_router_pilot_policy_scope_override_status": "active",
+                    "climate_router_pilot_policy_scope_override_attempts": 1,
+                    "climate_router_pilot_policy_scope_override_submissions": 1,
+                    "climate_router_pilot_policy_scope_override_blocked_reason_counts": {},
+                    "prior_trade_gate_summary": {
+                        "gate_pass": True,
+                        "gate_status": "pass",
+                        "gate_score": 88.0,
+                        "gate_blockers": [],
+                        "top_market_ticker": "KXTEST-1",
+                        "top_market_title": "Test Market",
+                        "top_market_close_time": "2026-03-28T12:00:00Z",
+                        "top_market_hours_to_close": 15.0,
+                        "top_market_side": "yes",
+                        "top_market_maker_entry_price_dollars": 0.42,
+                        "top_market_maker_entry_edge": 0.08,
+                        "top_market_estimated_entry_cost_dollars": 0.42,
+                        "top_market_expected_value_dollars": 0.08,
+                        "top_market_expected_roi_on_cost": 0.190476,
+                        "top_market_expected_value_per_day_dollars": 0.128,
+                        "top_market_expected_roi_per_day": 0.304761,
+                        "top_market_estimated_max_profit_dollars": 0.58,
+                        "top_market_estimated_max_loss_dollars": 0.42,
+                        "top_market_max_profit_roi_on_cost": 1.380952,
+                        "top_market_fair_probability": 0.61,
+                        "top_market_confidence": 0.8,
+                        "top_market_thesis": "Pilot test",
+                    },
+                    "output_file": str(base / "prior_execute.json"),
+                    "execute_summary_file": str(base / "execute_summary.json"),
+                    "execute_output_csv": str(base / "execute.csv"),
+                    "plan_summary_file": str(base / "plan.json"),
+                }
+
+            summary = run_kalshi_micro_prior_trader(
+                env_file="data/research/account_onboarding.local.env",
+                output_dir=str(base),
+                capture_before_execute=False,
+                climate_router_pilot_enabled=True,
+                climate_router_summary_json=str(base / "router_summary.json"),
+                climate_router_pilot_max_orders_per_run=2,
+                climate_router_pilot_contracts_cap=1,
+                climate_router_pilot_required_ev_dollars=0.02,
+                climate_router_pilot_allowed_classes=("tradable", "hot_positive"),
+                climate_router_pilot_allowed_families=("monthly_climate_anomaly",),
+                climate_router_pilot_excluded_families=("daily_rain",),
+                climate_router_pilot_policy_scope_override_enabled=True,
+                prior_execute_runner=fake_prior_execute_runner,
+                reconcile_runner=lambda **kwargs: {
+                    "status": "ready",
+                    "output_file": str(base / "reconcile.json"),
+                    "pilot_attempted_orders": 1,
+                    "pilot_filled_orders": 1,
+                    "pilot_partial_fills": 0,
+                    "pilot_markout_10s_dollars": 0.01,
+                    "pilot_markout_60s_dollars": 0.02,
+                    "pilot_markout_300s_dollars": -0.01,
+                    "pilot_realized_pnl_dollars": 0.05,
+                },
+                now=datetime(2026, 3, 27, 21, 0, tzinfo=timezone.utc),
+            )
+
+            self.assertEqual(len(seen_kwargs), 1)
+            self.assertTrue(seen_kwargs[0]["climate_router_pilot_enabled"])
+            self.assertEqual(seen_kwargs[0]["climate_router_pilot_max_orders_per_run"], 2)
+            self.assertEqual(seen_kwargs[0]["climate_router_pilot_contracts_cap"], 1)
+            self.assertEqual(seen_kwargs[0]["climate_router_pilot_required_ev_dollars"], 0.02)
+            self.assertEqual(
+                tuple(seen_kwargs[0]["climate_router_pilot_allowed_classes"]),
+                ("tradable", "hot_positive"),
+            )
+            self.assertEqual(
+                tuple(seen_kwargs[0]["climate_router_pilot_allowed_families"]),
+                ("monthly_climate_anomaly",),
+            )
+            self.assertEqual(
+                tuple(seen_kwargs[0]["climate_router_pilot_excluded_families"]),
+                ("daily_rain",),
+            )
+            self.assertTrue(seen_kwargs[0]["climate_router_pilot_policy_scope_override_enabled"])
+            self.assertEqual(summary["climate_router_pilot_status"], "ready")
+            self.assertEqual(summary["climate_router_pilot_submitted_rows"], 1)
+            self.assertEqual(summary["climate_router_pilot_considered_rows"], 2)
+            self.assertEqual(summary["climate_router_pilot_allowed_families_effective"], ["monthly_climate_anomaly"])
+            self.assertEqual(summary["climate_router_pilot_excluded_families_effective"], ["daily_rain"])
+            self.assertTrue(summary["climate_router_pilot_policy_scope_override_enabled"])
+            self.assertTrue(summary["climate_router_pilot_policy_scope_override_active"])
+            self.assertEqual(summary["climate_router_pilot_policy_scope_override_status"], "active")
+            self.assertEqual(summary["climate_router_pilot_policy_scope_override_attempts"], 1)
+            self.assertEqual(summary["climate_router_pilot_policy_scope_override_submissions"], 1)
+            self.assertTrue(summary["climate_router_pilot_live_mode_enabled"])
+            self.assertEqual(summary["climate_router_pilot_live_eligible_rows"], 1)
+            self.assertEqual(summary["climate_router_pilot_attempted_orders"], 1)
+            self.assertEqual(summary["climate_router_pilot_acked_orders"], 1)
+            self.assertEqual(summary["climate_router_pilot_resting_orders"], 1)
+            self.assertEqual(summary["climate_router_pilot_filled_orders"], 0)
+            self.assertEqual(summary["climate_router_pilot_reconcile_filled_orders"], 1)
+            self.assertEqual(summary["climate_router_pilot_partial_fills"], 0)
+            self.assertAlmostEqual(float(summary["climate_router_pilot_realized_pnl_dollars"]), 0.05, places=6)
+            self.assertAlmostEqual(float(summary["climate_router_pilot_expected_vs_realized_delta"]), -0.03, places=6)
+
     def test_run_kalshi_micro_prior_trader_holds_when_capture_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)

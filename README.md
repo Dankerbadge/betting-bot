@@ -81,12 +81,48 @@ Outputs are written to `outputs/`.
 - `make precommit-install` installs the pre-commit hook set from `.pre-commit-config.yaml`.
 - `make precommit-run` executes the full pre-commit policy locally.
 - `make lock-dev` refreshes `requirements-dev.lock.txt` from pinned direct dev dependencies.
+- `make ci-local` mirrors the GitHub CI sequence locally (`install-dev`, `precommit-run`, `check`).
 
 ## Maintenance
 
 - `make clean` removes build/test/type-check caches and local packaging artifacts.
 - `make precommit-run` runs all configured hooks across the repository.
 - Dependabot config at `.github/dependabot.yml` keeps pip and GitHub Actions dependencies fresh weekly.
+
+## Readiness And Support Tiers
+
+This repository is currently operated as an **internal alpha**.
+
+Supported for repeatable local/internal use:
+
+- Offline analytics and planning: `analyze`, `alpha-scoreboard`, `canonical-universe`, `odds-audit`, `research-audit`.
+- Simulation and sizing: `backtest`, `paper`, `ladder-grid`.
+- Diagnostics and read-only checks: `live-smoke`, `live-snapshot`, `kalshi-micro-status`.
+
+Experimental / pilot-only flows (expect active iteration and policy changes):
+
+- `live-paper` and `live-candidates`.
+- `kalshi-autopilot`, `kalshi-watchdog`.
+- `kalshi-micro-plan`, `kalshi-micro-execute`, `kalshi-micro-reconcile`, `kalshi-micro-trader`, and prior-* orchestration.
+- Weather/climate routing and family-specific automation commands.
+
+Operator rule for now:
+
+- Treat all order-capable flows as pilot-only.
+- Keep default operation read-only or paper unless an explicit pilot window is active.
+- Require a successful `make ci-local` pass before any pilot promotion.
+
+## Internal Alpha Pilot Checklist
+
+Use this checklist before enabling any order-capable run:
+
+1. Run `make ci-local` on the branch being executed.
+2. Confirm secrets are only in `.secrets/` and `data/research/account_onboarding.local.env`.
+3. Run `python -m betbot.cli live-smoke --env-file data/research/account_onboarding.local.env`.
+4. Run `python -m betbot.cli live-snapshot --env-file data/research/account_onboarding.local.env`.
+5. Produce a fresh plan artifact from `kalshi-micro-plan` (or prior-plan equivalent) and verify risk caps.
+6. Run a read-only/watch cycle first (`kalshi-micro-status`, watchdog loop without live-order flag).
+7. Promote a single family/pilot lane only after the previous steps are clean.
 
 ## Probability Path Analysis
 
@@ -686,6 +722,36 @@ python -m betbot.cli kalshi-micro-prior-trader \
 ```
 
 For explicit live runs without permanently changing your saved env file, add both `--allow-live-orders` and `--use-temp-live-env`. The trader will create a temporary env copy with `BETBOT_ENABLE_LIVE_ORDERS=1`, use it for execute plus reconcile, and delete it afterward.
+
+### Monthly Climate 1x1 Live-Attempt Harness
+
+Use `scripts/monthly_climate_live_attempt_harness.sh` for a single-shot, monthly-climate-only pilot attempt under the existing safety model.
+By default it runs in non-ordering `pre_submit_smoke` mode.
+
+What it does:
+
+1. refreshes climate-router availability for `monthly_climate_anomaly`
+2. runs `kalshi-micro-prior-trader` in live mode using a temporary env copy
+3. keeps pilot limits at `1x1` (`max-orders=1`, `contracts=1`, pilot cap `1`, family allowlist `monthly_climate_anomaly`)
+4. writes pilot evidence plus a compact harness summary
+
+Example:
+
+```bash
+scripts/monthly_climate_live_attempt_harness.sh
+```
+
+Explicit live mode (only if you intentionally want real submission behavior):
+
+```bash
+MONTHLY_ATTEMPT_MODE=live scripts/monthly_climate_live_attempt_harness.sh
+```
+
+Outputs:
+
+- `outputs/monthly_climate_live_attempt_summary_*.json`
+- `outputs/monthly_climate_live_attempt_summary_latest.json`
+- `outputs/pilot_execution_evidence_latest.json`
 
 Output:
 

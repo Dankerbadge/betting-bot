@@ -184,6 +184,17 @@ def _write_reconcile_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         "ticker",
         "client_order_id",
         "planned_side",
+        "source_strategy",
+        "router_opportunity_class",
+        "router_expected_value_dollars",
+        "router_reference_price",
+        "router_reference_price_source",
+        "router_true_probability",
+        "router_break_even_probability",
+        "router_suggested_risk_dollars",
+        "router_shadow_rank",
+        "router_family",
+        "router_strip_id",
         "status",
         "yes_price_dollars",
         "no_price_dollars",
@@ -483,6 +494,13 @@ def run_kalshi_micro_reconcile(
             "execution_journal_db_path": str(journal_path),
             "execution_journal_run_id": journal_run_id,
             "execution_journal_rows_written": 0,
+            "pilot_attempted_orders": 0,
+            "pilot_filled_orders": 0,
+            "pilot_partial_fills": 0,
+            "pilot_markout_10s_dollars": 0.0,
+            "pilot_markout_60s_dollars": 0.0,
+            "pilot_markout_300s_dollars": 0.0,
+            "pilot_realized_pnl_dollars": 0.0,
             "book_db_path": str(Path(book_db_path) if book_db_path else default_book_db_path(output_dir)),
             "output_csv": str(csv_path),
         }
@@ -529,6 +547,11 @@ def run_kalshi_micro_reconcile(
     markout_samples_missing_future_observation = 0
     markout_samples_skipped_due_to_lag = 0
     markout_observation_lags_seconds: list[float] = []
+    pilot_attempted_orders = 0
+    pilot_filled_orders = 0
+    pilot_partial_fills = 0
+    pilot_realized_pnl_dollars = 0.0
+    pilot_markout_dollars_by_horizon: dict[int, float] = {10: 0.0, 60: 0.0, 300: 0.0}
 
     for order, source in details:
         order_id = str(order.get("order_id") or "")
@@ -563,6 +586,21 @@ def run_kalshi_micro_reconcile(
             planned_side = ""
         effective_price = no_price if planned_side == "no" else yes_price
         planned_entry_price = _parse_float(attempt.get("planned_entry_price_dollars"))
+        source_strategy = str(attempt.get("source_strategy") or "").strip().lower()
+        is_pilot_attempt = source_strategy == "climate_router_pilot"
+        fill_count_value = max(0.0, _parse_float(order.get("fill_count_fp")) or 0.0)
+        remaining_count_value = max(0.0, _parse_float(order.get("remaining_count_fp")) or 0.0)
+        initial_count_value = max(0.0, _parse_float(order.get("initial_count_fp")) or 0.0)
+        if initial_count_value <= 0.0:
+            initial_count_value = max(fill_count_value, remaining_count_value)
+        if is_pilot_attempt:
+            pilot_attempted_orders += 1
+            pilot_realized_pnl_dollars += realized_pnl
+            if fill_count_value > 1e-9:
+                if initial_count_value > 1e-9 and fill_count_value + 1e-9 < initial_count_value:
+                    pilot_partial_fills += 1
+                else:
+                    pilot_filled_orders += 1
 
         rows.append(
             {
@@ -571,6 +609,17 @@ def run_kalshi_micro_reconcile(
                 "ticker": ticker,
                 "client_order_id": str(order.get("client_order_id") or ""),
                 "planned_side": planned_side,
+                "source_strategy": source_strategy,
+                "router_opportunity_class": str(attempt.get("router_opportunity_class") or "").strip().lower(),
+                "router_expected_value_dollars": _parse_float(attempt.get("router_expected_value_dollars")) or "",
+                "router_reference_price": _parse_float(attempt.get("router_reference_price")) or "",
+                "router_reference_price_source": str(attempt.get("router_reference_price_source") or "").strip(),
+                "router_true_probability": _parse_float(attempt.get("router_true_probability")) or "",
+                "router_break_even_probability": _parse_float(attempt.get("router_break_even_probability")) or "",
+                "router_suggested_risk_dollars": _parse_float(attempt.get("router_suggested_risk_dollars")) or "",
+                "router_shadow_rank": _parse_float(attempt.get("router_shadow_rank")) or "",
+                "router_family": str(attempt.get("router_family") or "").strip().lower(),
+                "router_strip_id": str(attempt.get("router_strip_id") or "").strip(),
                 "status": status,
                 "yes_price_dollars": yes_price if yes_price is not None else "",
                 "no_price_dollars": no_price if no_price is not None else "",
@@ -667,6 +716,17 @@ def run_kalshi_micro_reconcile(
                     "source": "reconcile",
                     "reconcile_fetch_source": source,
                     "execute_run_id": execute_run_id,
+                    "source_strategy": source_strategy,
+                    "router_opportunity_class": str(attempt.get("router_opportunity_class") or "").strip().lower(),
+                    "router_expected_value_dollars": _parse_float(attempt.get("router_expected_value_dollars")),
+                    "router_reference_price": _parse_float(attempt.get("router_reference_price")),
+                    "router_reference_price_source": str(attempt.get("router_reference_price_source") or "").strip(),
+                    "router_true_probability": _parse_float(attempt.get("router_true_probability")),
+                    "router_break_even_probability": _parse_float(attempt.get("router_break_even_probability")),
+                    "router_suggested_risk_dollars": _parse_float(attempt.get("router_suggested_risk_dollars")),
+                    "router_shadow_rank": _parse_float(attempt.get("router_shadow_rank")),
+                    "router_family": str(attempt.get("router_family") or "").strip().lower(),
+                    "router_strip_id": str(attempt.get("router_strip_id") or "").strip(),
                 },
             }
 
@@ -831,6 +891,8 @@ def run_kalshi_micro_reconcile(
                     markout_observation_lag_seconds = weighted_observation_lag_seconds / weighted_contracts
                     markout_samples_scored += 1
                     markout_observation_lags_seconds.append(markout_observation_lag_seconds)
+                    if is_pilot_attempt and horizon_seconds in pilot_markout_dollars_by_horizon:
+                        pilot_markout_dollars_by_horizon[horizon_seconds] += weighted_markout
                     journal_events.append(
                         {
                             **event_base,
@@ -908,6 +970,13 @@ def run_kalshi_micro_reconcile(
         "markout_samples_skipped_due_to_lag": markout_samples_skipped_due_to_lag,
         "markout_observation_lag_seconds_avg": markout_observation_lag_seconds_avg,
         "markout_observation_lag_seconds_max": markout_observation_lag_seconds_max,
+        "pilot_attempted_orders": pilot_attempted_orders,
+        "pilot_filled_orders": pilot_filled_orders,
+        "pilot_partial_fills": pilot_partial_fills,
+        "pilot_markout_10s_dollars": round(float(pilot_markout_dollars_by_horizon.get(10, 0.0)), 6),
+        "pilot_markout_60s_dollars": round(float(pilot_markout_dollars_by_horizon.get(60, 0.0)), 6),
+        "pilot_markout_300s_dollars": round(float(pilot_markout_dollars_by_horizon.get(300, 0.0)), 6),
+        "pilot_realized_pnl_dollars": round(float(pilot_realized_pnl_dollars), 6),
         "history_csv": str(history_path),
         "book_db_path": str(effective_book_db_path),
         "status_counts": status_counts,

@@ -1,4 +1,4 @@
-.PHONY: venv install install-dev lock-dev precommit-install precommit-run clean secrets-check lint typecheck check check-cli test test-unittest test-pytest
+.PHONY: venv install install-dev lock-dev precommit-install precommit-run clean secrets-check lint typecheck check check-cli ci-local test test-unittest test-pytest
 
 VENV ?= .venv
 PYTHON := $(VENV)/bin/python
@@ -55,6 +55,11 @@ typecheck:
 test: test-unittest
 
 check: secrets-check check-cli lint typecheck test test-pytest
+
+ci-local:
+	$(MAKE) install-dev
+	$(MAKE) precommit-run
+	$(MAKE) check
 
 check-cli:
 	$(PYTHON) -m betbot --help >/dev/null

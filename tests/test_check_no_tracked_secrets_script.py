@@ -4,6 +4,7 @@ import contextlib
 import importlib.util
 import io
 import pathlib
+import tempfile
 import unittest
 from unittest import mock
 
@@ -63,6 +64,38 @@ class SecretPathGuardTests(unittest.TestCase):
                 rc = module.main()
         self.assertEqual(rc, 1)
         self.assertIn("Tracked secret-path violations detected", err.getvalue())
+
+    def test_find_private_key_material_paths_detects_embedded_private_key(self) -> None:
+        module = self.module
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = pathlib.Path(tmpdir)
+            begin = "-----BEGIN " + "RSA PRIVATE KEY-----"
+            end = "-----END " + "RSA PRIVATE KEY-----"
+            key_blob = "\n".join(
+                [
+                    begin,
+                    "MIIEpAIBAAKCAQEA4qk3k1j7h9KfQ3r9zWy7Xx8sQ2T2KZ0Yv6r5",
+                    "S4t6UuC5Y8b7x3yQ9lK2QxY4M8f2xQIDAQAB",
+                    end,
+                ]
+            )
+            (root / "notes.txt").write_text(key_blob, encoding="utf-8")
+            offenders = module.find_private_key_material_paths(["notes.txt"], root=root)
+        self.assertEqual(offenders, ["notes.txt"])
+
+    def test_main_returns_failure_on_private_key_content(self) -> None:
+        module = self.module
+        err = io.StringIO()
+        with mock.patch.object(module, "_candidate_paths", return_value=["notes.txt"]):
+            with mock.patch.object(
+                module, "find_offending_paths", return_value=[]
+            ), mock.patch.object(
+                module, "find_private_key_material_paths", return_value=["notes.txt"]
+            ):
+                with contextlib.redirect_stderr(err):
+                    rc = module.main()
+        self.assertEqual(rc, 1)
+        self.assertIn("Tracked private-key content detected", err.getvalue())
 
 
 if __name__ == "__main__":

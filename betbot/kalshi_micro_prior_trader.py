@@ -39,6 +39,7 @@ _FAILURE_ATTEMPT_RESULTS = {
     "blocked_sports_guardrail",
     "blocked_by_safety_flag",
     "blocked_concurrent_live_execution",
+    "blocked_pre_submit_smoke_mode",
     "blocked_submission_budget",
     "blocked_live_cost_cap",
     "rate_limited",
@@ -51,6 +52,15 @@ _FAILURE_ATTEMPT_RESULTS = {
     "queue_position_unavailable",
     "cancel_failed",
 }
+
+
+def _parse_float(value: Any) -> float | None:
+    try:
+        if value in (None, ""):
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _build_attempt_failure_summary(summary: dict[str, Any]) -> dict[str, Any]:
@@ -179,6 +189,8 @@ def _classify_prior_execute_error(summary: dict[str, Any]) -> str | None:
         "",
         "dry_run",
         "dry_run_orderbook_degraded",
+        "live_pre_submit_smoke_mode",
+        "live_partial_pre_submit_smoke_mode",
         "live_submitted",
         "live_submitted_and_canceled",
         "blocked_prior_trade_gate",
@@ -475,6 +487,15 @@ def run_kalshi_micro_prior_trader(
     enforce_daily_weather_live_only: bool = True,
     require_daily_weather_board_coverage_for_live: bool = True,
     daily_weather_board_max_age_seconds: float = 900.0,
+    climate_router_pilot_enabled: bool = False,
+    climate_router_summary_json: str | None = None,
+    climate_router_pilot_max_orders_per_run: int = 1,
+    climate_router_pilot_contracts_cap: int = 1,
+    climate_router_pilot_required_ev_dollars: float = 0.01,
+    climate_router_pilot_allowed_classes: tuple[str, ...] = ("tradable",),
+    climate_router_pilot_allowed_families: tuple[str, ...] = (),
+    climate_router_pilot_excluded_families: tuple[str, ...] = (),
+    climate_router_pilot_policy_scope_override_enabled: bool = False,
     auto_refresh_weather_priors: bool = True,
     auto_prewarm_weather_station_history: bool = True,
     auto_weather_prior_max_markets: int = 30,
@@ -485,6 +506,12 @@ def run_kalshi_micro_prior_trader(
         "daily_rain",
         "daily_temperature",
     ),
+    auto_weather_include_nws_gridpoint_data: bool = True,
+    auto_weather_include_nws_observations: bool = True,
+    auto_weather_include_nws_alerts: bool = True,
+    auto_weather_include_ncei_normals: bool = True,
+    auto_weather_include_mrms_qpe: bool = True,
+    auto_weather_include_nbm_snapshot: bool = True,
     auto_refresh_priors: bool = True,
     auto_prior_max_markets: int = 15,
     auto_prior_min_evidence_count: int = 2,
@@ -566,6 +593,12 @@ def run_kalshi_micro_prior_trader(
                         timeout_seconds=timeout_seconds,
                         historical_lookback_years=max(1, int(auto_weather_historical_lookback_years)),
                         station_history_cache_max_age_hours=max(0.0, float(auto_weather_station_history_cache_max_age_hours)),
+                        include_nws_gridpoint_data=bool(auto_weather_include_nws_gridpoint_data),
+                        include_nws_observations=bool(auto_weather_include_nws_observations),
+                        include_nws_alerts=bool(auto_weather_include_nws_alerts),
+                        include_ncei_normals=bool(auto_weather_include_ncei_normals),
+                        include_mrms_qpe=bool(auto_weather_include_mrms_qpe),
+                        include_nbm_snapshot=bool(auto_weather_include_nbm_snapshot),
                         protect_manual=True,
                         write_back_to_priors=True,
                         now=captured_at,
@@ -734,6 +767,12 @@ def run_kalshi_micro_prior_trader(
             0.0,
             float(auto_weather_station_history_cache_max_age_hours),
         ),
+        "auto_weather_include_nws_gridpoint_data": bool(auto_weather_include_nws_gridpoint_data),
+        "auto_weather_include_nws_observations": bool(auto_weather_include_nws_observations),
+        "auto_weather_include_nws_alerts": bool(auto_weather_include_nws_alerts),
+        "auto_weather_include_ncei_normals": bool(auto_weather_include_ncei_normals),
+        "auto_weather_include_mrms_qpe": bool(auto_weather_include_mrms_qpe),
+        "auto_weather_include_nbm_snapshot": bool(auto_weather_include_nbm_snapshot),
         "auto_weather_allowed_contract_families": sorted(
             {value.strip().lower() for value in auto_weather_allowed_contract_families if value.strip()}
         )
@@ -840,6 +879,74 @@ def run_kalshi_micro_prior_trader(
         "enforce_daily_weather_live_only": bool(enforce_daily_weather_live_only),
         "require_daily_weather_board_coverage_for_live": bool(require_daily_weather_board_coverage_for_live),
         "daily_weather_board_max_age_seconds": max(0.0, float(daily_weather_board_max_age_seconds)),
+        "climate_router_pilot_enabled": bool(climate_router_pilot_enabled),
+        "climate_router_summary_json": climate_router_summary_json,
+        "climate_router_pilot_policy_scope_override_enabled": bool(
+            climate_router_pilot_policy_scope_override_enabled
+        ),
+        "climate_router_pilot_max_orders_per_run": max(0, int(climate_router_pilot_max_orders_per_run)),
+        "climate_router_pilot_contracts_cap": max(1, int(climate_router_pilot_contracts_cap)),
+        "climate_router_pilot_required_ev_dollars": round(max(0.0, float(climate_router_pilot_required_ev_dollars)), 6),
+        "climate_router_pilot_allowed_classes": [
+            value.strip().lower()
+            for value in tuple(climate_router_pilot_allowed_classes or ())
+            if str(value).strip()
+        ],
+        "climate_router_pilot_allowed_families": [
+            value.strip().lower()
+            for value in tuple(climate_router_pilot_allowed_families or ())
+            if str(value).strip()
+        ],
+        "climate_router_pilot_excluded_families": [
+            value.strip().lower()
+            for value in tuple(climate_router_pilot_excluded_families or ())
+            if str(value).strip()
+        ],
+        "climate_router_pilot_allowed_families_effective": [],
+        "climate_router_pilot_excluded_families_effective": [],
+        "climate_router_pilot_policy_scope_override_active": False,
+        "climate_router_pilot_policy_scope_override_status": "inactive_disabled",
+        "climate_router_pilot_policy_scope_override_gate_active": False,
+        "climate_router_pilot_policy_scope_override_applicable": False,
+        "climate_router_pilot_policy_scope_override_attempts": 0,
+        "climate_router_pilot_policy_scope_override_submissions": 0,
+        "climate_router_pilot_policy_scope_override_blocked_reason_counts": {},
+        "climate_router_pilot_promoted_rows": 0,
+        "climate_router_pilot_execute_considered_rows": 0,
+        "climate_router_pilot_live_mode_enabled": False,
+        "climate_router_pilot_live_eligible_rows": 0,
+        "climate_router_pilot_would_attempt_live_if_enabled": 0,
+        "climate_router_pilot_blocked_dry_run_only_rows": 0,
+        "climate_router_pilot_blocked_research_dry_run_only_reason_counts": {},
+        "climate_router_pilot_non_policy_gates_passed_rows": 0,
+        "climate_router_pilot_attempted_orders": 0,
+        "climate_router_pilot_acked_orders": 0,
+        "climate_router_pilot_resting_orders": 0,
+        "climate_router_pilot_filled_orders": 0,
+        "climate_router_pilot_reconcile_attempted_orders": 0,
+        "climate_router_pilot_reconcile_filled_orders": 0,
+        "climate_router_pilot_reconcile_partial_fills": 0,
+        "climate_router_pilot_partial_fills": 0,
+        "climate_router_pilot_blocked_post_promotion_reason_counts": {},
+        "climate_router_pilot_blocked_frontier_insufficient_data": 0,
+        "climate_router_pilot_blocked_balance": 0,
+        "climate_router_pilot_blocked_board_stale": 0,
+        "climate_router_pilot_blocked_weather_history": 0,
+        "climate_router_pilot_blocked_duplicate_ticker": 0,
+        "climate_router_pilot_blocked_no_orderable_side_on_recheck": 0,
+        "climate_router_pilot_blocked_ev_below_threshold": 0,
+        "climate_router_pilot_blocked_research_dry_run_only": 0,
+        "climate_router_pilot_blocked_live_disabled": 0,
+        "climate_router_pilot_blocked_policy_scope": 0,
+        "climate_router_pilot_blocked_family_filter": 0,
+        "climate_router_pilot_blocked_contract_cap": 0,
+        "climate_router_pilot_frontier_bootstrap_submitted_attempts": 0,
+        "climate_router_pilot_frontier_bootstrap_blocked_attempts": 0,
+        "climate_router_pilot_markout_10s_dollars": 0.0,
+        "climate_router_pilot_markout_60s_dollars": 0.0,
+        "climate_router_pilot_markout_300s_dollars": 0.0,
+        "climate_router_pilot_realized_pnl_dollars": 0.0,
+        "climate_router_pilot_expected_vs_realized_delta": None,
         "live_env_mode": "temporary_copy" if allow_live_orders and use_temporary_live_env else "source_env",
         "auto_cancel_duplicate_open_orders": auto_cancel_duplicate_open_orders,
         "capture_status": capture_summary.get("status") if isinstance(capture_summary, dict) else None,
@@ -1004,6 +1111,17 @@ def run_kalshi_micro_prior_trader(
                 enforce_daily_weather_live_only=enforce_daily_weather_live_only,
                 require_daily_weather_board_coverage_for_live=require_daily_weather_board_coverage_for_live,
                 daily_weather_board_max_age_seconds=max(0.0, float(daily_weather_board_max_age_seconds)),
+                climate_router_pilot_enabled=bool(climate_router_pilot_enabled),
+                climate_router_summary_json=climate_router_summary_json,
+                climate_router_pilot_max_orders_per_run=max(0, int(climate_router_pilot_max_orders_per_run)),
+                climate_router_pilot_contracts_cap=max(1, int(climate_router_pilot_contracts_cap)),
+                climate_router_pilot_required_ev_dollars=max(0.0, float(climate_router_pilot_required_ev_dollars)),
+                climate_router_pilot_allowed_classes=tuple(climate_router_pilot_allowed_classes or ()),
+                climate_router_pilot_allowed_families=tuple(climate_router_pilot_allowed_families or ()),
+                climate_router_pilot_excluded_families=tuple(climate_router_pilot_excluded_families or ()),
+                climate_router_pilot_policy_scope_override_enabled=bool(
+                    climate_router_pilot_policy_scope_override_enabled
+                ),
                 http_request_json=http_request_json,
                 http_get_json=http_get_json,
                 sign_request=sign_request,
@@ -1138,6 +1256,138 @@ def run_kalshi_micro_prior_trader(
                         if isinstance(prior_gate, dict)
                         and prior_gate.get("daily_weather_board_capture_fresh") is True
                         else 0
+                    ),
+                    "climate_router_pilot_status": execute_summary.get("climate_router_pilot_status"),
+                    "climate_router_pilot_reason": execute_summary.get("climate_router_pilot_reason"),
+                    "climate_router_pilot_summary_file": execute_summary.get("climate_router_pilot_summary_file"),
+                    "climate_router_pilot_selection_mode": execute_summary.get(
+                        "climate_router_pilot_selection_mode"
+                    ),
+                    "climate_router_pilot_summary_status": execute_summary.get(
+                        "climate_router_pilot_summary_status"
+                    ),
+                    "climate_router_pilot_considered_rows": execute_summary.get(
+                        "climate_router_pilot_considered_rows"
+                    ),
+                    "climate_router_pilot_promoted_rows": execute_summary.get(
+                        "climate_router_pilot_promoted_rows"
+                    ),
+                    "climate_router_pilot_submitted_rows": execute_summary.get(
+                        "climate_router_pilot_submitted_rows"
+                    ),
+                    "climate_router_pilot_expected_value_dollars": execute_summary.get(
+                        "climate_router_pilot_expected_value_dollars"
+                    ),
+                    "climate_router_pilot_blocked_reason_counts": execute_summary.get(
+                        "climate_router_pilot_blocked_reason_counts"
+                    ),
+                    "climate_router_pilot_selected_tickers": execute_summary.get(
+                        "climate_router_pilot_selected_tickers"
+                    ),
+                    "climate_router_pilot_execute_considered_rows": execute_summary.get(
+                        "climate_router_pilot_execute_considered_rows"
+                    ),
+                    "climate_router_pilot_live_mode_enabled": execute_summary.get(
+                        "climate_router_pilot_live_mode_enabled"
+                    ),
+                    "climate_router_pilot_live_eligible_rows": execute_summary.get(
+                        "climate_router_pilot_live_eligible_rows"
+                    ),
+                    "climate_router_pilot_would_attempt_live_if_enabled": execute_summary.get(
+                        "climate_router_pilot_would_attempt_live_if_enabled"
+                    ),
+                    "climate_router_pilot_blocked_dry_run_only_rows": execute_summary.get(
+                        "climate_router_pilot_blocked_dry_run_only_rows"
+                    ),
+                    "climate_router_pilot_blocked_research_dry_run_only_reason_counts": execute_summary.get(
+                        "climate_router_pilot_blocked_research_dry_run_only_reason_counts"
+                    ),
+                    "climate_router_pilot_non_policy_gates_passed_rows": execute_summary.get(
+                        "climate_router_pilot_non_policy_gates_passed_rows"
+                    ),
+                    "climate_router_pilot_attempted_orders": execute_summary.get(
+                        "climate_router_pilot_attempted_orders"
+                    ),
+                    "climate_router_pilot_acked_orders": execute_summary.get(
+                        "climate_router_pilot_acked_orders"
+                    ),
+                    "climate_router_pilot_resting_orders": execute_summary.get(
+                        "climate_router_pilot_resting_orders"
+                    ),
+                    "climate_router_pilot_filled_orders": execute_summary.get(
+                        "climate_router_pilot_filled_orders"
+                    ),
+                    "climate_router_pilot_blocked_post_promotion_reason_counts": execute_summary.get(
+                        "climate_router_pilot_blocked_post_promotion_reason_counts"
+                    ),
+                    "climate_router_pilot_blocked_frontier_insufficient_data": execute_summary.get(
+                        "climate_router_pilot_blocked_frontier_insufficient_data"
+                    ),
+                    "climate_router_pilot_blocked_balance": execute_summary.get(
+                        "climate_router_pilot_blocked_balance"
+                    ),
+                    "climate_router_pilot_blocked_board_stale": execute_summary.get(
+                        "climate_router_pilot_blocked_board_stale"
+                    ),
+                    "climate_router_pilot_blocked_weather_history": execute_summary.get(
+                        "climate_router_pilot_blocked_weather_history"
+                    ),
+                    "climate_router_pilot_blocked_duplicate_ticker": execute_summary.get(
+                        "climate_router_pilot_blocked_duplicate_ticker"
+                    ),
+                    "climate_router_pilot_blocked_no_orderable_side_on_recheck": execute_summary.get(
+                        "climate_router_pilot_blocked_no_orderable_side_on_recheck"
+                    ),
+                    "climate_router_pilot_blocked_ev_below_threshold": execute_summary.get(
+                        "climate_router_pilot_blocked_ev_below_threshold"
+                    ),
+                    "climate_router_pilot_blocked_research_dry_run_only": execute_summary.get(
+                        "climate_router_pilot_blocked_research_dry_run_only"
+                    ),
+                    "climate_router_pilot_blocked_live_disabled": execute_summary.get(
+                        "climate_router_pilot_blocked_live_disabled"
+                    ),
+                    "climate_router_pilot_blocked_policy_scope": execute_summary.get(
+                        "climate_router_pilot_blocked_policy_scope"
+                    ),
+                    "climate_router_pilot_blocked_family_filter": execute_summary.get(
+                        "climate_router_pilot_blocked_family_filter"
+                    ),
+                    "climate_router_pilot_blocked_contract_cap": execute_summary.get(
+                        "climate_router_pilot_blocked_contract_cap"
+                    ),
+                    "climate_router_pilot_frontier_bootstrap_submitted_attempts": execute_summary.get(
+                        "climate_router_pilot_frontier_bootstrap_submitted_attempts"
+                    ),
+                    "climate_router_pilot_frontier_bootstrap_blocked_attempts": execute_summary.get(
+                        "climate_router_pilot_frontier_bootstrap_blocked_attempts"
+                    ),
+                    "climate_router_pilot_allowed_families_effective": execute_summary.get(
+                        "climate_router_pilot_allowed_families_effective"
+                    ),
+                    "climate_router_pilot_excluded_families_effective": execute_summary.get(
+                        "climate_router_pilot_excluded_families_effective"
+                    ),
+                    "climate_router_pilot_policy_scope_override_active": execute_summary.get(
+                        "climate_router_pilot_policy_scope_override_active"
+                    ),
+                    "climate_router_pilot_policy_scope_override_status": execute_summary.get(
+                        "climate_router_pilot_policy_scope_override_status"
+                    ),
+                    "climate_router_pilot_policy_scope_override_gate_active": execute_summary.get(
+                        "climate_router_pilot_policy_scope_override_gate_active"
+                    ),
+                    "climate_router_pilot_policy_scope_override_applicable": execute_summary.get(
+                        "climate_router_pilot_policy_scope_override_applicable"
+                    ),
+                    "climate_router_pilot_policy_scope_override_attempts": execute_summary.get(
+                        "climate_router_pilot_policy_scope_override_attempts"
+                    ),
+                    "climate_router_pilot_policy_scope_override_submissions": execute_summary.get(
+                        "climate_router_pilot_policy_scope_override_submissions"
+                    ),
+                    "climate_router_pilot_policy_scope_override_blocked_reason_counts": execute_summary.get(
+                        "climate_router_pilot_policy_scope_override_blocked_reason_counts"
                     ),
                     "plan_weather_history_unhealthy_filtered": (
                         execute_summary.get("plan_weather_history_unhealthy_filtered")
@@ -1320,6 +1570,13 @@ def run_kalshi_micro_prior_trader(
                     {
                         "reconcile_status": reconcile_summary.get("status"),
                         "reconcile_summary_file": reconcile_summary.get("output_file"),
+                        "climate_router_pilot_reconcile_attempted_orders": reconcile_summary.get("pilot_attempted_orders"),
+                        "climate_router_pilot_reconcile_filled_orders": reconcile_summary.get("pilot_filled_orders"),
+                        "climate_router_pilot_reconcile_partial_fills": reconcile_summary.get("pilot_partial_fills"),
+                        "climate_router_pilot_markout_10s_dollars": reconcile_summary.get("pilot_markout_10s_dollars"),
+                        "climate_router_pilot_markout_60s_dollars": reconcile_summary.get("pilot_markout_60s_dollars"),
+                        "climate_router_pilot_markout_300s_dollars": reconcile_summary.get("pilot_markout_300s_dollars"),
+                        "climate_router_pilot_realized_pnl_dollars": reconcile_summary.get("pilot_realized_pnl_dollars"),
                         "post_live_markout_capture_attempted": capture_runs_total > 0,
                         "post_live_markout_capture_status": post_live_capture_status,
                         "post_live_markout_capture_error": post_live_capture_error,
@@ -1349,6 +1606,13 @@ def run_kalshi_micro_prior_trader(
                         ),
                         "post_live_markout_capture_summary_files": capture_summary_files,
                     }
+                )
+                pilot_expected_value = _parse_float(summary.get("climate_router_pilot_expected_value_dollars"))
+                pilot_realized_pnl = _parse_float(summary.get("climate_router_pilot_realized_pnl_dollars"))
+                summary["climate_router_pilot_expected_vs_realized_delta"] = (
+                    round(float(pilot_realized_pnl) - float(pilot_expected_value), 6)
+                    if isinstance(pilot_expected_value, float) and isinstance(pilot_realized_pnl, float)
+                    else None
                 )
                 execute_status = str(execute_summary.get("status") or "")
                 if execute_status == "dry_run":

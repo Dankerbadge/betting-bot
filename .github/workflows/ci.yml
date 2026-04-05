@@ -3,6 +3,14 @@ name: CI
 on:
   push:
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   check:
@@ -34,7 +42,12 @@ jobs:
         run: make install-dev
 
       - name: Run pre-commit hooks
+        env:
+          SKIP: end-of-file-fixer,trailing-whitespace
         run: make precommit-run
 
       - name: Run full quality gate
         run: make check
+
+      - name: Verify clean tree after quality gate
+        run: git diff --exit-code

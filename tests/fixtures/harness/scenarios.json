@@ -1,0 +1,61 @@
+{
+  "scenarios": [
+    {
+      "id": "all_healthy",
+      "expected_status": "ok",
+      "hard_required_sources": ["kalshi_market_data"],
+      "source_statuses": {
+        "kalshi_market_data": "ok",
+        "opticodds_consensus": "ok",
+        "therundown_mapping": "ok"
+      }
+    },
+    {
+      "id": "book_down_non_required",
+      "expected_status": "degraded",
+      "hard_required_sources": ["kalshi_market_data"],
+      "source_statuses": {
+        "kalshi_market_data": "ok",
+        "opticodds_consensus": "failed",
+        "therundown_mapping": "ok"
+      }
+    },
+    {
+      "id": "required_source_blocked",
+      "expected_status": "blocked",
+      "hard_required_sources": ["kalshi_market_data"],
+      "source_statuses": {
+        "kalshi_market_data": "blocked",
+        "opticodds_consensus": "ok"
+      }
+    },
+    {
+      "id": "stale_partial_mix",
+      "expected_status": "degraded",
+      "hard_required_sources": ["kalshi_market_data"],
+      "source_statuses": {
+        "kalshi_market_data": "ok",
+        "curated_news": "partial",
+        "opticodds_consensus": "degraded"
+      }
+    },
+    {
+      "id": "mapping_failure_required",
+      "expected_status": "blocked",
+      "hard_required_sources": ["therundown_mapping"],
+      "source_statuses": {
+        "kalshi_market_data": "ok",
+        "therundown_mapping": "failed"
+      }
+    },
+    {
+      "id": "missing_required_source",
+      "expected_status": "blocked",
+      "hard_required_sources": ["kalshi_market_data", "therundown_mapping"],
+      "source_statuses": {
+        "opticodds_consensus": "ok",
+        "therundown_mapping": "ok"
+      }
+    }
+  ]
+}

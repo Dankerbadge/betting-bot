@@ -540,6 +540,155 @@ class KalshiMicroPriorPlanTests(unittest.TestCase):
         self.assertEqual(plans[0]["market_ticker"], "KXMAKER-FIRST")
         self.assertEqual(plans[0]["side"], "no")
 
+    def test_build_micro_prior_plans_probability_first_lane_prefers_higher_fair_probability(self) -> None:
+        plans, _ = build_micro_prior_plans(
+            enriched_rows=[
+                {
+                    "market_ticker": "KXEDGE-FIRST",
+                    "market_title": "Higher edge, lower probability",
+                    "category": "Politics",
+                    "close_time": "2026-04-01T03:59:00Z",
+                    "hours_to_close": 36.0,
+                    "matched_live_market": True,
+                    "latest_yes_bid_dollars": 0.04,
+                    "latest_no_bid_dollars": 0.95,
+                    "fair_yes_probability": 0.10,
+                    "fair_yes_probability_conservative": 0.10,
+                    "fair_no_probability": 0.90,
+                    "fair_no_probability_conservative": 0.90,
+                    "confidence": 0.6,
+                    "thesis": "Large edge but low selected-side probability.",
+                },
+                {
+                    "market_ticker": "KXPROB-FIRST",
+                    "market_title": "Lower edge, higher probability",
+                    "category": "Politics",
+                    "close_time": "2026-04-01T03:59:00Z",
+                    "hours_to_close": 36.0,
+                    "matched_live_market": True,
+                    "latest_yes_bid_dollars": 0.70,
+                    "latest_no_bid_dollars": 0.20,
+                    "fair_yes_probability": 0.75,
+                    "fair_yes_probability_conservative": 0.75,
+                    "fair_no_probability": 0.25,
+                    "fair_no_probability_conservative": 0.25,
+                    "confidence": 0.6,
+                    "thesis": "Slightly smaller edge but much higher selected-side probability.",
+                },
+            ],
+            planning_bankroll_dollars=40.0,
+            daily_risk_cap_dollars=3.0,
+            contracts_per_order=1,
+            max_orders=2,
+            min_maker_edge=0.005,
+            selection_lane="probability_first",
+            max_entry_price_dollars=0.99,
+        )
+
+        self.assertEqual(len(plans), 2)
+        self.assertEqual(plans[0]["market_ticker"], "KXPROB-FIRST")
+        self.assertEqual(plans[0]["selection_lane"], "probability_first")
+
+    def test_build_micro_prior_plans_kelly_unified_lane_prefers_higher_kelly_used(self) -> None:
+        plans, _ = build_micro_prior_plans(
+            enriched_rows=[
+                {
+                    "market_ticker": "KXKELLY-A",
+                    "market_title": "Moderate Kelly candidate",
+                    "category": "Politics",
+                    "close_time": "2026-04-01T03:59:00Z",
+                    "hours_to_close": 36.0,
+                    "matched_live_market": True,
+                    "latest_yes_bid_dollars": 0.18,
+                    "latest_no_bid_dollars": 0.80,
+                    "fair_yes_probability": 0.25,
+                    "fair_yes_probability_conservative": 0.25,
+                    "fair_no_probability": 0.75,
+                    "fair_no_probability_conservative": 0.75,
+                    "confidence": 0.7,
+                    "thesis": "Moderate Kelly lane stake.",
+                },
+                {
+                    "market_ticker": "KXKELLY-B",
+                    "market_title": "High Kelly candidate",
+                    "category": "Politics",
+                    "close_time": "2026-04-01T03:59:00Z",
+                    "hours_to_close": 36.0,
+                    "matched_live_market": True,
+                    "latest_yes_bid_dollars": 0.05,
+                    "latest_no_bid_dollars": 0.94,
+                    "fair_yes_probability": 0.03,
+                    "fair_yes_probability_conservative": 0.03,
+                    "fair_no_probability": 0.97,
+                    "fair_no_probability_conservative": 0.97,
+                    "confidence": 0.7,
+                    "thesis": "Compressed payout, larger Kelly fraction.",
+                },
+            ],
+            planning_bankroll_dollars=100.0,
+            daily_risk_cap_dollars=20.0,
+            contracts_per_order=1,
+            max_orders=2,
+            min_maker_edge=0.005,
+            selection_lane="kelly_unified",
+            max_entry_price_dollars=0.99,
+        )
+
+        self.assertEqual(len(plans), 2)
+        self.assertEqual(plans[0]["market_ticker"], "KXKELLY-B")
+        self.assertEqual(plans[0]["selection_lane"], "kelly_unified")
+        self.assertGreater(float(plans[0]["kelly_used"]), float(plans[1]["kelly_used"]))
+        self.assertTrue(float(plans[0]["kelly_dollar"]) > 0.0)
+
+    def test_build_micro_prior_plans_can_gate_selected_side_fair_probability(self) -> None:
+        plans, skip_counts = build_micro_prior_plans(
+            enriched_rows=[
+                {
+                    "market_ticker": "KXLOWPROB",
+                    "market_title": "Low probability high edge",
+                    "category": "Politics",
+                    "close_time": "2026-04-01T03:59:00Z",
+                    "hours_to_close": 24.0,
+                    "matched_live_market": True,
+                    "latest_yes_bid_dollars": 0.06,
+                    "latest_no_bid_dollars": 0.95,
+                    "fair_yes_probability": 0.12,
+                    "fair_yes_probability_conservative": 0.12,
+                    "fair_no_probability": 0.88,
+                    "fair_no_probability_conservative": 0.88,
+                    "confidence": 0.6,
+                    "thesis": "Should be filtered by probability gate.",
+                },
+                {
+                    "market_ticker": "KXHIGHPROB",
+                    "market_title": "High probability passing edge",
+                    "category": "Politics",
+                    "close_time": "2026-04-01T03:59:00Z",
+                    "hours_to_close": 24.0,
+                    "matched_live_market": True,
+                    "latest_yes_bid_dollars": 0.70,
+                    "latest_no_bid_dollars": 0.22,
+                    "fair_yes_probability": 0.74,
+                    "fair_yes_probability_conservative": 0.74,
+                    "fair_no_probability": 0.26,
+                    "fair_no_probability_conservative": 0.26,
+                    "confidence": 0.6,
+                    "thesis": "Should pass probability gate.",
+                },
+            ],
+            planning_bankroll_dollars=40.0,
+            daily_risk_cap_dollars=3.0,
+            contracts_per_order=1,
+            max_orders=2,
+            min_maker_edge=0.005,
+            max_entry_price_dollars=0.99,
+            min_selected_fair_probability=0.60,
+        )
+
+        self.assertEqual(len(plans), 1)
+        self.assertEqual(plans[0]["market_ticker"], "KXHIGHPROB")
+        self.assertEqual(skip_counts["selected_fair_probability_below_min"], 1)
+
     def test_build_micro_prior_plans_gates_on_conservative_probability(self) -> None:
         plans, skip_counts = build_micro_prior_plans(
             enriched_rows=[

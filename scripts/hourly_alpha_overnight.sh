@@ -15,6 +15,12 @@ export BETBOT_WEATHER_CACHE_MAX_AGE_HOURS="${BETBOT_WEATHER_CACHE_MAX_AGE_HOURS:
 export BETBOT_WEATHER_PRIOR_MAX_AGE_HOURS="${BETBOT_WEATHER_PRIOR_MAX_AGE_HOURS:-6}"
 export BETBOT_WEATHER_PRIOR_MAX_MARKETS="${BETBOT_WEATHER_PRIOR_MAX_MARKETS:-30}"
 export BETBOT_WEATHER_ALLOWED_CONTRACT_FAMILIES="${BETBOT_WEATHER_ALLOWED_CONTRACT_FAMILIES:-daily_rain,daily_temperature}"
+export BETBOT_WEATHER_INCLUDE_NWS_GRIDPOINT_DATA="${BETBOT_WEATHER_INCLUDE_NWS_GRIDPOINT_DATA:-1}"
+export BETBOT_WEATHER_INCLUDE_NWS_OBSERVATIONS="${BETBOT_WEATHER_INCLUDE_NWS_OBSERVATIONS:-1}"
+export BETBOT_WEATHER_INCLUDE_NWS_ALERTS="${BETBOT_WEATHER_INCLUDE_NWS_ALERTS:-1}"
+export BETBOT_WEATHER_INCLUDE_NCEI_NORMALS="${BETBOT_WEATHER_INCLUDE_NCEI_NORMALS:-1}"
+export BETBOT_WEATHER_INCLUDE_MRMS_QPE="${BETBOT_WEATHER_INCLUDE_MRMS_QPE:-1}"
+export BETBOT_WEATHER_INCLUDE_NBM_SNAPSHOT="${BETBOT_WEATHER_INCLUDE_NBM_SNAPSHOT:-1}"
 export BETBOT_WEATHER_CDO_TOKEN_FILE="${BETBOT_WEATHER_CDO_TOKEN_FILE:-$REPO_ROOT/.secrets/noaa_cdo_token.txt}"
 export BETBOT_TIMEOUT_SECONDS="${BETBOT_TIMEOUT_SECONDS:-15}"
 export BETBOT_CAPTURE_MAX_HOURS_TO_CLOSE="${BETBOT_CAPTURE_MAX_HOURS_TO_CLOSE:-4000}"
@@ -43,6 +49,56 @@ export BETBOT_DAILY_WEATHER_WAKEUP_REPRIORITIZE_ENABLED="${BETBOT_DAILY_WEATHER_
 export BETBOT_DAILY_WEATHER_RECOVERY_ALERT_WINDOW_HOURS="${BETBOT_DAILY_WEATHER_RECOVERY_ALERT_WINDOW_HOURS:-6}"
 export BETBOT_DAILY_WEATHER_RECOVERY_ALERT_THRESHOLD="${BETBOT_DAILY_WEATHER_RECOVERY_ALERT_THRESHOLD:-3}"
 export BETBOT_DAILY_WEATHER_RECOVERY_ALERT_MAX_EVENTS="${BETBOT_DAILY_WEATHER_RECOVERY_ALERT_MAX_EVENTS:-500}"
+export BETBOT_DAILY_WEATHER_AVAILABILITY_LOOKBACK_DAYS="${BETBOT_DAILY_WEATHER_AVAILABILITY_LOOKBACK_DAYS:-7}"
+export BETBOT_CLIMATE_ROUTER_ENABLED="${BETBOT_CLIMATE_ROUTER_ENABLED:-1}"
+export BETBOT_CLIMATE_ROUTER_SKIP_REALTIME_COLLECT="${BETBOT_CLIMATE_ROUTER_SKIP_REALTIME_COLLECT:-0}"
+export BETBOT_CLIMATE_ROUTER_RUN_SECONDS="${BETBOT_CLIMATE_ROUTER_RUN_SECONDS:-20}"
+export BETBOT_CLIMATE_ROUTER_MAX_MARKETS="${BETBOT_CLIMATE_ROUTER_MAX_MARKETS:-40}"
+export BETBOT_CLIMATE_ROUTER_MARKET_TICKERS="${BETBOT_CLIMATE_ROUTER_MARKET_TICKERS:-}"
+export BETBOT_CLIMATE_ROUTER_WS_CHANNELS="${BETBOT_CLIMATE_ROUTER_WS_CHANNELS:-orderbook_snapshot,orderbook_delta,ticker,public_trades,user_fills,market_positions}"
+export BETBOT_CLIMATE_ROUTER_SEED_RECENT_MARKETS="${BETBOT_CLIMATE_ROUTER_SEED_RECENT_MARKETS:-1}"
+export BETBOT_CLIMATE_ROUTER_RECENT_MARKETS_MIN_UPDATED_SECONDS="${BETBOT_CLIMATE_ROUTER_RECENT_MARKETS_MIN_UPDATED_SECONDS:-900}"
+export BETBOT_CLIMATE_ROUTER_RECENT_MARKETS_TIMEOUT_SECONDS="${BETBOT_CLIMATE_ROUTER_RECENT_MARKETS_TIMEOUT_SECONDS:-8}"
+export BETBOT_CLIMATE_ROUTER_WS_STATE_MAX_AGE_SECONDS="${BETBOT_CLIMATE_ROUTER_WS_STATE_MAX_AGE_SECONDS:-30}"
+export BETBOT_CLIMATE_ROUTER_MIN_THEORETICAL_EDGE_NET_FEES="${BETBOT_CLIMATE_ROUTER_MIN_THEORETICAL_EDGE_NET_FEES:-0.005}"
+export BETBOT_CLIMATE_ROUTER_MAX_QUOTE_AGE_SECONDS="${BETBOT_CLIMATE_ROUTER_MAX_QUOTE_AGE_SECONDS:-900}"
+export BETBOT_CLIMATE_ROUTER_PLANNING_BANKROLL_DOLLARS="${BETBOT_CLIMATE_ROUTER_PLANNING_BANKROLL_DOLLARS:-40}"
+export BETBOT_CLIMATE_ROUTER_DAILY_RISK_CAP_DOLLARS="${BETBOT_CLIMATE_ROUTER_DAILY_RISK_CAP_DOLLARS:-3}"
+export BETBOT_CLIMATE_ROUTER_MAX_RISK_PER_BET_DOLLARS="${BETBOT_CLIMATE_ROUTER_MAX_RISK_PER_BET_DOLLARS:-1}"
+export BETBOT_CLIMATE_ROUTER_AVAILABILITY_LOOKBACK_DAYS="${BETBOT_CLIMATE_ROUTER_AVAILABILITY_LOOKBACK_DAYS:-7}"
+export BETBOT_CLIMATE_ROUTER_AVAILABILITY_RECENT_SECONDS="${BETBOT_CLIMATE_ROUTER_AVAILABILITY_RECENT_SECONDS:-900}"
+export BETBOT_CLIMATE_ROUTER_AVAILABILITY_HOT_TRADE_WINDOW_SECONDS="${BETBOT_CLIMATE_ROUTER_AVAILABILITY_HOT_TRADE_WINDOW_SECONDS:-300}"
+export BETBOT_CLIMATE_ROUTER_INCLUDE_CONTRACT_FAMILIES="${BETBOT_CLIMATE_ROUTER_INCLUDE_CONTRACT_FAMILIES:-daily_rain,daily_temperature,daily_snow,monthly_climate_anomaly}"
+export BETBOT_CLIMATE_ROUTER_AVAILABILITY_DB_PATH="${BETBOT_CLIMATE_ROUTER_AVAILABILITY_DB_PATH:-$BETBOT_OUTPUT_DIR/kalshi_climate_availability.sqlite3}"
+export BETBOT_CLIMATE_ROUTER_PILOT_ENABLED="${BETBOT_CLIMATE_ROUTER_PILOT_ENABLED:-1}"
+export BETBOT_CLIMATE_ROUTER_PILOT_SUMMARY_JSON="${BETBOT_CLIMATE_ROUTER_PILOT_SUMMARY_JSON:-}"
+export BETBOT_CLIMATE_ROUTER_PILOT_MAX_ORDERS_PER_RUN="${BETBOT_CLIMATE_ROUTER_PILOT_MAX_ORDERS_PER_RUN:-1}"
+export BETBOT_CLIMATE_ROUTER_PILOT_CONTRACTS_CAP="${BETBOT_CLIMATE_ROUTER_PILOT_CONTRACTS_CAP:-1}"
+export BETBOT_CLIMATE_ROUTER_PILOT_REQUIRED_EV_DOLLARS="${BETBOT_CLIMATE_ROUTER_PILOT_REQUIRED_EV_DOLLARS:-0.05}"
+export BETBOT_CLIMATE_ROUTER_PILOT_ALLOWED_CLASSES="${BETBOT_CLIMATE_ROUTER_PILOT_ALLOWED_CLASSES:-tradable}"
+export BETBOT_CLIMATE_ROUTER_PILOT_ALLOWED_FAMILIES="${BETBOT_CLIMATE_ROUTER_PILOT_ALLOWED_FAMILIES:-}"
+export BETBOT_CLIMATE_ROUTER_PILOT_EXCLUDED_FAMILIES="${BETBOT_CLIMATE_ROUTER_PILOT_EXCLUDED_FAMILIES:-}"
+export BETBOT_CLIMATE_ROUTER_PILOT_DEDUP_TICKERS="${BETBOT_CLIMATE_ROUTER_PILOT_DEDUP_TICKERS:-1}"
+export BETBOT_CLIMATE_ROUTER_PILOT_POLICY_SCOPE_OVERRIDE_ENABLED="${BETBOT_CLIMATE_ROUTER_PILOT_POLICY_SCOPE_OVERRIDE_ENABLED:-1}"
+export BETBOT_DISABLE_DAILY_WEATHER_LIVE_ONLY="${BETBOT_DISABLE_DAILY_WEATHER_LIVE_ONLY:-0}"
+export BETBOT_SHADOW_BANKROLL_ENABLED="${BETBOT_SHADOW_BANKROLL_ENABLED:-1}"
+export BETBOT_SHADOW_BANKROLL_START_DOLLARS="${BETBOT_SHADOW_BANKROLL_START_DOLLARS:-1000}"
+export BETBOT_SHADOW_BANKROLL_STATE_FILE="${BETBOT_SHADOW_BANKROLL_STATE_FILE:-$BETBOT_OUTPUT_DIR/overnight_alpha/shadow_bankroll_state.json}"
+export BETBOT_PAPER_LIVE_ENABLED="${BETBOT_PAPER_LIVE_ENABLED:-1}"
+export BETBOT_PAPER_LIVE_START_DOLLARS="${BETBOT_PAPER_LIVE_START_DOLLARS:-$BETBOT_SHADOW_BANKROLL_START_DOLLARS}"
+export BETBOT_PAPER_LIVE_STATE_FILE="${BETBOT_PAPER_LIVE_STATE_FILE:-$BETBOT_OUTPUT_DIR/overnight_alpha/paper_live_account_state.json}"
+export BETBOT_PAPER_LIVE_RISK_PROFILE="${BETBOT_PAPER_LIVE_RISK_PROFILE:-growth_aggressive}"
+export BETBOT_PAPER_LIVE_KELLY_FRACTION="${BETBOT_PAPER_LIVE_KELLY_FRACTION:-0.5}"
+export BETBOT_PAPER_LIVE_KELLY_HIGH_CONF_MAX="${BETBOT_PAPER_LIVE_KELLY_HIGH_CONF_MAX:-0.75}"
+export BETBOT_PAPER_LIVE_MAX_OPEN_RISK_PCT="${BETBOT_PAPER_LIVE_MAX_OPEN_RISK_PCT:-0.25}"
+export BETBOT_PAPER_LIVE_MAX_FAMILY_RISK_PCT="${BETBOT_PAPER_LIVE_MAX_FAMILY_RISK_PCT:-0.15}"
+export BETBOT_PAPER_LIVE_MAX_STRIP_RISK_PCT="${BETBOT_PAPER_LIVE_MAX_STRIP_RISK_PCT:-0.08}"
+export BETBOT_PAPER_LIVE_MAX_SINGLE_POSITION_RISK_PCT="${BETBOT_PAPER_LIVE_MAX_SINGLE_POSITION_RISK_PCT:-0.06}"
+export BETBOT_PAPER_LIVE_MAX_NEW_ATTEMPTS_PER_RUN="${BETBOT_PAPER_LIVE_MAX_NEW_ATTEMPTS_PER_RUN:-8}"
+export BETBOT_PAPER_LIVE_FAMILY_ALLOWLIST="${BETBOT_PAPER_LIVE_FAMILY_ALLOWLIST:-monthly_climate_anomaly}"
+export BETBOT_PAPER_LIVE_ALLOW_RANDOM_CANCELS="${BETBOT_PAPER_LIVE_ALLOW_RANDOM_CANCELS:-0}"
+export BETBOT_PAPER_LIVE_SIZE_FROM_CURRENT_EQUITY="${BETBOT_PAPER_LIVE_SIZE_FROM_CURRENT_EQUITY:-1}"
+export BETBOT_PAPER_LIVE_REQUIRE_LIVE_ELIGIBLE_HINT="${BETBOT_PAPER_LIVE_REQUIRE_LIVE_ELIGIBLE_HINT:-0}"
 export BETBOT_MIN_SECONDS_BETWEEN_RUNS="${BETBOT_MIN_SECONDS_BETWEEN_RUNS:-2700}"
 
 RUN_ROOT="$BETBOT_OUTPUT_DIR/overnight_alpha"
@@ -67,16 +123,159 @@ captured_at = datetime.now(timezone.utc).isoformat()
 run_started_dt = datetime.now(timezone.utc)
 output_dir = Path(os.environ["BETBOT_OUTPUT_DIR"])
 run_root = output_dir / "overnight_alpha"
+shadow_start_dollars = float(os.environ.get("BETBOT_SHADOW_BANKROLL_START_DOLLARS", "1000") or 1000.0)
+shadow_start_text = f"{max(0.0, shadow_start_dollars):.4f}".rstrip("0").rstrip(".") or "0"
+paper_live_enabled = str(os.environ.get("BETBOT_PAPER_LIVE_ENABLED", "1")).strip().lower() not in {
+    "0",
+    "false",
+    "no",
+    "off",
+}
+paper_live_start_dollars = float(
+    os.environ.get("BETBOT_PAPER_LIVE_START_DOLLARS", str(shadow_start_dollars)) or shadow_start_dollars
+)
+paper_live_state_file = str(os.environ.get("BETBOT_PAPER_LIVE_STATE_FILE") or "").strip() or None
+paper_live_risk_profile = str(os.environ.get("BETBOT_PAPER_LIVE_RISK_PROFILE", "growth_aggressive") or "growth_aggressive").strip()
+paper_live_kelly_fraction = float(os.environ.get("BETBOT_PAPER_LIVE_KELLY_FRACTION", "0.5") or 0.5)
+paper_live_kelly_high_conf_max = float(os.environ.get("BETBOT_PAPER_LIVE_KELLY_HIGH_CONF_MAX", "0.75") or 0.75)
+paper_live_max_open_risk_pct = float(os.environ.get("BETBOT_PAPER_LIVE_MAX_OPEN_RISK_PCT", "0.25") or 0.25)
+paper_live_max_family_risk_pct = float(os.environ.get("BETBOT_PAPER_LIVE_MAX_FAMILY_RISK_PCT", "0.15") or 0.15)
+paper_live_max_strip_risk_pct = float(os.environ.get("BETBOT_PAPER_LIVE_MAX_STRIP_RISK_PCT", "0.08") or 0.08)
+paper_live_max_single_position_risk_pct = float(
+    os.environ.get("BETBOT_PAPER_LIVE_MAX_SINGLE_POSITION_RISK_PCT", "0.06") or 0.06
+)
+paper_live_max_new_attempts_per_run = int(
+    float(os.environ.get("BETBOT_PAPER_LIVE_MAX_NEW_ATTEMPTS_PER_RUN", "8") or 8)
+)
+paper_live_family_allowlist = [
+    value.strip().lower()
+    for value in str(os.environ.get("BETBOT_PAPER_LIVE_FAMILY_ALLOWLIST", "monthly_climate_anomaly") or "").split(",")
+    if value.strip()
+]
+paper_live_allow_random_cancels = str(
+    os.environ.get("BETBOT_PAPER_LIVE_ALLOW_RANDOM_CANCELS", "0")
+).strip().lower() not in {"0", "false", "no", "off"}
+paper_live_size_from_current_equity = str(
+    os.environ.get("BETBOT_PAPER_LIVE_SIZE_FROM_CURRENT_EQUITY", "1")
+).strip().lower() not in {"0", "false", "no", "off"}
+paper_live_require_live_eligible_hint = str(
+    os.environ.get("BETBOT_PAPER_LIVE_REQUIRE_LIVE_ELIGIBLE_HINT", "0")
+).strip().lower() not in {"0", "false", "no", "off"}
 payload = {
     "run_id": f"hourly_alpha_overnight::{run_started_dt.strftime('%Y%m%d_%H%M%S_%f')[:-3]}",
     "run_started_at_utc": captured_at,
     "run_finished_at_utc": captured_at,
     "run_stamp_utc": datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S"),
     "mode": "research_dry_run_only",
+    "sizing_basis": f"shadow_{shadow_start_text}",
+    "execution_basis": "live_actual_balance",
     "overall_status": "skipped_locked",
     "pipeline_ready": False,
     "live_ready": False,
     "live_blockers": ["scheduler_lock_held"],
+    "shadow_bankroll_enabled": str(os.environ.get("BETBOT_SHADOW_BANKROLL_ENABLED", "1")).strip().lower()
+    not in {"0", "false", "no", "off"},
+    "shadow_bankroll_state_file": str(os.environ.get("BETBOT_SHADOW_BANKROLL_STATE_FILE") or ""),
+    "shadow_bankroll_status": "observer_not_run",
+    "shadow_bankroll_reason": "scheduler_lock_held",
+    "shadow_bankroll_last_updated_at_utc": None,
+    "shadow_bankroll_state_write_error": None,
+    "shadow_bankroll_start_dollars": shadow_start_dollars,
+    "shadow_theoretical_value_dollars": shadow_start_dollars,
+    "shadow_realized_pnl_dollars": 0.0,
+    "shadow_theoretical_unrealized_ev_dollars": 0.0,
+    "shadow_theoretical_drawdown_pct": 0.0,
+    "shadow_allocator_total_risk_dollars": 0.0,
+    "shadow_allocator_selected_rows": 0,
+    "shadow_expected_value_dollars": 0.0,
+    "paper_live_enabled": paper_live_enabled,
+    "paper_live_status": "observer_not_run",
+    "paper_live_reason": "scheduler_lock_held",
+    "paper_live_execution_basis": "paper_live_balance",
+    "paper_live_risk_profile": paper_live_risk_profile,
+    "paper_live_kelly_fraction": round(max(0.0, paper_live_kelly_fraction), 4),
+    "paper_live_kelly_high_conf_max": round(max(0.0, paper_live_kelly_high_conf_max), 4),
+    "paper_live_max_open_risk_pct": round(max(0.0, paper_live_max_open_risk_pct), 4),
+    "paper_live_max_family_risk_pct": round(max(0.0, paper_live_max_family_risk_pct), 4),
+    "paper_live_max_strip_risk_pct": round(max(0.0, paper_live_max_strip_risk_pct), 4),
+    "paper_live_max_single_position_risk_pct": round(max(0.0, paper_live_max_single_position_risk_pct), 4),
+    "paper_live_max_new_attempts_per_run": max(1, paper_live_max_new_attempts_per_run),
+    "paper_live_family_allowlist": paper_live_family_allowlist,
+    "paper_live_allow_random_cancels": paper_live_allow_random_cancels,
+    "paper_live_size_from_current_equity": paper_live_size_from_current_equity,
+    "paper_live_require_live_eligible_hint": paper_live_require_live_eligible_hint,
+    "paper_live_state_file": paper_live_state_file,
+    "paper_live_balance_start_dollars": paper_live_start_dollars,
+    "paper_live_balance_current_dollars": paper_live_start_dollars,
+    "paper_live_sizing_balance_dollars": paper_live_start_dollars,
+    "paper_live_post_trade_sizing_balance_dollars": paper_live_start_dollars,
+    "paper_live_strategy_equity_dollars": paper_live_start_dollars,
+    "paper_live_realized_trade_pnl_dollars": 0.0,
+    "paper_live_mark_to_market_pnl_dollars": 0.0,
+    "paper_live_drawdown_pct": 0.0,
+    "paper_live_strategy_drawdown_pct": 0.0,
+    "paper_live_positions_open_count": 0,
+    "paper_live_positions_closed_count": 0,
+    "paper_live_positions_open": [],
+    "paper_live_positions_closed": [],
+    "paper_live_order_attempts": 0,
+    "paper_live_orders_resting": 0,
+    "paper_live_orders_filled": 0,
+    "paper_live_orders_partial_filled": 0,
+    "paper_live_orders_canceled": 0,
+    "paper_live_orders_expired": 0,
+    "paper_live_fill_time_seconds": None,
+    "paper_live_markout_10s_dollars": 0.0,
+    "paper_live_markout_10s": 0.0,
+    "paper_live_markout_60s_dollars": 0.0,
+    "paper_live_markout_60s": 0.0,
+    "paper_live_markout_300s_dollars": 0.0,
+    "paper_live_markout_300s": 0.0,
+    "paper_live_settlement_pnl_dollars": 0.0,
+    "paper_live_expected_vs_realized_delta": 0.0,
+    "paper_live_family_scorecards": [],
+    "paper_live_ticker_scorecards": [],
+    "paper_live_top_negative_markout_families": [],
+    "paper_live_top_positive_markout_families": [],
+    "paper_live_top_expected_vs_realized_deltas": [],
+    "paper_live_monthly_climate_anomaly_scorecard": None,
+    "paper_live_monthly_climate_anomaly_trend": None,
+    "paper_live_monthly_climate_anomaly_trend_band": "anecdotal",
+    "paper_live_open_risk_dollars": 0.0,
+    "paper_live_open_risk_cap_dollars": 0.0,
+    "paper_live_open_risk_remaining_dollars": 0.0,
+    "paper_live_family_open_risk_dollars": {},
+    "paper_live_family_open_risk_remaining_dollars": {},
+    "paper_live_strip_open_risk_dollars": {},
+    "paper_live_strip_open_risk_remaining_dollars": {},
+    "paper_live_family_execution_state": {},
+    "paper_live_ticker_execution_state": {},
+    "paper_live_family_mtm_per_risk_pct": {},
+    "paper_live_ticker_mtm_per_risk_pct": {},
+    "paper_live_family_markout_300s_mean_dollars": {},
+    "paper_live_ticker_markout_300s_mean_dollars": {},
+    "paper_live_family_markout_300s_mean_per_contract_dollars": {},
+    "paper_live_ticker_markout_300s_mean_per_contract_dollars": {},
+    "paper_live_family_markout_300s_per_risk_pct": {},
+    "paper_live_ticker_markout_300s_per_risk_pct": {},
+    "paper_live_family_markout_300s_per_contract": {},
+    "paper_live_ticker_markout_300s_per_contract": {},
+    "paper_live_family_fill_rate": {},
+    "paper_live_ticker_fill_rate": {},
+    "paper_live_family_cancel_rate": {},
+    "paper_live_ticker_cancel_rate": {},
+    "paper_live_family_risk_multiplier": {},
+    "paper_live_ticker_risk_multiplier": {},
+    "paper_live_drawdown_throttle_state": "full",
+    "paper_live_drawdown_risk_scale": 1.0,
+    "paper_live_used_kelly_fraction": 0.0,
+    "paper_live_avg_kelly_fraction_used": 0.0,
+    "paper_live_run_attempt_limit": max(1, paper_live_max_new_attempts_per_run),
+    "paper_live_selected_tickers": [],
+    "paper_live_equity_curve": [],
+    "paper_live_last_updated_at_utc": None,
+    "paper_live_accounting_version": 1,
+    "paper_live_source": "synthetic_paper_live",
     "balance_heartbeat": {
         "status": "not_run",
         "live_ready": False,
@@ -109,6 +308,58 @@ payload = {
     "probe_reason": None,
     "prior_trade_gate_status": None,
     "prior_trade_gate_blockers": None,
+    "lane_comparison": {
+        "status": "not_run",
+        "reason": "skipped_locked",
+        "comparison_basis": "same_snapshot_same_filters",
+        "executed_lane": "maker_edge",
+        "fully_frozen": False,
+        "snapshot_inputs": {},
+        "maker_edge": {
+            "picked_ticker": None,
+            "picked_side": None,
+            "selected_fair_probability": None,
+            "selected_fair_probability_conservative": None,
+            "maker_entry_edge": None,
+            "maker_entry_edge_net_fees": None,
+            "expected_value_dollars": None,
+            "expected_value_per_cost": None,
+            "estimated_entry_cost_dollars": None,
+            "estimated_max_loss_dollars": None,
+            "estimated_max_profit_dollars": None,
+            "expected_value_per_max_loss": None,
+            "gate_status": None,
+            "gate_blockers": None,
+            "summary_file": None,
+        },
+        "probability_first": {
+            "picked_ticker": None,
+            "picked_side": None,
+            "selected_fair_probability": None,
+            "selected_fair_probability_conservative": None,
+            "maker_entry_edge": None,
+            "maker_entry_edge_net_fees": None,
+            "expected_value_dollars": None,
+            "expected_value_per_cost": None,
+            "estimated_entry_cost_dollars": None,
+            "estimated_max_loss_dollars": None,
+            "estimated_max_profit_dollars": None,
+            "expected_value_per_max_loss": None,
+            "gate_status": None,
+            "gate_blockers": None,
+            "summary_file": None,
+        },
+        "delta": {
+            "same_pick": None,
+            "selected_fair_probability_delta": None,
+            "maker_entry_edge_delta": None,
+            "expected_value_dollars_delta": None,
+            "expected_value_per_cost_delta": None,
+            "estimated_max_loss_dollars_delta": None,
+            "expected_value_per_max_loss_delta": None,
+        },
+        "errors": [],
+    },
     "no_candidates_diagnostics": None,
     "probe_policy": {
         "enable_untrusted_bucket_probe_exploration": None,
@@ -160,11 +411,13 @@ python3 - <<'PY'
 from __future__ import annotations
 
 import csv
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+import hashlib
 import json
 import math
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -414,6 +667,81 @@ def _file_meta(path: Path) -> dict[str, Any]:
         "age_seconds": round(age, 3),
         "size_bytes": int(path.stat().st_size),
     }
+
+
+def _file_sha256(path: Path) -> str | None:
+    try:
+        hasher = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                if not chunk:
+                    break
+                hasher.update(chunk)
+        return hasher.hexdigest()
+    except OSError:
+        return None
+
+
+def _snapshot_lane_input_artifact(
+    *,
+    artifact_name: str,
+    source_path: Path | None,
+    snapshot_dir: Path,
+    snapshot_filename: str,
+    required_for_run: bool,
+    errors: list[str],
+    missing_error_key: str,
+    copy_error_prefix: str,
+) -> tuple[Path | None, dict[str, Any]]:
+    source = source_path if isinstance(source_path, Path) else None
+    snapshot_path = snapshot_dir / snapshot_filename
+    info: dict[str, Any] = {
+        "artifact": artifact_name,
+        "required_for_run": bool(required_for_run),
+        "used_snapshot": False,
+        "frozen": False,
+        "source_path": str(source) if isinstance(source, Path) else None,
+        "snapshot_path": str(snapshot_path),
+        "source_exists": bool(source.exists()) if isinstance(source, Path) else False,
+        "snapshot_exists": False,
+        "source_size_bytes": int(source.stat().st_size) if isinstance(source, Path) and source.exists() else None,
+        "snapshot_size_bytes": None,
+        "source_sha256": None,
+        "snapshot_sha256": None,
+        "sha256": None,
+        "error": None,
+    }
+    if not isinstance(source, Path) or not source.exists():
+        if required_for_run:
+            errors.append(missing_error_key)
+            info["error"] = "missing_source"
+        return source if isinstance(source, Path) and source.exists() else None, info
+
+    try:
+        snapshot_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, snapshot_path)
+    except Exception as exc:  # pragma: no cover - observer-only hardening
+        errors.append(f"{copy_error_prefix}:{exc}")
+        info["error"] = f"copy_failed:{exc}"
+        return source, info
+
+    info["snapshot_exists"] = snapshot_path.exists()
+    if snapshot_path.exists():
+        info["snapshot_size_bytes"] = int(snapshot_path.stat().st_size)
+    source_sha = _file_sha256(source)
+    snapshot_sha = _file_sha256(snapshot_path) if snapshot_path.exists() else None
+    info["source_sha256"] = source_sha
+    info["snapshot_sha256"] = snapshot_sha
+    info["sha256"] = snapshot_sha or source_sha
+    if source_sha and snapshot_sha and source_sha == snapshot_sha:
+        info["frozen"] = True
+        info["used_snapshot"] = True
+        return snapshot_path, info
+
+    if required_for_run:
+        errors.append(f"{copy_error_prefix}:hash_mismatch_or_unreadable")
+        info["error"] = "hash_mismatch_or_unreadable"
+    return source, info
 
 
 def _choose_betbot_launcher(repo_root: Path) -> list[str]:
@@ -1883,6 +2211,11 @@ def _run_step(
             step["manual_rows_protected"] = parsed.get("manual_rows_protected")
             step["contract_family_generated_counts"] = parsed.get("contract_family_generated_counts")
             step["station_history_status_counts"] = parsed.get("station_history_status_counts")
+            step["station_normals_cache_entries"] = parsed.get("station_normals_cache_entries")
+            step["mrms_snapshot_status"] = parsed.get("mrms_snapshot_status")
+            step["mrms_snapshot_age_seconds"] = parsed.get("mrms_snapshot_age_seconds")
+            step["nbm_snapshot_status"] = parsed.get("nbm_snapshot_status")
+            step["nbm_snapshot_cycle_age_seconds"] = parsed.get("nbm_snapshot_cycle_age_seconds")
             step["top_market_ticker"] = parsed.get("top_market_ticker")
             step["top_market_confidence"] = parsed.get("top_market_confidence")
         elif name == "prior_plan_wakeup_reprioritize":
@@ -1948,6 +2281,61 @@ def _run_step(
             step["frontier_artifact_as_of_utc"] = parsed.get("frontier_artifact_as_of_utc")
             step["frontier_artifact_age_seconds"] = parsed.get("frontier_artifact_age_seconds")
             step["frontier_selection_mode"] = parsed.get("frontier_selection_mode")
+        elif name == "climate_realtime_router":
+            step["ws_collect_status"] = parsed.get("ws_collect_status")
+            step["ws_channels"] = parsed.get("ws_channels")
+            step["ws_events_logged"] = parsed.get("ws_events_logged")
+            step["orderbook_events_processed"] = parsed.get("orderbook_events_processed")
+            step["ticker_events_processed"] = parsed.get("ticker_events_processed")
+            step["lifecycle_events_processed"] = parsed.get("lifecycle_events_processed")
+            step["public_trade_events_processed"] = parsed.get("public_trade_events_processed")
+            step["wakeup_transitions_processed"] = parsed.get("wakeup_transitions_processed")
+            step["availability_observations_written"] = parsed.get("availability_observations_written")
+            step["availability_ticker_states_updated"] = parsed.get("availability_ticker_states_updated")
+            step["availability_db_path"] = parsed.get("availability_db_path")
+            step["output_csv"] = parsed.get("output_csv")
+            step["climate_rows_total"] = parsed.get("climate_rows_total")
+            step["climate_family_counts"] = parsed.get("climate_family_counts")
+            step["climate_availability_state_counts"] = parsed.get("climate_availability_state_counts")
+            step["climate_opportunity_class_counts"] = parsed.get("climate_opportunity_class_counts")
+            step["climate_theoretical_positive_rows"] = parsed.get("climate_theoretical_positive_rows")
+            step["climate_priced_watch_only_rows"] = parsed.get("climate_priced_watch_only_rows")
+            step["climate_unpriced_model_view_rows"] = parsed.get("climate_unpriced_model_view_rows")
+            step["climate_tradable_rows"] = parsed.get("climate_tradable_rows")
+            step["climate_hot_rows"] = parsed.get("climate_hot_rows")
+            step["climate_dead_rows"] = parsed.get("climate_dead_rows")
+            step["climate_tradable_positive_rows"] = parsed.get("climate_tradable_positive_rows")
+            step["climate_hot_positive_rows"] = parsed.get("climate_hot_positive_rows")
+            step["climate_negative_or_neutral_rows"] = parsed.get("climate_negative_or_neutral_rows")
+            step["top_theoretical_candidates"] = parsed.get("top_theoretical_candidates")
+            step["top_tradable_candidates"] = parsed.get("top_tradable_candidates")
+            step["top_watch_only_candidates"] = parsed.get("top_watch_only_candidates")
+            step["top_waking_strips"] = parsed.get("top_waking_strips")
+            step["strip_summaries_count"] = parsed.get("strip_summaries_count")
+            step["routing_allocator_eligible_rows"] = parsed.get("routing_allocator_eligible_rows")
+            step["routing_allocator_allocated_rows"] = parsed.get("routing_allocator_allocated_rows")
+            step["routing_allocator_total_risk_dollars"] = parsed.get("routing_allocator_total_risk_dollars")
+            step["routing_allocator_total_expected_value_dollars"] = parsed.get(
+                "routing_allocator_total_expected_value_dollars"
+            )
+            step["routing_allocator_allocations"] = parsed.get("routing_allocator_allocations")
+            step["family_routed_capital_budget"] = parsed.get("family_routed_capital_budget")
+            step["market_tickers_selected_count"] = parsed.get("market_tickers_selected_count")
+            step["market_tickers_selected"] = parsed.get("market_tickers_selected")
+            step["seed_recent_markets"] = parsed.get("seed_recent_markets")
+            step["recent_markets_min_updated_seconds"] = parsed.get("recent_markets_min_updated_seconds")
+            step["recent_market_discovery_status"] = parsed.get("recent_market_discovery_status")
+            step["recent_market_discovery_reason"] = parsed.get("recent_market_discovery_reason")
+            step["recent_market_discovery_api_root"] = parsed.get("recent_market_discovery_api_root")
+            step["recent_market_discovery_http_status"] = parsed.get("recent_market_discovery_http_status")
+            step["recent_market_discovery_min_updated_ts_ms"] = parsed.get(
+                "recent_market_discovery_min_updated_ts_ms"
+            )
+            step["recent_market_discovery_tickers"] = parsed.get("recent_market_discovery_tickers")
+            step["recent_market_discovery_tickers_count"] = parsed.get(
+                "recent_market_discovery_tickers_count"
+            )
+            step["recent_market_discovery_errors"] = parsed.get("recent_market_discovery_errors")
         elif name.startswith("prior_trader_dry_run"):
             step["allow_live_orders_effective"] = parsed.get("allow_live_orders_effective")
             step["prior_execute_status"] = parsed.get("prior_execute_status")
@@ -2003,6 +2391,132 @@ def _run_step(
             step["heuristic_fill_weight"] = parsed.get("heuristic_fill_weight")
             step["probe_lane_used"] = parsed.get("probe_lane_used")
             step["probe_reason"] = parsed.get("probe_reason")
+            step["climate_router_pilot_enabled"] = parsed.get("climate_router_pilot_enabled")
+            step["climate_router_pilot_status"] = parsed.get("climate_router_pilot_status")
+            step["climate_router_pilot_reason"] = parsed.get("climate_router_pilot_reason")
+            step["climate_router_pilot_summary_file"] = parsed.get("climate_router_pilot_summary_file")
+            step["climate_router_pilot_selection_mode"] = parsed.get("climate_router_pilot_selection_mode")
+            step["climate_router_pilot_summary_status"] = parsed.get("climate_router_pilot_summary_status")
+            step["climate_router_pilot_allowed_classes"] = parsed.get("climate_router_pilot_allowed_classes")
+            step["climate_router_pilot_allowed_families"] = parsed.get("climate_router_pilot_allowed_families")
+            step["climate_router_pilot_excluded_families"] = parsed.get("climate_router_pilot_excluded_families")
+            step["climate_router_pilot_allowed_families_effective"] = parsed.get(
+                "climate_router_pilot_allowed_families_effective"
+            )
+            step["climate_router_pilot_excluded_families_effective"] = parsed.get(
+                "climate_router_pilot_excluded_families_effective"
+            )
+            step["climate_router_pilot_max_orders_per_run"] = parsed.get("climate_router_pilot_max_orders_per_run")
+            step["climate_router_pilot_contracts_cap"] = parsed.get("climate_router_pilot_contracts_cap")
+            step["climate_router_pilot_required_ev_dollars"] = parsed.get("climate_router_pilot_required_ev_dollars")
+            step["climate_router_pilot_policy_scope_override_enabled"] = parsed.get(
+                "climate_router_pilot_policy_scope_override_enabled"
+            )
+            step["climate_router_pilot_policy_scope_override_active"] = parsed.get(
+                "climate_router_pilot_policy_scope_override_active"
+            )
+            step["climate_router_pilot_policy_scope_override_status"] = parsed.get(
+                "climate_router_pilot_policy_scope_override_status"
+            )
+            step["climate_router_pilot_policy_scope_override_gate_active"] = parsed.get(
+                "climate_router_pilot_policy_scope_override_gate_active"
+            )
+            step["climate_router_pilot_policy_scope_override_applicable"] = parsed.get(
+                "climate_router_pilot_policy_scope_override_applicable"
+            )
+            step["climate_router_pilot_policy_scope_override_attempts"] = parsed.get(
+                "climate_router_pilot_policy_scope_override_attempts"
+            )
+            step["climate_router_pilot_policy_scope_override_submissions"] = parsed.get(
+                "climate_router_pilot_policy_scope_override_submissions"
+            )
+            step["climate_router_pilot_policy_scope_override_blocked_reason_counts"] = parsed.get(
+                "climate_router_pilot_policy_scope_override_blocked_reason_counts"
+            )
+            step["climate_router_pilot_considered_rows"] = parsed.get("climate_router_pilot_considered_rows")
+            step["climate_router_pilot_promoted_rows"] = parsed.get("climate_router_pilot_promoted_rows")
+            step["climate_router_pilot_submitted_rows"] = parsed.get("climate_router_pilot_submitted_rows")
+            step["climate_router_pilot_expected_value_dollars"] = parsed.get(
+                "climate_router_pilot_expected_value_dollars"
+            )
+            step["climate_router_pilot_blocked_reason_counts"] = parsed.get(
+                "climate_router_pilot_blocked_reason_counts"
+            )
+            step["climate_router_pilot_selected_tickers"] = parsed.get("climate_router_pilot_selected_tickers")
+            step["climate_router_pilot_execute_considered_rows"] = parsed.get(
+                "climate_router_pilot_execute_considered_rows"
+            )
+            step["climate_router_pilot_live_mode_enabled"] = parsed.get(
+                "climate_router_pilot_live_mode_enabled"
+            )
+            step["climate_router_pilot_live_eligible_rows"] = parsed.get(
+                "climate_router_pilot_live_eligible_rows"
+            )
+            step["climate_router_pilot_would_attempt_live_if_enabled"] = parsed.get(
+                "climate_router_pilot_would_attempt_live_if_enabled"
+            )
+            step["climate_router_pilot_blocked_dry_run_only_rows"] = parsed.get(
+                "climate_router_pilot_blocked_dry_run_only_rows"
+            )
+            step["climate_router_pilot_blocked_research_dry_run_only_reason_counts"] = parsed.get(
+                "climate_router_pilot_blocked_research_dry_run_only_reason_counts"
+            )
+            step["climate_router_pilot_non_policy_gates_passed_rows"] = parsed.get(
+                "climate_router_pilot_non_policy_gates_passed_rows"
+            )
+            step["climate_router_pilot_attempted_orders"] = parsed.get("climate_router_pilot_attempted_orders")
+            step["climate_router_pilot_acked_orders"] = parsed.get("climate_router_pilot_acked_orders")
+            step["climate_router_pilot_resting_orders"] = parsed.get("climate_router_pilot_resting_orders")
+            step["climate_router_pilot_filled_orders"] = parsed.get("climate_router_pilot_filled_orders")
+            step["climate_router_pilot_partial_fills"] = parsed.get("climate_router_pilot_partial_fills")
+            step["climate_router_pilot_blocked_post_promotion_reason_counts"] = parsed.get(
+                "climate_router_pilot_blocked_post_promotion_reason_counts"
+            )
+            step["climate_router_pilot_blocked_frontier_insufficient_data"] = parsed.get(
+                "climate_router_pilot_blocked_frontier_insufficient_data"
+            )
+            step["climate_router_pilot_blocked_balance"] = parsed.get("climate_router_pilot_blocked_balance")
+            step["climate_router_pilot_blocked_board_stale"] = parsed.get("climate_router_pilot_blocked_board_stale")
+            step["climate_router_pilot_blocked_weather_history"] = parsed.get(
+                "climate_router_pilot_blocked_weather_history"
+            )
+            step["climate_router_pilot_blocked_duplicate_ticker"] = parsed.get(
+                "climate_router_pilot_blocked_duplicate_ticker"
+            )
+            step["climate_router_pilot_blocked_no_orderable_side_on_recheck"] = parsed.get(
+                "climate_router_pilot_blocked_no_orderable_side_on_recheck"
+            )
+            step["climate_router_pilot_blocked_ev_below_threshold"] = parsed.get(
+                "climate_router_pilot_blocked_ev_below_threshold"
+            )
+            step["climate_router_pilot_blocked_research_dry_run_only"] = parsed.get(
+                "climate_router_pilot_blocked_research_dry_run_only"
+            )
+            step["climate_router_pilot_blocked_live_disabled"] = parsed.get(
+                "climate_router_pilot_blocked_live_disabled"
+            )
+            step["climate_router_pilot_blocked_policy_scope"] = parsed.get(
+                "climate_router_pilot_blocked_policy_scope"
+            )
+            step["climate_router_pilot_blocked_family_filter"] = parsed.get(
+                "climate_router_pilot_blocked_family_filter"
+            )
+            step["climate_router_pilot_blocked_contract_cap"] = parsed.get(
+                "climate_router_pilot_blocked_contract_cap"
+            )
+            step["climate_router_pilot_frontier_bootstrap_submitted_attempts"] = parsed.get(
+                "climate_router_pilot_frontier_bootstrap_submitted_attempts"
+            )
+            step["climate_router_pilot_frontier_bootstrap_blocked_attempts"] = parsed.get(
+                "climate_router_pilot_frontier_bootstrap_blocked_attempts"
+            )
+            step["climate_router_pilot_markout_10s_dollars"] = parsed.get("climate_router_pilot_markout_10s_dollars")
+            step["climate_router_pilot_markout_60s_dollars"] = parsed.get("climate_router_pilot_markout_60s_dollars")
+            step["climate_router_pilot_markout_300s_dollars"] = parsed.get("climate_router_pilot_markout_300s_dollars")
+            step["climate_router_pilot_realized_pnl_dollars"] = parsed.get("climate_router_pilot_realized_pnl_dollars")
+            step["climate_router_pilot_expected_vs_realized_delta"] = parsed.get(
+                "climate_router_pilot_expected_vs_realized_delta"
+            )
             step["enable_untrusted_bucket_probe_exploration"] = parsed.get(
                 "enable_untrusted_bucket_probe_exploration"
             )
@@ -2165,6 +2679,7 @@ def _run_preflight(
         "live-smoke",
         "kalshi-weather-priors",
         "kalshi-weather-prewarm",
+        "kalshi-climate-realtime-router",
         "kalshi-execution-frontier",
         "kalshi-micro-prior-trader",
     ]
@@ -2506,6 +3021,3012 @@ def _top_level_execution_frontier(step: dict[str, Any] | None) -> dict[str, Any]
     }
 
 
+def _shadow_bankroll_defaults(
+    *,
+    enabled: bool,
+    start_dollars: float,
+    state_file: Path | None,
+    status: str,
+    reason: str | None,
+) -> dict[str, Any]:
+    start = round(max(0.0, float(start_dollars)), 4)
+    state_file_text = str(state_file) if isinstance(state_file, Path) else ""
+    return {
+        "enabled": bool(enabled),
+        "state_file": state_file_text or None,
+        "status": str(status or "observer_not_run"),
+        "reason": str(reason or "").strip() or None,
+        "last_updated_at_utc": None,
+        "state_write_error": None,
+        "start_dollars": start,
+        "theoretical_value_dollars": start,
+        "realized_pnl_dollars": 0.0,
+        "theoretical_unrealized_ev_dollars": 0.0,
+        "theoretical_drawdown_pct": 0.0,
+        "allocator_total_risk_dollars": 0.0,
+        "allocator_selected_rows": 0,
+        "expected_value_dollars": 0.0,
+        "strategy_equity_dollars": start,
+        "strategy_drawdown_pct": 0.0,
+        "strategy_peak_equity_dollars": start,
+        "mark_to_model_pnl_dollars": 0.0,
+        "realized_trade_pnl_dollars": 0.0,
+        "positions_open": [],
+        "positions_closed": [],
+        "positions_open_count": 0,
+        "positions_closed_count": 0,
+        "equity_curve": [],
+        "strategy_accounting_version": 2,
+        "entry_price": None,
+        "entry_time_utc": None,
+        "side": None,
+        "contracts": None,
+        "notional_risk_dollars": None,
+        "mark_price": None,
+    }
+
+
+def _shadow_bankroll_report_fields(shadow_bankroll: dict[str, Any] | None) -> dict[str, Any]:
+    payload = shadow_bankroll if isinstance(shadow_bankroll, dict) else {}
+    start_dollars = _parse_float(payload.get("start_dollars"))
+    start_text = (
+        f"{max(0.0, start_dollars):.4f}".rstrip("0").rstrip(".")
+        if isinstance(start_dollars, float)
+        else ""
+    )
+    sizing_basis = f"shadow_{start_text}" if start_text else "shadow_unknown"
+    return {
+        "sizing_basis": sizing_basis,
+        "execution_basis": "live_actual_balance",
+        "shadow_bankroll_enabled": bool(payload.get("enabled")),
+        "shadow_bankroll_state_file": payload.get("state_file"),
+        "shadow_bankroll_status": payload.get("status"),
+        "shadow_bankroll_reason": payload.get("reason"),
+        "shadow_bankroll_last_updated_at_utc": payload.get("last_updated_at_utc"),
+        "shadow_bankroll_state_write_error": payload.get("state_write_error"),
+        "shadow_bankroll_start_dollars": payload.get("start_dollars"),
+        "shadow_theoretical_value_dollars": payload.get("theoretical_value_dollars"),
+        "shadow_realized_pnl_dollars": payload.get("realized_pnl_dollars"),
+        "shadow_theoretical_unrealized_ev_dollars": payload.get("theoretical_unrealized_ev_dollars"),
+        "shadow_theoretical_drawdown_pct": payload.get("theoretical_drawdown_pct"),
+        "shadow_allocator_total_risk_dollars": payload.get("allocator_total_risk_dollars"),
+        "shadow_allocator_selected_rows": payload.get("allocator_selected_rows"),
+        "shadow_expected_value_dollars": payload.get("expected_value_dollars"),
+        "shadow_strategy_equity_dollars": payload.get("strategy_equity_dollars"),
+        "shadow_strategy_drawdown_pct": payload.get("strategy_drawdown_pct"),
+        "shadow_mark_to_model_pnl_dollars": payload.get("mark_to_model_pnl_dollars"),
+        "shadow_realized_trade_pnl_dollars": payload.get("realized_trade_pnl_dollars"),
+        "shadow_positions_open_count": payload.get("positions_open_count"),
+        "shadow_positions_closed_count": payload.get("positions_closed_count"),
+        "shadow_positions_open": payload.get("positions_open"),
+        "shadow_positions_closed": payload.get("positions_closed"),
+        "shadow_equity_curve": payload.get("equity_curve"),
+        "shadow_strategy_accounting_version": payload.get("strategy_accounting_version"),
+        "shadow_entry_price": payload.get("entry_price"),
+        "shadow_entry_time": payload.get("entry_time_utc"),
+        "shadow_side": payload.get("side"),
+        "shadow_contracts": payload.get("contracts"),
+        "shadow_notional_risk_dollars": payload.get("notional_risk_dollars"),
+        "shadow_mark_price": payload.get("mark_price"),
+    }
+
+
+def _paper_live_defaults(
+    *,
+    enabled: bool,
+    start_dollars: float,
+    state_file: Path | None,
+    status: str,
+    reason: str | None,
+    risk_profile: str = "growth_aggressive",
+    kelly_fraction: float = 0.5,
+    kelly_high_conf_max: float = 0.75,
+    max_open_risk_pct: float = 0.25,
+    max_family_risk_pct: float = 0.15,
+    max_strip_risk_pct: float = 0.08,
+    max_single_position_risk_pct: float = 0.06,
+    max_new_attempts_per_run: int = 8,
+    family_allowlist: list[str] | None = None,
+    allow_random_cancels: bool = False,
+    size_from_current_equity: bool = True,
+    require_live_eligible_hint: bool = False,
+) -> dict[str, Any]:
+    start = round(max(0.0, float(start_dollars)), 4)
+    normalized_allowlist = [
+        str(token or "").strip().lower()
+        for token in (family_allowlist or ["monthly_climate_anomaly"])
+        if str(token or "").strip()
+    ]
+    if not normalized_allowlist:
+        normalized_allowlist = ["monthly_climate_anomaly"]
+    return {
+        "enabled": bool(enabled),
+        "status": str(status or "observer_not_run"),
+        "reason": str(reason or "").strip() or None,
+        "execution_basis": "paper_live_balance",
+        "risk_profile": str(risk_profile or "growth_aggressive").strip() or "growth_aggressive",
+        "kelly_fraction": round(max(0.0, float(kelly_fraction)), 6),
+        "kelly_high_conf_max": round(max(0.0, float(kelly_high_conf_max)), 6),
+        "max_open_risk_pct": round(max(0.0, float(max_open_risk_pct)), 6),
+        "max_family_risk_pct": round(max(0.0, float(max_family_risk_pct)), 6),
+        "max_strip_risk_pct": round(max(0.0, float(max_strip_risk_pct)), 6),
+        "max_single_position_risk_pct": round(max(0.0, float(max_single_position_risk_pct)), 6),
+        "max_new_attempts_per_run": max(1, int(max_new_attempts_per_run)),
+        "family_allowlist": normalized_allowlist,
+        "allow_random_cancels": bool(allow_random_cancels),
+        "size_from_current_equity": bool(size_from_current_equity),
+        "require_live_eligible_hint": bool(require_live_eligible_hint),
+        "state_file": str(state_file) if isinstance(state_file, Path) else None,
+        "start_dollars": start,
+        "current_dollars": start,
+        "sizing_balance_dollars": start,
+        "post_trade_sizing_balance_dollars": start,
+        "realized_trade_pnl_dollars": 0.0,
+        "mark_to_market_pnl_dollars": 0.0,
+        "drawdown_pct": 0.0,
+        "positions_open": [],
+        "positions_closed": [],
+        "positions_open_count": 0,
+        "positions_closed_count": 0,
+        "order_attempts": 0,
+        "orders_partial_filled": 0,
+        "orders_resting": 0,
+        "orders_filled": 0,
+        "orders_canceled": 0,
+        "orders_expired": 0,
+        "fill_time_seconds": None,
+        "run_attempt_limit": max(1, int(max_new_attempts_per_run)),
+        "used_kelly_fraction": 0.0,
+        "avg_kelly_fraction_used": 0.0,
+        "markout_10s_dollars": 0.0,
+        "markout_60s_dollars": 0.0,
+        "markout_300s_dollars": 0.0,
+        "settlement_pnl_dollars": 0.0,
+        "expected_value_dollars": 0.0,
+        "expected_vs_realized_delta": 0.0,
+        "open_risk_dollars": 0.0,
+        "open_risk_cap_dollars": 0.0,
+        "open_risk_remaining_dollars": 0.0,
+        "family_open_risk_dollars": {},
+        "family_open_risk_remaining_dollars": {},
+        "strip_open_risk_dollars": {},
+        "strip_open_risk_remaining_dollars": {},
+        "family_execution_state": {},
+        "ticker_execution_state": {},
+        "family_mtm_per_risk_pct": {},
+        "ticker_mtm_per_risk_pct": {},
+        "family_markout_300s_mean_dollars": {},
+        "ticker_markout_300s_mean_dollars": {},
+        "family_markout_300s_mean_per_contract_dollars": {},
+        "ticker_markout_300s_mean_per_contract_dollars": {},
+        "family_markout_300s_per_risk_pct": {},
+        "ticker_markout_300s_per_risk_pct": {},
+        "family_markout_300s_per_contract": {},
+        "ticker_markout_300s_per_contract": {},
+        "family_fill_rate": {},
+        "ticker_fill_rate": {},
+        "family_cancel_rate": {},
+        "ticker_cancel_rate": {},
+        "family_risk_multiplier": {},
+        "ticker_risk_multiplier": {},
+        "drawdown_throttle_state": "full",
+        "drawdown_risk_scale": 1.0,
+        "selected_tickers": [],
+        "attempt_events": [],
+        "equity_curve": [],
+        "last_updated_at_utc": None,
+        "accounting_version": 2,
+        "source": "synthetic_paper_live",
+        "state_write_error": None,
+    }
+
+
+def _paper_live_deterministic_score(*parts: str) -> float:
+    seed = "|".join(str(part or "").strip() for part in parts)
+    digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()
+    numerator = int(digest[:8], 16)
+    denominator = float(0xFFFFFFFF)
+    return max(0.0, min(1.0, numerator / denominator))
+
+
+def _paper_live_markout_pnl(
+    *,
+    position_key: str,
+    side: str,
+    entry_price: float,
+    edge_net: float,
+    fair_yes_probability: float | None,
+    horizon_seconds: int,
+) -> float:
+    baseline_yes = fair_yes_probability if isinstance(fair_yes_probability, float) else 0.5
+    baseline_yes = max(0.01, min(0.99, baseline_yes))
+    drift = float(edge_net) * min(1.0, max(0.0, float(horizon_seconds)) / 300.0)
+    noise = (_paper_live_deterministic_score(position_key, str(horizon_seconds), "markout_noise") - 0.5) * 0.04
+    mark_yes = max(0.01, min(0.99, baseline_yes + drift + noise))
+    if str(side or "").strip().lower() == "no":
+        mark_price = 1.0 - mark_yes
+    else:
+        mark_price = mark_yes
+    return round(float(mark_price - float(entry_price)), 6)
+
+
+def _paper_live_settlement_pnl(
+    *,
+    position_key: str,
+    side: str,
+    entry_price: float,
+    fair_yes_probability: float | None,
+    contracts: int,
+) -> tuple[float, str]:
+    yes_prob = fair_yes_probability if isinstance(fair_yes_probability, float) else 0.5
+    yes_prob = max(0.01, min(0.99, yes_prob))
+    yes_outcome = _paper_live_deterministic_score(position_key, "settlement_yes") < yes_prob
+    side_lower = str(side or "").strip().lower()
+    payout = 0.0
+    if side_lower == "no":
+        payout = 1.0 if not yes_outcome else 0.0
+    else:
+        payout = 1.0 if yes_outcome else 0.0
+    pnl_per_contract = payout - float(entry_price)
+    return round(float(pnl_per_contract) * float(max(1, int(contracts))), 6), ("yes" if yes_outcome else "no")
+
+
+def _paper_live_candidate_pool(
+    *,
+    climate_router_pilot: dict[str, Any] | None,
+    climate_router_shadow_plan: dict[str, Any] | None,
+    allowed_families: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    pilot = climate_router_pilot if isinstance(climate_router_pilot, dict) else {}
+    shadow_plan = climate_router_shadow_plan if isinstance(climate_router_shadow_plan, dict) else {}
+    family_allowset = {
+        str(item or "").strip().lower() for item in (allowed_families or ["monthly_climate_anomaly"]) if str(item or "").strip()
+    }
+    if not family_allowset:
+        family_allowset = {"monthly_climate_anomaly"}
+
+    selected_tickers_raw = pilot.get("selected_tickers")
+    selected_tickers = [
+        str(item or "").strip().upper()
+        for item in selected_tickers_raw
+        if str(item or "").strip()
+    ] if isinstance(selected_tickers_raw, list) else []
+
+    pool_by_ticker: dict[str, dict[str, Any]] = {}
+
+    # Candidate rows from pilot diagnostics.
+    top_candidates_raw = pilot.get("top_candidates")
+    top_candidates = [item for item in top_candidates_raw if isinstance(item, dict)] if isinstance(top_candidates_raw, list) else []
+    for row in top_candidates:
+        ticker = str(row.get("market_ticker") or "").strip().upper()
+        if not ticker:
+            continue
+        family = str(row.get("contract_family") or "").strip().lower()
+        if family and family not in family_allowset:
+            continue
+        candidate = {
+            "market_ticker": ticker,
+            "market_title": str(row.get("market_title") or "").strip() or None,
+            "contract_family": family or "unknown_family",
+            "strip_key": str(row.get("strip_key") or "").strip() or None,
+            "availability_state": str(row.get("availability_state") or "").strip().lower() or None,
+            "opportunity_class": str(row.get("opportunity_class") or "").strip().lower() or None,
+            "theoretical_side": str(row.get("theoretical_side") or "").strip().lower() or "yes",
+            "theoretical_reference_price": _parse_float(row.get("theoretical_reference_price")),
+            "theoretical_edge_net": _parse_float(row.get("theoretical_edge_net")),
+            "fair_yes_probability": _parse_float(row.get("fair_yes_probability")),
+            "hours_to_close": _parse_float(row.get("hours_to_close")),
+            "source_strategy": str(row.get("source_strategy") or "").strip() or "climate_router_pilot",
+            "expected_value_dollars": _parse_float(row.get("expected_value_dollars")),
+            "suggested_risk_dollars": _parse_float(row.get("suggested_risk_dollars")),
+        }
+        pool_by_ticker[ticker] = candidate
+
+    # Enrich / add candidates from shadow allocations so paper-live is not constrained to 1x1 pilot picks.
+    allocations_raw = shadow_plan.get("top_shadow_allocations")
+    allocations = [item for item in allocations_raw if isinstance(item, dict)] if isinstance(allocations_raw, list) else []
+    for row in allocations:
+        ticker = str(row.get("market_ticker") or "").strip().upper()
+        if not ticker:
+            continue
+        family = str(row.get("contract_family") or "").strip().lower()
+        if family and family not in family_allowset:
+            continue
+        existing = dict(pool_by_ticker.get(ticker) or {})
+        side = str(row.get("side") or "").strip().lower()
+        reference_price = _parse_float(row.get("reference_price_dollars"))
+        if not isinstance(reference_price, float):
+            reference_price = _parse_float(existing.get("theoretical_reference_price"))
+        edge_net = _parse_float(row.get("edge_net"))
+        if not isinstance(edge_net, float):
+            edge_net = _parse_float(existing.get("theoretical_edge_net"))
+        expected_value = _parse_float(row.get("expected_value_dollars"))
+        if not isinstance(expected_value, float):
+            expected_value = _parse_float(existing.get("expected_value_dollars"))
+        suggested_risk = _parse_float(row.get("risk_dollars"))
+        if not isinstance(suggested_risk, float):
+            suggested_risk = _parse_float(existing.get("suggested_risk_dollars"))
+        candidate = {
+            **existing,
+            "market_ticker": ticker,
+            "contract_family": family or str(existing.get("contract_family") or "unknown_family"),
+            "strip_key": str(row.get("strip_key") or existing.get("strip_key") or "").strip() or None,
+            "availability_state": str(row.get("availability_state") or existing.get("availability_state") or "").strip().lower() or None,
+            "opportunity_class": str(row.get("opportunity_class") or existing.get("opportunity_class") or "").strip().lower() or None,
+            "theoretical_side": side if side in {"yes", "no"} else str(existing.get("theoretical_side") or "yes"),
+            "theoretical_reference_price": reference_price,
+            "theoretical_edge_net": edge_net,
+            "expected_value_dollars": expected_value,
+            "suggested_risk_dollars": suggested_risk,
+            "source_strategy": str(existing.get("source_strategy") or "climate_router_shadow_plan"),
+            "contracts": _coerce_int(row.get("contracts"), 0),
+        }
+        pool_by_ticker[ticker] = candidate
+
+    def _candidate_rank(row: dict[str, Any]) -> tuple[int, float, float, int, str]:
+        ticker = str(row.get("market_ticker") or "").strip().upper()
+        expected_value = float(_parse_float(row.get("expected_value_dollars")) or 0.0)
+        edge_net = float(_parse_float(row.get("theoretical_edge_net")) or 0.0)
+        suggested_risk = float(_parse_float(row.get("suggested_risk_dollars")) or 0.0)
+        selected_rank = 1 if ticker in set(selected_tickers) else 0
+        return (
+            selected_rank,
+            expected_value,
+            edge_net,
+            suggested_risk,
+            ticker,
+        )
+
+    ranked = sorted(pool_by_ticker.values(), key=_candidate_rank, reverse=True)
+    normalized: list[dict[str, Any]] = []
+    for row in ranked:
+        ticker = str(row.get("market_ticker") or "").strip().upper()
+        family = str(row.get("contract_family") or "").strip().lower()
+        if not ticker or not family or family not in family_allowset:
+            continue
+        side = str(row.get("theoretical_side") or "").strip().lower()
+        if side not in {"yes", "no"}:
+            side = "yes"
+        normalized.append({**row, "market_ticker": ticker, "contract_family": family, "theoretical_side": side})
+    return normalized
+
+
+def _paper_live_drawdown_scale(drawdown_pct: float) -> tuple[float, str]:
+    drawdown = max(0.0, float(drawdown_pct))
+    if drawdown > 18.0:
+        return 0.35, "max_throttle"
+    if drawdown >= 12.0:
+        return 0.5, "half_risk"
+    if drawdown >= 8.0:
+        return 0.75, "reduced_risk"
+    return 1.0, "full"
+
+
+def _paper_live_tier_targets(edge_net: float) -> tuple[str, float]:
+    edge = float(edge_net)
+    if edge >= 0.20:
+        return "A+", 0.06
+    if edge >= 0.12:
+        return "A", 0.04
+    if edge >= 0.05:
+        return "B", 0.025
+    return "C", 0.0
+
+
+def _paper_live_update(
+    *,
+    run_id: str,
+    run_finished_at_utc: str,
+    enabled: bool,
+    start_dollars: float,
+    state_file: Path | None,
+    climate_router_pilot: dict[str, Any] | None,
+    climate_router_shadow_plan: dict[str, Any] | None,
+    risk_profile: str = "growth_aggressive",
+    kelly_fraction: float = 0.5,
+    kelly_high_conf_max: float = 0.75,
+    max_open_risk_pct: float = 0.25,
+    max_family_risk_pct: float = 0.15,
+    max_strip_risk_pct: float = 0.08,
+    max_single_position_risk_pct: float = 0.06,
+    max_new_attempts_per_run: int = 8,
+    family_allowlist: list[str] | None = None,
+    allow_random_cancels: bool = False,
+    size_from_current_equity: bool = True,
+    require_live_eligible_hint: bool = False,
+) -> dict[str, Any]:
+    snapshot = _paper_live_defaults(
+        enabled=enabled,
+        start_dollars=start_dollars,
+        state_file=state_file,
+        status="observer_not_run",
+        reason=None,
+        risk_profile=risk_profile,
+        kelly_fraction=kelly_fraction,
+        kelly_high_conf_max=kelly_high_conf_max,
+        max_open_risk_pct=max_open_risk_pct,
+        max_family_risk_pct=max_family_risk_pct,
+        max_strip_risk_pct=max_strip_risk_pct,
+        max_single_position_risk_pct=max_single_position_risk_pct,
+        max_new_attempts_per_run=max_new_attempts_per_run,
+        family_allowlist=family_allowlist,
+        allow_random_cancels=allow_random_cancels,
+        size_from_current_equity=size_from_current_equity,
+        require_live_eligible_hint=require_live_eligible_hint,
+    )
+    if not enabled:
+        snapshot["status"] = "disabled"
+        snapshot["reason"] = "paper_live_disabled"
+        return snapshot
+    if not isinstance(state_file, Path):
+        snapshot["status"] = "observer_degraded"
+        snapshot["reason"] = "paper_live_state_file_missing"
+        return snapshot
+
+    run_finished_at_dt = _parse_iso(run_finished_at_utc)
+    if not isinstance(run_finished_at_dt, datetime):
+        run_finished_at_dt = datetime.now(timezone.utc)
+
+    start = max(0.0, float(start_dollars))
+    realized_trade_total = 0.0
+    settlement_pnl_total = 0.0
+    expected_value_total = 0.0
+    settlement_expected_value_total = 0.0
+    fill_time_seconds_total = 0.0
+    fill_events_count = 0
+    peak_balance = start
+    order_attempts_total = 0
+    orders_filled_total = 0
+    orders_partial_filled_total = 0
+    orders_canceled_total = 0
+    orders_expired_total = 0
+    last_run_id = ""
+    positions_open: list[dict[str, Any]] = []
+    positions_closed: list[dict[str, Any]] = []
+    resting_orders: list[dict[str, Any]] = []
+    attempt_events: list[dict[str, Any]] = []
+    equity_curve: list[dict[str, Any]] = []
+
+    existing_payload = _load_json(state_file)
+    if isinstance(existing_payload, dict):
+        previous_start = _parse_float(existing_payload.get("paper_live_balance_start_dollars"))
+        if isinstance(previous_start, float) and previous_start > 0.0 and abs(previous_start - start) < 1e-9:
+            start = previous_start
+            realized_trade_total = float(
+                _parse_float(existing_payload.get("paper_live_realized_trade_pnl_dollars")) or 0.0
+            )
+            settlement_pnl_total = float(
+                _parse_float(existing_payload.get("paper_live_settlement_pnl_dollars")) or realized_trade_total
+            )
+            expected_value_total = float(
+                _parse_float(existing_payload.get("paper_live_expected_value_dollars")) or 0.0
+            )
+            settlement_expected_value_total = float(
+                _parse_float(existing_payload.get("paper_live_settlement_expected_value_dollars")) or 0.0
+            )
+            peak_balance = max(
+                start,
+                float(_parse_float(existing_payload.get("paper_live_peak_balance_dollars")) or start),
+            )
+            order_attempts_total = max(0, _coerce_int(existing_payload.get("paper_live_order_attempts"), 0))
+            orders_filled_total = max(0, _coerce_int(existing_payload.get("paper_live_orders_filled"), 0))
+            orders_partial_filled_total = max(
+                0,
+                _coerce_int(existing_payload.get("paper_live_orders_partial_filled"), 0),
+            )
+            orders_canceled_total = max(0, _coerce_int(existing_payload.get("paper_live_orders_canceled"), 0))
+            orders_expired_total = max(0, _coerce_int(existing_payload.get("paper_live_orders_expired"), 0))
+            fill_events_count = max(0, _coerce_int(existing_payload.get("paper_live_fill_events_count"), 0))
+            fill_time_seconds_total = float(
+                _parse_float(existing_payload.get("paper_live_fill_time_seconds_total")) or 0.0
+            )
+            if fill_events_count <= 0 and orders_filled_total > 0:
+                fill_time_avg = _parse_float(existing_payload.get("paper_live_fill_time_seconds"))
+                if isinstance(fill_time_avg, float) and fill_time_avg >= 0.0:
+                    fill_events_count = orders_filled_total
+                    fill_time_seconds_total = float(fill_time_avg) * float(fill_events_count)
+            last_run_id = str(existing_payload.get("last_run_id") or "").strip()
+            raw_open = existing_payload.get("paper_live_positions_open")
+            if isinstance(raw_open, list):
+                positions_open = [item for item in raw_open if isinstance(item, dict)]
+            raw_closed = existing_payload.get("paper_live_positions_closed")
+            if isinstance(raw_closed, list):
+                positions_closed = [item for item in raw_closed if isinstance(item, dict)]
+            raw_resting = existing_payload.get("paper_live_resting_orders")
+            if isinstance(raw_resting, list):
+                resting_orders = [item for item in raw_resting if isinstance(item, dict)]
+            raw_attempt_events = existing_payload.get("paper_live_attempt_events")
+            if isinstance(raw_attempt_events, list):
+                attempt_events = [item for item in raw_attempt_events if isinstance(item, dict)]
+            raw_curve = existing_payload.get("paper_live_equity_curve")
+            if isinstance(raw_curve, list):
+                equity_curve = [item for item in raw_curve if isinstance(item, dict)]
+
+    run_is_new = bool(run_id and run_id != last_run_id)
+    pilot = climate_router_pilot if isinstance(climate_router_pilot, dict) else {}
+    normalized_family_allowlist = [
+        str(token or "").strip().lower()
+        for token in (family_allowlist or ["monthly_climate_anomaly"])
+        if str(token or "").strip()
+    ]
+    if not normalized_family_allowlist:
+        normalized_family_allowlist = ["monthly_climate_anomaly"]
+    normalized_risk_profile = str(risk_profile or "growth_aggressive").strip().lower() or "growth_aggressive"
+    normalized_kelly_fraction = max(0.0, min(1.0, float(kelly_fraction)))
+    normalized_kelly_high_conf_max = max(normalized_kelly_fraction, min(1.0, float(kelly_high_conf_max)))
+    normalized_max_open_risk_pct = max(0.01, min(0.9, float(max_open_risk_pct)))
+    normalized_max_family_risk_pct = max(0.01, min(normalized_max_open_risk_pct, float(max_family_risk_pct)))
+    normalized_max_strip_risk_pct = max(0.005, min(normalized_max_family_risk_pct, float(max_strip_risk_pct)))
+    normalized_max_single_position_risk_pct = max(
+        0.005,
+        min(normalized_max_strip_risk_pct, float(max_single_position_risk_pct)),
+    )
+    normalized_max_new_attempts_per_run = max(1, int(max_new_attempts_per_run))
+    normalized_allow_random_cancels = bool(allow_random_cancels)
+    normalized_size_from_current_equity = bool(size_from_current_equity)
+    normalized_require_live_eligible_hint = bool(require_live_eligible_hint)
+
+    candidate_pool = _paper_live_candidate_pool(
+        climate_router_pilot=pilot,
+        climate_router_shadow_plan=climate_router_shadow_plan,
+        allowed_families=normalized_family_allowlist,
+    )
+    selected_candidate = candidate_pool[0] if candidate_pool else None
+    selected_ticker = (
+        str(selected_candidate.get("market_ticker") or "").strip().upper()
+        if isinstance(selected_candidate, dict)
+        else ""
+    )
+
+    open_by_key: dict[str, dict[str, Any]] = {}
+    for position in positions_open:
+        key = _shadow_position_key(
+            market_ticker=str(position.get("market_ticker") or ""),
+            side=str(position.get("side") or ""),
+        )
+        if key and key not in open_by_key:
+            open_by_key[key] = dict(position)
+
+    resting_by_key: dict[str, dict[str, Any]] = {}
+    for order in resting_orders:
+        key = _shadow_position_key(
+            market_ticker=str(order.get("market_ticker") or ""),
+            side=str(order.get("side") or ""),
+        )
+        if key and key not in resting_by_key:
+            resting_by_key[key] = dict(order)
+
+    def _risk_dollars_from_payload(item: dict[str, Any]) -> float:
+        risk = _parse_float(item.get("notional_risk_dollars"))
+        if isinstance(risk, float) and risk >= 0.0:
+            return float(risk)
+        price = float(_parse_float(item.get("entry_price_dollars")) or 0.0)
+        contracts = max(1, _coerce_int(item.get("contracts"), 1))
+        return max(0.0, price * float(contracts))
+
+    open_risk_by_family: dict[str, float] = {}
+    open_risk_by_strip: dict[str, float] = {}
+    open_risk_total = 0.0
+    for position in open_by_key.values():
+        if not isinstance(position, dict):
+            continue
+        risk = _risk_dollars_from_payload(position)
+        if risk <= 0.0:
+            continue
+        open_risk_total += risk
+        family = str(position.get("contract_family") or "unknown_family").strip().lower() or "unknown_family"
+        strip = str(position.get("strip_key") or "").strip() or "__no_strip__"
+        open_risk_by_family[family] = float(open_risk_by_family.get(family, 0.0)) + risk
+        open_risk_by_strip[strip] = float(open_risk_by_strip.get(strip, 0.0)) + risk
+
+    open_mark_to_model_pre = 0.0
+    for position in open_by_key.values():
+        if not isinstance(position, dict):
+            continue
+        open_mark_to_model_pre += float(_parse_float(position.get("mark_to_model_pnl_dollars")) or 0.0)
+    pre_trade_balance = float(start) + float(realized_trade_total) + float(open_mark_to_model_pre)
+    sizing_balance_dollars = float(pre_trade_balance) if normalized_size_from_current_equity else float(start)
+    if sizing_balance_dollars <= 0.0:
+        sizing_balance_dollars = float(start)
+    sizing_balance_dollars = max(0.0, float(sizing_balance_dollars))
+    peak_balance_for_risk = max(float(peak_balance), float(start), float(pre_trade_balance))
+    pre_trade_drawdown_pct = (
+        ((peak_balance_for_risk - pre_trade_balance) / peak_balance_for_risk * 100.0)
+        if peak_balance_for_risk > 0.0
+        else 0.0
+    )
+    drawdown_risk_scale, drawdown_throttle_state = _paper_live_drawdown_scale(pre_trade_drawdown_pct)
+
+    run_attempt_limit = normalized_max_new_attempts_per_run
+    if normalized_risk_profile != "growth_aggressive":
+        run_attempt_limit = min(run_attempt_limit, 1)
+
+    open_risk_cap_dollars = max(0.0, float(sizing_balance_dollars) * normalized_max_open_risk_pct * drawdown_risk_scale)
+    family_risk_cap_dollars = max(0.0, float(sizing_balance_dollars) * normalized_max_family_risk_pct * drawdown_risk_scale)
+    strip_risk_cap_dollars = max(0.0, float(sizing_balance_dollars) * normalized_max_strip_risk_pct * drawdown_risk_scale)
+    single_position_risk_cap_dollars = max(
+        0.0,
+        float(sizing_balance_dollars) * normalized_max_single_position_risk_pct * drawdown_risk_scale,
+    )
+
+    per_attempt_kelly_used: list[float] = []
+    # Include resting order notional in open risk budget to prevent over-commit during illiquid phases.
+    for order in resting_by_key.values():
+        if not isinstance(order, dict):
+            continue
+        risk = _risk_dollars_from_payload(order)
+        if risk <= 0.0:
+            continue
+        family = str(order.get("contract_family") or "unknown_family").strip().lower() or "unknown_family"
+        strip = str(order.get("strip_key") or "").strip() or "__no_strip__"
+        open_risk_total += risk
+        open_risk_by_family[family] = float(open_risk_by_family.get(family, 0.0)) + risk
+        open_risk_by_strip[strip] = float(open_risk_by_strip.get(strip, 0.0)) + risk
+
+    attempt_events_by_key: dict[str, int] = {}
+    for idx, event in enumerate(attempt_events):
+        event_key = str(event.get("attempt_event_key") or "").strip()
+        if event_key:
+            attempt_events_by_key[event_key] = idx
+
+    def _ensure_attempt_event(
+        *,
+        attempt_event_key: str,
+        run_id_value: str,
+        attempted_at_utc: str,
+        market_ticker: str,
+        contract_family: str | None,
+        strip_key: str | None,
+        side: str,
+        contracts: int,
+        notional_risk_dollars: float,
+        expected_value_dollars: float,
+        source_strategy: str | None,
+        opportunity_class: str | None,
+        order_id: str | None,
+        status: str,
+    ) -> None:
+        key = str(attempt_event_key or "").strip()
+        if not key:
+            return
+        payload = {
+            "attempt_event_key": key,
+            "run_id": run_id_value,
+            "attempted_at_utc": attempted_at_utc,
+            "market_ticker": str(market_ticker or "").strip().upper() or None,
+            "contract_family": str(contract_family or "").strip().lower() or None,
+            "strip_key": str(strip_key or "").strip() or None,
+            "side": str(side or "").strip().lower() or "yes",
+            "contracts": max(1, int(contracts)),
+            "notional_risk_dollars": round(float(notional_risk_dollars), 6),
+            "expected_value_dollars": round(float(expected_value_dollars), 6),
+            "source_strategy": str(source_strategy or "").strip() or None,
+            "opportunity_class": str(opportunity_class or "").strip() or None,
+            "order_id": str(order_id or "").strip() or None,
+            "status": str(status or "").strip().lower() or "unknown",
+            "partial_fill": False,
+            "fill_time_seconds": None,
+            "filled_at_utc": None,
+            "canceled_at_utc": None,
+            "expired_at_utc": None,
+        }
+        existing_idx = attempt_events_by_key.get(key)
+        if existing_idx is None:
+            attempt_events.append(payload)
+            attempt_events_by_key[key] = len(attempt_events) - 1
+            return
+        existing = attempt_events[existing_idx]
+        if not isinstance(existing, dict):
+            attempt_events[existing_idx] = payload
+            return
+        merged = dict(existing)
+        for field, value in payload.items():
+            if merged.get(field) in (None, "", []) and value not in (None, "", []):
+                merged[field] = value
+        merged["status"] = str(status or merged.get("status") or "unknown").strip().lower()
+        if payload["order_id"] and not merged.get("order_id"):
+            merged["order_id"] = payload["order_id"]
+        attempt_events[existing_idx] = merged
+
+    def _update_attempt_event_status(
+        *,
+        attempt_event_key: str | None,
+        status: str,
+        fill_time_seconds: float | None = None,
+        partial_fill: bool | None = None,
+        event_time_utc: str | None = None,
+    ) -> None:
+        key = str(attempt_event_key or "").strip()
+        if not key:
+            return
+        idx = attempt_events_by_key.get(key)
+        if idx is None:
+            return
+        event = attempt_events[idx]
+        if not isinstance(event, dict):
+            return
+        normalized_status = str(status or "").strip().lower()
+        if normalized_status:
+            event["status"] = normalized_status
+        if isinstance(fill_time_seconds, float):
+            event["fill_time_seconds"] = round(max(0.0, float(fill_time_seconds)), 6)
+        if isinstance(partial_fill, bool):
+            event["partial_fill"] = bool(partial_fill)
+        event_time_text = str(event_time_utc or "").strip() or run_finished_at_dt.astimezone(timezone.utc).isoformat()
+        if normalized_status == "filled":
+            event["filled_at_utc"] = event_time_text
+        elif normalized_status == "canceled":
+            event["canceled_at_utc"] = event_time_text
+        elif normalized_status == "expired":
+            event["expired_at_utc"] = event_time_text
+        attempt_events[idx] = event
+
+    def _build_execution_quality_rows(
+        *,
+        attempts_data: list[dict[str, Any]],
+        open_positions_data: list[dict[str, Any]],
+        closed_positions_data: list[dict[str, Any]],
+    ) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+        def _row(*, family: str, ticker: str | None) -> dict[str, Any]:
+            return {
+                "family": family,
+                "ticker": ticker,
+                "attempts": 0,
+                "fills": 0,
+                "canceled": 0,
+                "markout_300s_sum_dollars": 0.0,
+                "markout_300s_sum_per_contract_dollars": 0.0,
+                "markout_300s_count": 0,
+                "mtm_sum_dollars": 0.0,
+                "risk_sum_dollars": 0.0,
+                "state": "warmup",
+                "risk_multiplier": 1.0,
+            }
+
+        def _touch(
+            store: dict[str, dict[str, Any]],
+            key: str,
+            *,
+            family: str,
+            ticker: str | None,
+        ) -> dict[str, Any]:
+            existing = store.get(key)
+            if isinstance(existing, dict):
+                return existing
+            created = _row(family=family, ticker=ticker)
+            store[key] = created
+            return created
+
+        by_family: dict[str, dict[str, Any]] = {}
+        by_ticker: dict[str, dict[str, Any]] = {}
+
+        for event in attempts_data:
+            if not isinstance(event, dict):
+                continue
+            family = str(event.get("contract_family") or "").strip().lower() or "unknown_family"
+            ticker = str(event.get("market_ticker") or "").strip().upper() or "UNKNOWN_TICKER"
+            status = str(event.get("status") or "").strip().lower()
+            family_row = _touch(by_family, family, family=family, ticker=None)
+            ticker_row = _touch(by_ticker, ticker, family=family, ticker=ticker)
+            for row in (family_row, ticker_row):
+                row["attempts"] = int(row.get("attempts") or 0) + 1
+                if status == "filled":
+                    row["fills"] = int(row.get("fills") or 0) + 1
+                elif status == "canceled":
+                    row["canceled"] = int(row.get("canceled") or 0) + 1
+
+        for position in [*open_positions_data, *closed_positions_data]:
+            if not isinstance(position, dict):
+                continue
+            family = str(position.get("contract_family") or "").strip().lower() or "unknown_family"
+            ticker = str(position.get("market_ticker") or "").strip().upper() or "UNKNOWN_TICKER"
+            contracts = max(1, _coerce_int(position.get("contracts"), 1))
+            markout_300 = _parse_float(position.get("markout_300s_dollars"))
+            mtm_value = _parse_float(position.get("mark_to_model_pnl_dollars"))
+            if not isinstance(mtm_value, float):
+                mtm_value = _parse_float(position.get("settlement_pnl_dollars"))
+            if not isinstance(mtm_value, float):
+                mtm_value = _parse_float(position.get("realized_trade_pnl_dollars"))
+            risk_value = _risk_dollars_from_payload(position)
+
+            family_row = _touch(by_family, family, family=family, ticker=None)
+            ticker_row = _touch(by_ticker, ticker, family=family, ticker=ticker)
+            for row in (family_row, ticker_row):
+                if isinstance(markout_300, float):
+                    row["markout_300s_sum_dollars"] = float(row.get("markout_300s_sum_dollars") or 0.0) + float(markout_300)
+                    row["markout_300s_sum_per_contract_dollars"] = (
+                        float(row.get("markout_300s_sum_per_contract_dollars") or 0.0)
+                        + (float(markout_300) / float(max(1, contracts)))
+                    )
+                    row["markout_300s_count"] = int(row.get("markout_300s_count") or 0) + 1
+                row["mtm_sum_dollars"] = float(row.get("mtm_sum_dollars") or 0.0) + float(mtm_value or 0.0)
+                row["risk_sum_dollars"] = float(row.get("risk_sum_dollars") or 0.0) + float(max(0.0, risk_value))
+
+        def _finalize(row: dict[str, Any]) -> dict[str, Any]:
+            fills = max(0, _coerce_int(row.get("fills"), 0))
+            attempts = max(0, _coerce_int(row.get("attempts"), 0))
+            canceled = max(0, _coerce_int(row.get("canceled"), 0))
+            markout_count = max(0, _coerce_int(row.get("markout_300s_count"), 0))
+            markout_300_mean_dollars = (
+                round(float(row.get("markout_300s_sum_dollars") or 0.0) / float(markout_count), 6)
+                if markout_count > 0
+                else None
+            )
+            markout_300_mean_per_contract_dollars = (
+                round(float(row.get("markout_300s_sum_per_contract_dollars") or 0.0) / float(markout_count), 6)
+                if markout_count > 0
+                else None
+            )
+            risk_sum = float(row.get("risk_sum_dollars") or 0.0)
+            markout_300_per_risk_pct = (
+                round((float(row.get("markout_300s_sum_dollars") or 0.0) / risk_sum) * 100.0, 6)
+                if risk_sum > 0.0
+                else None
+            )
+            mtm_sum = float(row.get("mtm_sum_dollars") or 0.0)
+            mtm_per_risk_pct = round((mtm_sum / risk_sum) * 100.0, 6) if risk_sum > 0.0 else None
+            fill_rate = round(float(fills) / float(attempts), 6) if attempts > 0 else None
+            cancel_rate = round(float(canceled) / float(attempts), 6) if attempts > 0 else None
+
+            poor_quality = False
+            if isinstance(markout_300_mean_per_contract_dollars, float) and markout_300_mean_per_contract_dollars < -0.05:
+                poor_quality = True
+            if isinstance(mtm_per_risk_pct, float) and mtm_per_risk_pct < -15.0:
+                poor_quality = True
+
+            state = "warmup"
+            risk_multiplier = 1.0
+            if fills < 5:
+                state = "warmup"
+                risk_multiplier = 1.0
+            elif fills >= 10 and poor_quality:
+                state = "paused"
+                risk_multiplier = 0.0
+            elif poor_quality:
+                state = "degraded"
+                risk_multiplier = 0.5
+            else:
+                state = "healthy"
+                risk_multiplier = 1.0
+
+            return {
+                **row,
+                "state": state,
+                "risk_multiplier": round(float(risk_multiplier), 6),
+                "fill_rate": fill_rate,
+                "cancel_rate": cancel_rate,
+                "markout_300s_mean_dollars": markout_300_mean_dollars,
+                "markout_300s_mean_per_contract_dollars": markout_300_mean_per_contract_dollars,
+                "markout_300s_per_risk_pct": markout_300_per_risk_pct,
+                "markout_300s_per_contract": markout_300_mean_per_contract_dollars,
+                "mtm_per_risk_pct": mtm_per_risk_pct,
+            }
+
+        return (
+            {key: _finalize(value) for key, value in by_family.items()},
+            {key: _finalize(value) for key, value in by_ticker.items()},
+        )
+
+    family_quality_rows, ticker_quality_rows = _build_execution_quality_rows(
+        attempts_data=attempt_events,
+        open_positions_data=[dict(item) for item in open_by_key.values() if isinstance(item, dict)],
+        closed_positions_data=[dict(item) for item in positions_closed if isinstance(item, dict)],
+    )
+    family_execution_state_map = {
+        key: str(value.get("state") or "warmup")
+        for key, value in family_quality_rows.items()
+        if isinstance(value, dict)
+    }
+    ticker_execution_state_map = {
+        key: str(value.get("state") or "warmup")
+        for key, value in ticker_quality_rows.items()
+        if isinstance(value, dict)
+    }
+    family_risk_multiplier_map = {
+        key: round(float(_parse_float(value.get("risk_multiplier")) or 1.0), 6)
+        for key, value in family_quality_rows.items()
+        if isinstance(value, dict)
+    }
+    ticker_risk_multiplier_map = {
+        key: round(float(_parse_float(value.get("risk_multiplier")) or 1.0), 6)
+        for key, value in ticker_quality_rows.items()
+        if isinstance(value, dict)
+    }
+    family_fill_rate_map = {
+        key: _parse_float(value.get("fill_rate"))
+        for key, value in family_quality_rows.items()
+        if isinstance(value, dict)
+    }
+    ticker_fill_rate_map = {
+        key: _parse_float(value.get("fill_rate"))
+        for key, value in ticker_quality_rows.items()
+        if isinstance(value, dict)
+    }
+    family_cancel_rate_map = {
+        key: _parse_float(value.get("cancel_rate"))
+        for key, value in family_quality_rows.items()
+        if isinstance(value, dict)
+    }
+    ticker_cancel_rate_map = {
+        key: _parse_float(value.get("cancel_rate"))
+        for key, value in ticker_quality_rows.items()
+        if isinstance(value, dict)
+    }
+    family_mtm_per_risk_pct_map = {
+        key: _parse_float(value.get("mtm_per_risk_pct"))
+        for key, value in family_quality_rows.items()
+        if isinstance(value, dict)
+    }
+    ticker_mtm_per_risk_pct_map = {
+        key: _parse_float(value.get("mtm_per_risk_pct"))
+        for key, value in ticker_quality_rows.items()
+        if isinstance(value, dict)
+    }
+    family_markout_300_mean_map = {
+        key: _parse_float(value.get("markout_300s_mean_dollars"))
+        for key, value in family_quality_rows.items()
+        if isinstance(value, dict)
+    }
+    ticker_markout_300_mean_map = {
+        key: _parse_float(value.get("markout_300s_mean_dollars"))
+        for key, value in ticker_quality_rows.items()
+        if isinstance(value, dict)
+    }
+    family_markout_300_per_contract_mean_map = {
+        key: _parse_float(value.get("markout_300s_mean_per_contract_dollars"))
+        for key, value in family_quality_rows.items()
+        if isinstance(value, dict)
+    }
+    ticker_markout_300_per_contract_mean_map = {
+        key: _parse_float(value.get("markout_300s_mean_per_contract_dollars"))
+        for key, value in ticker_quality_rows.items()
+        if isinstance(value, dict)
+    }
+    family_markout_300_per_risk_pct_map = {
+        key: _parse_float(value.get("markout_300s_per_risk_pct"))
+        for key, value in family_quality_rows.items()
+        if isinstance(value, dict)
+    }
+    ticker_markout_300_per_risk_pct_map = {
+        key: _parse_float(value.get("markout_300s_per_risk_pct"))
+        for key, value in ticker_quality_rows.items()
+        if isinstance(value, dict)
+    }
+    family_markout_300_per_contract_map = {
+        key: _parse_float(value.get("markout_300s_per_contract"))
+        for key, value in family_quality_rows.items()
+        if isinstance(value, dict)
+    }
+    ticker_markout_300_per_contract_map = {
+        key: _parse_float(value.get("markout_300s_per_contract"))
+        for key, value in ticker_quality_rows.items()
+        if isinstance(value, dict)
+    }
+
+    run_attempts = 0
+    run_filled = 0
+    run_partial_filled = 0
+    run_canceled = 0
+    run_expired = 0
+
+    def _append_filled_position(
+        *,
+        key: str,
+        attempt_event_key: str | None,
+        ticker: str,
+        side: str,
+        contract_family: str | None,
+        strip_key: str | None,
+        entry_price: float,
+        contracts: int,
+        expected_value_dollars: float,
+        fill_source: str,
+        fill_time_seconds: float,
+        hours_to_close: float | None,
+        close_time_estimate_utc: str | None,
+        availability_state: str | None,
+        fair_yes_probability: float | None,
+        edge_net: float,
+        source_strategy: str | None,
+        opportunity_class: str | None,
+        partial_fill: bool,
+    ) -> None:
+        nonlocal fill_events_count
+        nonlocal fill_time_seconds_total
+        nonlocal expected_value_total
+        nonlocal orders_filled_total
+        nonlocal orders_partial_filled_total
+        nonlocal run_filled
+        nonlocal run_partial_filled
+
+        normalized_side = str(side or "").strip().lower()
+        if normalized_side not in {"yes", "no"}:
+            normalized_side = "yes"
+        contracts_effective = max(1, int(contracts))
+        entry_price_effective = round(max(0.0, min(1.0, float(entry_price))), 6)
+        expected_value_effective = round(float(expected_value_dollars), 6)
+        fill_seconds_effective = max(0.0, float(fill_time_seconds))
+        fair_yes_effective = (
+            max(0.01, min(0.99, float(fair_yes_probability)))
+            if isinstance(fair_yes_probability, float)
+            else None
+        )
+
+        open_by_key[key] = {
+            "position_id": f"{key}|{run_finished_at_dt.strftime('%Y%m%d%H%M%S')}",
+            "position_key": key,
+            "attempt_event_key": str(attempt_event_key or "").strip() or None,
+            "market_ticker": ticker,
+            "contract_family": contract_family,
+            "strip_key": strip_key,
+            "side": normalized_side,
+            "contracts": contracts_effective,
+            "entry_price_dollars": entry_price_effective,
+            "entry_time_utc": run_finished_at_dt.astimezone(timezone.utc).isoformat(),
+            "notional_risk_dollars": round(entry_price_effective * float(contracts_effective), 6),
+            "hours_to_close": hours_to_close,
+            "close_time_estimate_utc": close_time_estimate_utc,
+            "availability_state": availability_state,
+            "mark_price_dollars": entry_price_effective,
+            "mark_time_utc": run_finished_at_dt.astimezone(timezone.utc).isoformat(),
+            "mark_to_model_pnl_dollars": 0.0,
+            "markout_10s_dollars": 0.0,
+            "markout_60s_dollars": 0.0,
+            "markout_300s_dollars": 0.0,
+            "expected_value_dollars": expected_value_effective,
+            "fair_yes_probability": fair_yes_effective,
+            "edge_net": round(float(edge_net), 6),
+            "source_strategy": str(source_strategy or "").strip() or None,
+            "opportunity_class": str(opportunity_class or "").strip() or None,
+            "fill_source": fill_source,
+            "partial_fill": bool(partial_fill),
+            "fill_time_seconds": round(fill_seconds_effective, 6),
+        }
+        orders_filled_total += 1
+        run_filled += 1
+        if partial_fill:
+            orders_partial_filled_total += 1
+            run_partial_filled += 1
+        expected_value_total += expected_value_effective
+        fill_events_count += 1
+        fill_time_seconds_total += fill_seconds_effective
+        _update_attempt_event_status(
+            attempt_event_key=attempt_event_key,
+            status="filled",
+            fill_time_seconds=fill_seconds_effective,
+            partial_fill=bool(partial_fill),
+            event_time_utc=run_finished_at_dt.astimezone(timezone.utc).isoformat(),
+        )
+
+    if run_is_new:
+        # Advance existing resting synthetic orders first.
+        remaining_resting: list[dict[str, Any]] = []
+        for key, order in resting_by_key.items():
+            ticker = str(order.get("market_ticker") or "").strip().upper()
+            side = str(order.get("side") or "yes").strip().lower()
+            if side not in {"yes", "no"}:
+                side = "yes"
+            contracts = max(1, _coerce_int(order.get("contracts"), 1))
+            reference_price = float(_parse_float(order.get("entry_price_dollars")) or 0.0)
+            expected_value = float(_parse_float(order.get("expected_value_dollars")) or 0.0)
+            fair_yes_probability = _parse_float(order.get("fair_yes_probability"))
+            edge_net = float(_parse_float(order.get("edge_net")) or 0.0)
+            submitted_at_dt = _parse_iso(order.get("submitted_at_utc"))
+            close_estimate_dt = _parse_iso(order.get("close_time_estimate_utc"))
+            attempt_event_key = str(order.get("attempt_event_key") or "").strip()
+            if not attempt_event_key:
+                fallback_stamp = (
+                    submitted_at_dt.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%S")
+                    if isinstance(submitted_at_dt, datetime)
+                    else run_finished_at_dt.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%S")
+                )
+                attempt_event_key = f"paper_live_attempt::{key}::{fallback_stamp}"
+            _ensure_attempt_event(
+                attempt_event_key=attempt_event_key,
+                run_id_value=str(order.get("run_id") or run_id).strip() or run_id,
+                attempted_at_utc=(
+                    submitted_at_dt.astimezone(timezone.utc).isoformat()
+                    if isinstance(submitted_at_dt, datetime)
+                    else run_finished_at_dt.astimezone(timezone.utc).isoformat()
+                ),
+                market_ticker=ticker,
+                contract_family=str(order.get("contract_family") or "").strip().lower() or None,
+                strip_key=str(order.get("strip_key") or "").strip() or None,
+                side=side,
+                contracts=contracts,
+                notional_risk_dollars=float(reference_price) * float(contracts),
+                expected_value_dollars=expected_value,
+                source_strategy=str(order.get("source_strategy") or "").strip() or "climate_router_pilot",
+                opportunity_class=str(order.get("opportunity_class") or "").strip() or None,
+                order_id=str(order.get("order_id") or "").strip() or None,
+                status="resting",
+            )
+            if isinstance(close_estimate_dt, datetime) and run_finished_at_dt >= close_estimate_dt:
+                orders_expired_total += 1
+                run_expired += 1
+                _update_attempt_event_status(
+                    attempt_event_key=attempt_event_key,
+                    status="expired",
+                    event_time_utc=run_finished_at_dt.astimezone(timezone.utc).isoformat(),
+                )
+                continue
+            score = _paper_live_deterministic_score(run_id, key, "resting_progress")
+            partial_prob = 0.15
+            fill_prob = 0.35
+            cancel_prob = 0.2 if normalized_allow_random_cancels else 0.0
+            fill_time_seconds = (
+                max(0.0, (run_finished_at_dt - submitted_at_dt).total_seconds())
+                if isinstance(submitted_at_dt, datetime)
+                else 0.0
+            )
+            if score < partial_prob:
+                _append_filled_position(
+                    key=key,
+                    attempt_event_key=attempt_event_key,
+                    ticker=ticker,
+                    side=side,
+                    contract_family=str(order.get("contract_family") or "").strip() or None,
+                    strip_key=str(order.get("strip_key") or "").strip() or None,
+                    entry_price=reference_price,
+                    contracts=contracts,
+                    expected_value_dollars=expected_value,
+                    fill_source="resting_partial_fill",
+                    fill_time_seconds=fill_time_seconds,
+                    hours_to_close=_parse_float(order.get("hours_to_close")),
+                    close_time_estimate_utc=str(order.get("close_time_estimate_utc") or "").strip() or None,
+                    availability_state=str(order.get("availability_state") or "").strip() or None,
+                    fair_yes_probability=fair_yes_probability,
+                    edge_net=edge_net,
+                    source_strategy=str(order.get("source_strategy") or "").strip() or "climate_router_pilot",
+                    opportunity_class=str(order.get("opportunity_class") or "").strip() or None,
+                    partial_fill=True,
+                )
+            elif score < partial_prob + fill_prob:
+                _append_filled_position(
+                    key=key,
+                    attempt_event_key=attempt_event_key,
+                    ticker=ticker,
+                    side=side,
+                    contract_family=str(order.get("contract_family") or "").strip() or None,
+                    strip_key=str(order.get("strip_key") or "").strip() or None,
+                    entry_price=reference_price,
+                    contracts=contracts,
+                    expected_value_dollars=expected_value,
+                    fill_source="resting_progress",
+                    fill_time_seconds=fill_time_seconds,
+                    hours_to_close=_parse_float(order.get("hours_to_close")),
+                    close_time_estimate_utc=str(order.get("close_time_estimate_utc") or "").strip() or None,
+                    availability_state=str(order.get("availability_state") or "").strip() or None,
+                    fair_yes_probability=fair_yes_probability,
+                    edge_net=edge_net,
+                    source_strategy=str(order.get("source_strategy") or "").strip() or "climate_router_pilot",
+                    opportunity_class=str(order.get("opportunity_class") or "").strip() or None,
+                    partial_fill=False,
+                )
+            elif normalized_allow_random_cancels and score < partial_prob + fill_prob + cancel_prob:
+                canceled_order = dict(order)
+                canceled_order["canceled_at_utc"] = run_finished_at_dt.astimezone(timezone.utc).isoformat()
+                canceled_order["cancel_reason"] = "resting_timeout_simulated"
+                orders_canceled_total += 1
+                run_canceled += 1
+                _update_attempt_event_status(
+                    attempt_event_key=attempt_event_key,
+                    status="canceled",
+                    event_time_utc=run_finished_at_dt.astimezone(timezone.utc).isoformat(),
+                )
+            else:
+                order["attempt_event_key"] = attempt_event_key
+                remaining_resting.append(order)
+        resting_by_key = {
+            _shadow_position_key(market_ticker=str(item.get("market_ticker") or ""), side=str(item.get("side") or "")): item
+            for item in remaining_resting
+            if _shadow_position_key(market_ticker=str(item.get("market_ticker") or ""), side=str(item.get("side") or ""))
+        }
+
+        # Recompute execution quality state after resting-order lifecycle progression.
+        family_quality_rows, ticker_quality_rows = _build_execution_quality_rows(
+            attempts_data=attempt_events,
+            open_positions_data=[dict(item) for item in open_by_key.values() if isinstance(item, dict)],
+            closed_positions_data=[dict(item) for item in positions_closed if isinstance(item, dict)],
+        )
+        family_execution_state_map = {
+            key: str(value.get("state") or "warmup")
+            for key, value in family_quality_rows.items()
+            if isinstance(value, dict)
+        }
+        ticker_execution_state_map = {
+            key: str(value.get("state") or "warmup")
+            for key, value in ticker_quality_rows.items()
+            if isinstance(value, dict)
+        }
+        family_risk_multiplier_map = {
+            key: round(float(_parse_float(value.get("risk_multiplier")) or 1.0), 6)
+            for key, value in family_quality_rows.items()
+            if isinstance(value, dict)
+        }
+        ticker_risk_multiplier_map = {
+            key: round(float(_parse_float(value.get("risk_multiplier")) or 1.0), 6)
+            for key, value in ticker_quality_rows.items()
+            if isinstance(value, dict)
+        }
+        family_fill_rate_map = {
+            key: _parse_float(value.get("fill_rate"))
+            for key, value in family_quality_rows.items()
+            if isinstance(value, dict)
+        }
+        ticker_fill_rate_map = {
+            key: _parse_float(value.get("fill_rate"))
+            for key, value in ticker_quality_rows.items()
+            if isinstance(value, dict)
+        }
+        family_cancel_rate_map = {
+            key: _parse_float(value.get("cancel_rate"))
+            for key, value in family_quality_rows.items()
+            if isinstance(value, dict)
+        }
+        ticker_cancel_rate_map = {
+            key: _parse_float(value.get("cancel_rate"))
+            for key, value in ticker_quality_rows.items()
+            if isinstance(value, dict)
+        }
+        family_mtm_per_risk_pct_map = {
+            key: _parse_float(value.get("mtm_per_risk_pct"))
+            for key, value in family_quality_rows.items()
+            if isinstance(value, dict)
+        }
+        ticker_mtm_per_risk_pct_map = {
+            key: _parse_float(value.get("mtm_per_risk_pct"))
+            for key, value in ticker_quality_rows.items()
+            if isinstance(value, dict)
+        }
+        family_markout_300_mean_map = {
+            key: _parse_float(value.get("markout_300s_mean_dollars"))
+            for key, value in family_quality_rows.items()
+            if isinstance(value, dict)
+        }
+        ticker_markout_300_mean_map = {
+            key: _parse_float(value.get("markout_300s_mean_dollars"))
+            for key, value in ticker_quality_rows.items()
+            if isinstance(value, dict)
+        }
+        family_markout_300_per_contract_mean_map = {
+            key: _parse_float(value.get("markout_300s_mean_per_contract_dollars"))
+            for key, value in family_quality_rows.items()
+            if isinstance(value, dict)
+        }
+        ticker_markout_300_per_contract_mean_map = {
+            key: _parse_float(value.get("markout_300s_mean_per_contract_dollars"))
+            for key, value in ticker_quality_rows.items()
+            if isinstance(value, dict)
+        }
+        family_markout_300_per_risk_pct_map = {
+            key: _parse_float(value.get("markout_300s_per_risk_pct"))
+            for key, value in family_quality_rows.items()
+            if isinstance(value, dict)
+        }
+        ticker_markout_300_per_risk_pct_map = {
+            key: _parse_float(value.get("markout_300s_per_risk_pct"))
+            for key, value in ticker_quality_rows.items()
+            if isinstance(value, dict)
+        }
+        family_markout_300_per_contract_map = {
+            key: _parse_float(value.get("markout_300s_per_contract"))
+            for key, value in family_quality_rows.items()
+            if isinstance(value, dict)
+        }
+        ticker_markout_300_per_contract_map = {
+            key: _parse_float(value.get("markout_300s_per_contract"))
+            for key, value in ticker_quality_rows.items()
+            if isinstance(value, dict)
+        }
+
+        # Growth-mode paper-live submission: risk-budget limited, family/strip capped, liquidity-aware.
+        live_eligible_hint = _coerce_int(pilot.get("would_attempt_live_if_enabled"), 0) > 0
+        can_attempt_live_path = bool(candidate_pool) and (
+            live_eligible_hint or not normalized_require_live_eligible_hint
+        )
+        for candidate in candidate_pool:
+            if run_attempts >= run_attempt_limit:
+                break
+            if not can_attempt_live_path:
+                break
+
+            ticker = str(candidate.get("market_ticker") or "").strip().upper()
+            family = str(candidate.get("contract_family") or "").strip().lower()
+            side = str(candidate.get("theoretical_side") or "yes").strip().lower()
+            if side not in {"yes", "no"}:
+                side = "yes"
+            key = _shadow_position_key(market_ticker=ticker, side=side) if ticker else ""
+            if not key or family not in set(normalized_family_allowlist):
+                continue
+            if key in open_by_key or key in resting_by_key:
+                continue
+
+            family_multiplier = float(family_risk_multiplier_map.get(family, 1.0))
+            ticker_multiplier = float(ticker_risk_multiplier_map.get(ticker, 1.0))
+            execution_risk_multiplier = max(0.0, min(family_multiplier, ticker_multiplier))
+            if execution_risk_multiplier <= 0.0:
+                continue
+
+            reference_price = float(_parse_float(candidate.get("theoretical_reference_price")) or 0.0)
+            reference_price = round(max(0.01, min(0.99, reference_price)), 6)
+            edge_net = float(_parse_float(candidate.get("theoretical_edge_net")) or 0.0)
+            tier_label, tier_risk_pct = _paper_live_tier_targets(edge_net)
+            if tier_risk_pct <= 0.0:
+                continue
+
+            availability_state = str(candidate.get("availability_state") or "").strip().lower() or None
+            strip_key = str(candidate.get("strip_key") or "").strip() or None
+            strip_budget_key = strip_key or "__no_strip__"
+            fair_yes_probability = _parse_float(candidate.get("fair_yes_probability"))
+            hours_to_close = _parse_float(candidate.get("hours_to_close"))
+            close_estimate = _shadow_close_time_estimate(as_of=run_finished_at_dt, hours_to_close=hours_to_close)
+            source_strategy = str(candidate.get("source_strategy") or "").strip() or "climate_router_pilot"
+            opportunity_class = str(candidate.get("opportunity_class") or "").strip() or None
+            suggested_risk_dollars = float(_parse_float(candidate.get("suggested_risk_dollars")) or 0.0)
+
+            kelly_used = normalized_kelly_fraction
+            if tier_label == "A+" and availability_state in {"tradable", "hot"}:
+                kelly_used = normalized_kelly_high_conf_max
+            kelly_used = float(kelly_used) * execution_risk_multiplier
+            kelly_used = max(0.0, min(1.0, float(kelly_used)))
+            if kelly_used <= 0.0:
+                continue
+            per_attempt_kelly_used.append(kelly_used)
+
+            target_risk_pct = tier_risk_pct * (kelly_used / 0.5 if 0.5 > 0 else 1.0) * drawdown_risk_scale
+            target_risk_dollars = float(sizing_balance_dollars) * max(0.0, target_risk_pct)
+
+            remaining_total_risk = max(0.0, open_risk_cap_dollars - open_risk_total)
+            effective_family_risk_cap_dollars = max(0.0, family_risk_cap_dollars * family_multiplier)
+            remaining_family_risk = max(
+                0.0,
+                effective_family_risk_cap_dollars - float(open_risk_by_family.get(family, 0.0)),
+            )
+            remaining_strip_risk = max(0.0, strip_risk_cap_dollars - float(open_risk_by_strip.get(strip_budget_key, 0.0)))
+
+            liquidity_cap_pct = 0.08
+            if availability_state in {"hot"}:
+                liquidity_cap_pct = 0.10
+            elif availability_state in {"priced_watch_only"}:
+                liquidity_cap_pct = 0.035
+            elif availability_state in {"watch_only", "watch", "endpoint_only"}:
+                liquidity_cap_pct = 0.02
+            state_liquidity_cap = float(sizing_balance_dollars) * liquidity_cap_pct
+            baseline_liquidity = max(reference_price, suggested_risk_dollars)
+            liquidity_cap_dollars = max(
+                reference_price,
+                min(state_liquidity_cap, max(state_liquidity_cap * 0.6, baseline_liquidity * 8.0)),
+            )
+
+            allowed_risk_dollars = min(
+                target_risk_dollars,
+                single_position_risk_cap_dollars,
+                remaining_total_risk,
+                remaining_family_risk,
+                remaining_strip_risk,
+                liquidity_cap_dollars,
+            )
+            if allowed_risk_dollars < reference_price:
+                continue
+
+            contracts = max(1, int(allowed_risk_dollars / reference_price))
+            notional_risk_dollars = round(reference_price * float(contracts), 6)
+            if notional_risk_dollars <= 0.0:
+                continue
+
+            expected_value_per_contract = float(_parse_float(candidate.get("expected_value_dollars")) or 0.0)
+            if expected_value_per_contract <= 0.0:
+                expected_value_per_contract = max(0.0, edge_net * reference_price)
+            expected_value_dollars = round(float(expected_value_per_contract) * float(contracts), 6)
+
+            order_attempts_total += 1
+            run_attempts += 1
+            attempted_at_utc = run_finished_at_dt.astimezone(timezone.utc).isoformat()
+            score = _paper_live_deterministic_score(run_id, key, "initial_attempt_growth")
+            size_pressure = max(0.0, min(1.0, notional_risk_dollars / max(1.0, liquidity_cap_dollars)))
+            partial_prob = max(0.05, min(0.35, 0.08 + max(0.0, edge_net) * 0.4 + size_pressure * 0.05))
+            fill_prob = max(0.10, min(0.85, 0.55 + max(0.0, edge_net) * 1.5 - size_pressure * 0.35))
+            cancel_prob = (
+                max(0.05, min(0.60, 0.12 + size_pressure * 0.25))
+                if normalized_allow_random_cancels
+                else 0.0
+            )
+            total_prob = partial_prob + fill_prob + cancel_prob
+            if total_prob > 0.95:
+                scale = 0.95 / total_prob
+                partial_prob *= scale
+                fill_prob *= scale
+                cancel_prob *= scale
+            attempt_event_key = f"paper_live_attempt::{key}::{run_id}"
+
+            _ensure_attempt_event(
+                attempt_event_key=attempt_event_key,
+                run_id_value=run_id,
+                attempted_at_utc=attempted_at_utc,
+                market_ticker=ticker,
+                contract_family=family or None,
+                strip_key=strip_key,
+                side=side,
+                contracts=contracts,
+                notional_risk_dollars=notional_risk_dollars,
+                expected_value_dollars=expected_value_dollars,
+                source_strategy=source_strategy,
+                opportunity_class=opportunity_class,
+                order_id=f"paper_live::{key}::{run_finished_at_dt.strftime('%Y%m%d%H%M%S')}",
+                status="attempted",
+            )
+
+            if score < partial_prob:
+                _append_filled_position(
+                    key=key,
+                    attempt_event_key=attempt_event_key,
+                    ticker=ticker,
+                    side=side,
+                    contract_family=family or None,
+                    strip_key=strip_key,
+                    entry_price=reference_price,
+                    contracts=contracts,
+                    expected_value_dollars=expected_value_dollars,
+                    fill_source="initial_partial_fill",
+                    fill_time_seconds=0.0,
+                    hours_to_close=hours_to_close,
+                    close_time_estimate_utc=close_estimate,
+                    availability_state=availability_state,
+                    fair_yes_probability=fair_yes_probability,
+                    edge_net=edge_net,
+                    source_strategy=source_strategy,
+                    opportunity_class=opportunity_class,
+                    partial_fill=True,
+                )
+                open_risk_total += notional_risk_dollars
+                open_risk_by_family[family] = float(open_risk_by_family.get(family, 0.0)) + notional_risk_dollars
+                open_risk_by_strip[strip_budget_key] = float(open_risk_by_strip.get(strip_budget_key, 0.0)) + notional_risk_dollars
+            elif score < partial_prob + fill_prob:
+                _append_filled_position(
+                    key=key,
+                    attempt_event_key=attempt_event_key,
+                    ticker=ticker,
+                    side=side,
+                    contract_family=family or None,
+                    strip_key=strip_key,
+                    entry_price=reference_price,
+                    contracts=contracts,
+                    expected_value_dollars=expected_value_dollars,
+                    fill_source="initial_attempt",
+                    fill_time_seconds=0.0,
+                    hours_to_close=hours_to_close,
+                    close_time_estimate_utc=close_estimate,
+                    availability_state=availability_state,
+                    fair_yes_probability=fair_yes_probability,
+                    edge_net=edge_net,
+                    source_strategy=source_strategy,
+                    opportunity_class=opportunity_class,
+                    partial_fill=False,
+                )
+                open_risk_total += notional_risk_dollars
+                open_risk_by_family[family] = float(open_risk_by_family.get(family, 0.0)) + notional_risk_dollars
+                open_risk_by_strip[strip_budget_key] = float(open_risk_by_strip.get(strip_budget_key, 0.0)) + notional_risk_dollars
+            elif normalized_allow_random_cancels and score < partial_prob + fill_prob + cancel_prob:
+                orders_canceled_total += 1
+                run_canceled += 1
+                _update_attempt_event_status(
+                    attempt_event_key=attempt_event_key,
+                    status="canceled",
+                    event_time_utc=attempted_at_utc,
+                )
+            else:
+                resting_by_key[key] = {
+                    "attempt_event_key": attempt_event_key,
+                    "run_id": run_id,
+                    "order_id": f"paper_live::{key}::{run_finished_at_dt.strftime('%Y%m%d%H%M%S')}",
+                    "market_ticker": ticker,
+                    "contract_family": family,
+                    "strip_key": strip_key,
+                    "side": side,
+                    "contracts": contracts,
+                    "entry_price_dollars": round(reference_price, 6),
+                    "submitted_at_utc": attempted_at_utc,
+                    "hours_to_close": hours_to_close,
+                    "close_time_estimate_utc": close_estimate,
+                    "availability_state": availability_state,
+                    "expected_value_dollars": expected_value_dollars,
+                    "fair_yes_probability": fair_yes_probability,
+                    "edge_net": round(edge_net, 6),
+                    "source_strategy": source_strategy,
+                    "opportunity_class": opportunity_class,
+                    "risk_tier": tier_label,
+                    "kelly_fraction_used": round(float(kelly_used), 6),
+                }
+                _update_attempt_event_status(
+                    attempt_event_key=attempt_event_key,
+                    status="resting",
+                    event_time_utc=attempted_at_utc,
+                )
+                open_risk_total += notional_risk_dollars
+                open_risk_by_family[family] = float(open_risk_by_family.get(family, 0.0)) + notional_risk_dollars
+                open_risk_by_strip[strip_budget_key] = float(open_risk_by_strip.get(strip_budget_key, 0.0)) + notional_risk_dollars
+
+    # Mark-to-model / synthetic close handling on open positions.
+    updated_open_positions: list[dict[str, Any]] = []
+    closed_positions_history: list[dict[str, Any]] = [dict(item) for item in positions_closed if isinstance(item, dict)]
+    markout_10s_total = 0.0
+    markout_60s_total = 0.0
+    markout_300s_total = 0.0
+    for key, position in open_by_key.items():
+        entry_price = float(_parse_float(position.get("entry_price_dollars")) or 0.0)
+        contracts = max(1, _coerce_int(position.get("contracts"), 1))
+        side = str(position.get("side") or "yes").strip().lower()
+        if side not in {"yes", "no"}:
+            side = "yes"
+        edge_net = float(_parse_float(position.get("edge_net")) or 0.0)
+        fair_yes_probability = _parse_float(position.get("fair_yes_probability"))
+        expected_value_position = float(_parse_float(position.get("expected_value_dollars")) or 0.0)
+        close_estimate = _parse_iso(position.get("close_time_estimate_utc"))
+        markout_10s = _paper_live_markout_pnl(
+            position_key=key,
+            side=side,
+            entry_price=entry_price,
+            edge_net=edge_net,
+            fair_yes_probability=fair_yes_probability,
+            horizon_seconds=10,
+        ) * float(contracts)
+        markout_60s = _paper_live_markout_pnl(
+            position_key=key,
+            side=side,
+            entry_price=entry_price,
+            edge_net=edge_net,
+            fair_yes_probability=fair_yes_probability,
+            horizon_seconds=60,
+        ) * float(contracts)
+        markout_300s = _paper_live_markout_pnl(
+            position_key=key,
+            side=side,
+            entry_price=entry_price,
+            edge_net=edge_net,
+            fair_yes_probability=fair_yes_probability,
+            horizon_seconds=300,
+        ) * float(contracts)
+        markout_10s_total += float(markout_10s)
+        markout_60s_total += float(markout_60s)
+        markout_300s_total += float(markout_300s)
+
+        mark_price = round(entry_price + (float(markout_300s) / float(max(1, contracts))), 6)
+        mark_to_model = float(markout_300s)
+
+        if isinstance(close_estimate, datetime) and run_finished_at_dt >= close_estimate:
+            settlement_pnl, settlement_outcome = _paper_live_settlement_pnl(
+                position_key=key,
+                side=side,
+                entry_price=entry_price,
+                fair_yes_probability=fair_yes_probability,
+                contracts=contracts,
+            )
+            settlement_price = 1.0 if (
+                (side == "yes" and settlement_outcome == "yes")
+                or (side == "no" and settlement_outcome == "no")
+            ) else 0.0
+            closed = dict(position)
+            closed["exit_time_utc"] = run_finished_at_dt.astimezone(timezone.utc).isoformat()
+            closed["exit_price_dollars"] = round(float(settlement_price), 6)
+            closed["close_reason"] = "market_settlement_estimate"
+            closed["settlement_outcome"] = settlement_outcome
+            closed["settlement_pnl_dollars"] = round(float(settlement_pnl), 6)
+            closed["realized_trade_pnl_dollars"] = round(float(settlement_pnl), 6)
+            closed["markout_10s_dollars"] = round(float(markout_10s), 6)
+            closed["markout_60s_dollars"] = round(float(markout_60s), 6)
+            closed["markout_300s_dollars"] = round(float(markout_300s), 6)
+            realized_trade_total += float(settlement_pnl)
+            settlement_pnl_total += float(settlement_pnl)
+            settlement_expected_value_total += float(expected_value_position)
+            closed_positions_history.append(closed)
+            continue
+
+        updated = dict(position)
+        updated["mark_price_dollars"] = mark_price
+        updated["mark_time_utc"] = run_finished_at_dt.astimezone(timezone.utc).isoformat()
+        updated["mark_to_model_pnl_dollars"] = round(float(mark_to_model), 6)
+        updated["markout_10s_dollars"] = round(float(markout_10s), 6)
+        updated["markout_60s_dollars"] = round(float(markout_60s), 6)
+        updated["markout_300s_dollars"] = round(float(markout_300s), 6)
+        updated_open_positions.append(updated)
+
+    max_closed_positions = 250
+    if len(closed_positions_history) > max_closed_positions:
+        closed_positions_history = closed_positions_history[-max_closed_positions:]
+
+    mark_to_market_total = 0.0
+    for position in updated_open_positions:
+        mark_to_market_total += float(_parse_float(position.get("mark_to_model_pnl_dollars")) or 0.0)
+
+    current_balance = float(start) + float(realized_trade_total) + float(mark_to_market_total)
+    post_trade_sizing_balance_dollars = (
+        float(current_balance) if normalized_size_from_current_equity else float(start)
+    )
+    if post_trade_sizing_balance_dollars <= 0.0:
+        post_trade_sizing_balance_dollars = float(start)
+    post_trade_sizing_balance_dollars = max(0.0, float(post_trade_sizing_balance_dollars))
+    peak_balance = max(float(peak_balance), float(start), float(current_balance))
+    drawdown_pct = ((peak_balance - current_balance) / peak_balance * 100.0) if peak_balance > 0.0 else 0.0
+    drawdown_risk_scale, drawdown_throttle_state = _paper_live_drawdown_scale(drawdown_pct)
+
+    open_risk_by_family_current: dict[str, float] = {}
+    open_risk_by_strip_current: dict[str, float] = {}
+    open_risk_total_current = 0.0
+    for position in updated_open_positions:
+        if not isinstance(position, dict):
+            continue
+        risk = _risk_dollars_from_payload(position)
+        if risk <= 0.0:
+            continue
+        family = str(position.get("contract_family") or "unknown_family").strip().lower() or "unknown_family"
+        strip_key = str(position.get("strip_key") or "").strip() or "__no_strip__"
+        open_risk_total_current += risk
+        open_risk_by_family_current[family] = float(open_risk_by_family_current.get(family, 0.0)) + risk
+        open_risk_by_strip_current[strip_key] = float(open_risk_by_strip_current.get(strip_key, 0.0)) + risk
+    for order in resting_by_key.values():
+        if not isinstance(order, dict):
+            continue
+        risk = _risk_dollars_from_payload(order)
+        if risk <= 0.0:
+            continue
+        family = str(order.get("contract_family") or "unknown_family").strip().lower() or "unknown_family"
+        strip_key = str(order.get("strip_key") or "").strip() or "__no_strip__"
+        open_risk_total_current += risk
+        open_risk_by_family_current[family] = float(open_risk_by_family_current.get(family, 0.0)) + risk
+        open_risk_by_strip_current[strip_key] = float(open_risk_by_strip_current.get(strip_key, 0.0)) + risk
+
+    open_risk_cap_dollars = max(
+        0.0, float(post_trade_sizing_balance_dollars) * normalized_max_open_risk_pct * drawdown_risk_scale
+    )
+    family_risk_cap_dollars = max(
+        0.0, float(post_trade_sizing_balance_dollars) * normalized_max_family_risk_pct * drawdown_risk_scale
+    )
+    strip_risk_cap_dollars = max(
+        0.0, float(post_trade_sizing_balance_dollars) * normalized_max_strip_risk_pct * drawdown_risk_scale
+    )
+    open_risk_remaining_dollars = max(0.0, open_risk_cap_dollars - open_risk_total_current)
+
+    family_open_risk_remaining_dollars: dict[str, float] = {}
+    for family in set([*normalized_family_allowlist, *open_risk_by_family_current.keys()]):
+        family_open_risk_remaining_dollars[family] = round(
+            max(0.0, family_risk_cap_dollars - float(open_risk_by_family_current.get(family, 0.0))),
+            6,
+        )
+    strip_open_risk_remaining_dollars: dict[str, float] = {}
+    for strip_key, risk_value in open_risk_by_strip_current.items():
+        strip_open_risk_remaining_dollars[strip_key] = round(
+            max(0.0, strip_risk_cap_dollars - float(risk_value)),
+            6,
+        )
+    fill_time_seconds = (
+        round(float(fill_time_seconds_total) / float(fill_events_count), 6)
+        if fill_events_count > 0
+        else None
+    )
+    expected_vs_realized_delta = float(settlement_pnl_total) - float(settlement_expected_value_total)
+
+    equity_point = {
+        "run_id": run_id,
+        "as_of_utc": run_finished_at_dt.astimezone(timezone.utc).isoformat(),
+        "equity_dollars": round(float(current_balance), 6),
+        "realized_trade_pnl_dollars": round(float(realized_trade_total), 6),
+        "mark_to_market_pnl_dollars": round(float(mark_to_market_total), 6),
+        "positions_open": len(updated_open_positions),
+        "positions_closed": len(closed_positions_history),
+    }
+    if run_is_new:
+        equity_curve.append(equity_point)
+    elif equity_curve:
+        equity_curve[-1] = equity_point
+    else:
+        equity_curve.append(equity_point)
+    if len(equity_curve) > 500:
+        equity_curve = equity_curve[-500:]
+
+    selected_tickers: list[str] = []
+    if selected_ticker:
+        selected_tickers.append(selected_ticker)
+    for candidate in candidate_pool:
+        ticker = str(candidate.get("market_ticker") or "").strip().upper()
+        if ticker and ticker not in selected_tickers:
+            selected_tickers.append(ticker)
+    raw_selected_tickers = pilot.get("selected_tickers")
+    if isinstance(raw_selected_tickers, list):
+        for raw_ticker in raw_selected_tickers:
+            ticker = str(raw_ticker or "").strip().upper()
+            if ticker and ticker not in selected_tickers:
+                selected_tickers.append(ticker)
+
+    max_attempt_events = 2000
+    if len(attempt_events) > max_attempt_events:
+        attempt_events = attempt_events[-max_attempt_events:]
+
+    snapshot.update(
+        {
+            "status": "observer_ready",
+            "reason": "paper_live_simulated",
+            "execution_basis": "paper_live_balance",
+            "risk_profile": normalized_risk_profile,
+            "family_allowlist": normalized_family_allowlist,
+            "allow_random_cancels": normalized_allow_random_cancels,
+            "size_from_current_equity": normalized_size_from_current_equity,
+            "require_live_eligible_hint": normalized_require_live_eligible_hint,
+            "kelly_fraction": round(float(normalized_kelly_fraction), 6),
+            "kelly_high_conf_max": round(float(normalized_kelly_high_conf_max), 6),
+            "max_open_risk_pct": round(float(normalized_max_open_risk_pct), 6),
+            "max_family_risk_pct": round(float(normalized_max_family_risk_pct), 6),
+            "max_strip_risk_pct": round(float(normalized_max_strip_risk_pct), 6),
+            "max_single_position_risk_pct": round(float(normalized_max_single_position_risk_pct), 6),
+            "max_new_attempts_per_run": int(normalized_max_new_attempts_per_run),
+            "run_attempt_limit": int(run_attempt_limit),
+            "used_kelly_fraction": round(float(per_attempt_kelly_used[-1]), 6) if per_attempt_kelly_used else 0.0,
+            "avg_kelly_fraction_used": (
+                round(sum(float(value) for value in per_attempt_kelly_used) / float(len(per_attempt_kelly_used)), 6)
+                if per_attempt_kelly_used
+                else 0.0
+            ),
+            "start_dollars": round(float(start), 4),
+            "current_dollars": round(float(current_balance), 4),
+            "sizing_balance_dollars": round(float(sizing_balance_dollars), 4),
+            "post_trade_sizing_balance_dollars": round(float(post_trade_sizing_balance_dollars), 4),
+            "realized_trade_pnl_dollars": round(float(realized_trade_total), 4),
+            "mark_to_market_pnl_dollars": round(float(mark_to_market_total), 4),
+            "drawdown_pct": round(max(0.0, float(drawdown_pct)), 4),
+            "drawdown_throttle_state": drawdown_throttle_state,
+            "drawdown_risk_scale": round(float(drawdown_risk_scale), 6),
+            "positions_open": updated_open_positions,
+            "positions_closed": closed_positions_history,
+            "positions_open_count": len(updated_open_positions),
+            "positions_closed_count": len(closed_positions_history),
+            "open_risk_dollars": round(float(open_risk_total_current), 6),
+            "open_risk_cap_dollars": round(float(open_risk_cap_dollars), 6),
+            "open_risk_remaining_dollars": round(float(open_risk_remaining_dollars), 6),
+            "family_open_risk_dollars": {
+                key: round(float(value), 6)
+                for key, value in sorted(open_risk_by_family_current.items(), key=lambda item: item[0])
+            },
+            "family_open_risk_remaining_dollars": family_open_risk_remaining_dollars,
+            "strip_open_risk_dollars": {
+                key: round(float(value), 6)
+                for key, value in sorted(open_risk_by_strip_current.items(), key=lambda item: item[0])
+            },
+            "strip_open_risk_remaining_dollars": strip_open_risk_remaining_dollars,
+            "family_execution_state": {
+                key: str(value)
+                for key, value in sorted(family_execution_state_map.items(), key=lambda item: item[0])
+            },
+            "ticker_execution_state": {
+                key: str(value)
+                for key, value in sorted(ticker_execution_state_map.items(), key=lambda item: item[0])
+            },
+            "family_mtm_per_risk_pct": {
+                key: _parse_float(value)
+                for key, value in sorted(family_mtm_per_risk_pct_map.items(), key=lambda item: item[0])
+            },
+            "ticker_mtm_per_risk_pct": {
+                key: _parse_float(value)
+                for key, value in sorted(ticker_mtm_per_risk_pct_map.items(), key=lambda item: item[0])
+            },
+            "family_markout_300s_mean_dollars": {
+                key: _parse_float(value)
+                for key, value in sorted(family_markout_300_mean_map.items(), key=lambda item: item[0])
+            },
+            "ticker_markout_300s_mean_dollars": {
+                key: _parse_float(value)
+                for key, value in sorted(ticker_markout_300_mean_map.items(), key=lambda item: item[0])
+            },
+            "family_markout_300s_mean_per_contract_dollars": {
+                key: _parse_float(value)
+                for key, value in sorted(family_markout_300_per_contract_mean_map.items(), key=lambda item: item[0])
+            },
+            "ticker_markout_300s_mean_per_contract_dollars": {
+                key: _parse_float(value)
+                for key, value in sorted(ticker_markout_300_per_contract_mean_map.items(), key=lambda item: item[0])
+            },
+            "family_markout_300s_per_risk_pct": {
+                key: _parse_float(value)
+                for key, value in sorted(family_markout_300_per_risk_pct_map.items(), key=lambda item: item[0])
+            },
+            "ticker_markout_300s_per_risk_pct": {
+                key: _parse_float(value)
+                for key, value in sorted(ticker_markout_300_per_risk_pct_map.items(), key=lambda item: item[0])
+            },
+            "family_markout_300s_per_contract": {
+                key: _parse_float(value)
+                for key, value in sorted(family_markout_300_per_contract_map.items(), key=lambda item: item[0])
+            },
+            "ticker_markout_300s_per_contract": {
+                key: _parse_float(value)
+                for key, value in sorted(ticker_markout_300_per_contract_map.items(), key=lambda item: item[0])
+            },
+            "family_fill_rate": {
+                key: _parse_float(value)
+                for key, value in sorted(family_fill_rate_map.items(), key=lambda item: item[0])
+            },
+            "ticker_fill_rate": {
+                key: _parse_float(value)
+                for key, value in sorted(ticker_fill_rate_map.items(), key=lambda item: item[0])
+            },
+            "family_cancel_rate": {
+                key: _parse_float(value)
+                for key, value in sorted(family_cancel_rate_map.items(), key=lambda item: item[0])
+            },
+            "ticker_cancel_rate": {
+                key: _parse_float(value)
+                for key, value in sorted(ticker_cancel_rate_map.items(), key=lambda item: item[0])
+            },
+            "family_risk_multiplier": {
+                key: round(float(value), 6)
+                for key, value in sorted(family_risk_multiplier_map.items(), key=lambda item: item[0])
+            },
+            "ticker_risk_multiplier": {
+                key: round(float(value), 6)
+                for key, value in sorted(ticker_risk_multiplier_map.items(), key=lambda item: item[0])
+            },
+            "order_attempts": int(order_attempts_total),
+            "orders_partial_filled": int(orders_partial_filled_total),
+            "orders_resting": len(resting_by_key),
+            "orders_filled": int(orders_filled_total),
+            "orders_canceled": int(orders_canceled_total),
+            "orders_expired": int(orders_expired_total),
+            "fill_time_seconds": fill_time_seconds,
+            "markout_10s_dollars": round(float(markout_10s_total), 6),
+            "markout_60s_dollars": round(float(markout_60s_total), 6),
+            "markout_300s_dollars": round(float(markout_300s_total), 6),
+            "settlement_pnl_dollars": round(float(settlement_pnl_total), 6),
+            "expected_value_dollars": round(float(expected_value_total), 6),
+            "expected_vs_realized_delta": round(float(expected_vs_realized_delta), 6),
+            "order_attempts_run": int(run_attempts),
+            "orders_filled_run": int(run_filled),
+            "orders_partial_filled_run": int(run_partial_filled),
+            "orders_canceled_run": int(run_canceled),
+            "orders_expired_run": int(run_expired),
+            "selected_tickers": selected_tickers,
+            "attempt_events": attempt_events,
+            "equity_curve": equity_curve,
+            "last_updated_at_utc": run_finished_at_dt.astimezone(timezone.utc).isoformat(),
+            "accounting_version": 2,
+            "source": "synthetic_paper_live",
+        }
+    )
+
+    state_payload = {
+        "last_run_id": run_id,
+        "updated_at_utc": run_finished_at_dt.astimezone(timezone.utc).isoformat(),
+        "paper_live_execution_basis": snapshot.get("execution_basis"),
+        "paper_live_risk_profile": snapshot.get("risk_profile"),
+        "paper_live_kelly_fraction": snapshot.get("kelly_fraction"),
+        "paper_live_kelly_high_conf_max": snapshot.get("kelly_high_conf_max"),
+        "paper_live_max_open_risk_pct": snapshot.get("max_open_risk_pct"),
+        "paper_live_max_family_risk_pct": snapshot.get("max_family_risk_pct"),
+        "paper_live_max_strip_risk_pct": snapshot.get("max_strip_risk_pct"),
+        "paper_live_max_single_position_risk_pct": snapshot.get("max_single_position_risk_pct"),
+        "paper_live_max_new_attempts_per_run": snapshot.get("max_new_attempts_per_run"),
+        "paper_live_run_attempt_limit": snapshot.get("run_attempt_limit"),
+        "paper_live_family_allowlist": snapshot.get("family_allowlist"),
+        "paper_live_allow_random_cancels": snapshot.get("allow_random_cancels"),
+        "paper_live_size_from_current_equity": snapshot.get("size_from_current_equity"),
+        "paper_live_require_live_eligible_hint": snapshot.get("require_live_eligible_hint"),
+        "paper_live_used_kelly_fraction": snapshot.get("used_kelly_fraction"),
+        "paper_live_avg_kelly_fraction_used": snapshot.get("avg_kelly_fraction_used"),
+        "paper_live_sizing_balance_dollars": snapshot.get("sizing_balance_dollars"),
+        "paper_live_post_trade_sizing_balance_dollars": snapshot.get("post_trade_sizing_balance_dollars"),
+        "paper_live_open_risk_dollars": snapshot.get("open_risk_dollars"),
+        "paper_live_open_risk_cap_dollars": snapshot.get("open_risk_cap_dollars"),
+        "paper_live_open_risk_remaining_dollars": snapshot.get("open_risk_remaining_dollars"),
+        "paper_live_family_open_risk_dollars": snapshot.get("family_open_risk_dollars"),
+        "paper_live_family_open_risk_remaining_dollars": snapshot.get("family_open_risk_remaining_dollars"),
+        "paper_live_strip_open_risk_dollars": snapshot.get("strip_open_risk_dollars"),
+        "paper_live_strip_open_risk_remaining_dollars": snapshot.get("strip_open_risk_remaining_dollars"),
+        "paper_live_family_execution_state": snapshot.get("family_execution_state"),
+        "paper_live_ticker_execution_state": snapshot.get("ticker_execution_state"),
+        "paper_live_family_mtm_per_risk_pct": snapshot.get("family_mtm_per_risk_pct"),
+        "paper_live_ticker_mtm_per_risk_pct": snapshot.get("ticker_mtm_per_risk_pct"),
+        "paper_live_family_markout_300s_mean_dollars": snapshot.get("family_markout_300s_mean_dollars"),
+        "paper_live_ticker_markout_300s_mean_dollars": snapshot.get("ticker_markout_300s_mean_dollars"),
+        "paper_live_family_markout_300s_mean_per_contract_dollars": snapshot.get(
+            "family_markout_300s_mean_per_contract_dollars"
+        ),
+        "paper_live_ticker_markout_300s_mean_per_contract_dollars": snapshot.get(
+            "ticker_markout_300s_mean_per_contract_dollars"
+        ),
+        "paper_live_family_markout_300s_per_risk_pct": snapshot.get("family_markout_300s_per_risk_pct"),
+        "paper_live_ticker_markout_300s_per_risk_pct": snapshot.get("ticker_markout_300s_per_risk_pct"),
+        "paper_live_family_markout_300s_per_contract": snapshot.get("family_markout_300s_per_contract"),
+        "paper_live_ticker_markout_300s_per_contract": snapshot.get("ticker_markout_300s_per_contract"),
+        "paper_live_family_fill_rate": snapshot.get("family_fill_rate"),
+        "paper_live_ticker_fill_rate": snapshot.get("ticker_fill_rate"),
+        "paper_live_family_cancel_rate": snapshot.get("family_cancel_rate"),
+        "paper_live_ticker_cancel_rate": snapshot.get("ticker_cancel_rate"),
+        "paper_live_family_risk_multiplier": snapshot.get("family_risk_multiplier"),
+        "paper_live_ticker_risk_multiplier": snapshot.get("ticker_risk_multiplier"),
+        "paper_live_drawdown_throttle_state": snapshot.get("drawdown_throttle_state"),
+        "paper_live_drawdown_risk_scale": snapshot.get("drawdown_risk_scale"),
+        "paper_live_balance_start_dollars": snapshot.get("start_dollars"),
+        "paper_live_balance_current_dollars": snapshot.get("current_dollars"),
+        "paper_live_strategy_equity_dollars": snapshot.get("current_dollars"),
+        "paper_live_peak_balance_dollars": round(float(peak_balance), 4),
+        "paper_live_realized_trade_pnl_dollars": snapshot.get("realized_trade_pnl_dollars"),
+        "paper_live_mark_to_market_pnl_dollars": snapshot.get("mark_to_market_pnl_dollars"),
+        "paper_live_drawdown_pct": snapshot.get("drawdown_pct"),
+        "paper_live_strategy_drawdown_pct": snapshot.get("drawdown_pct"),
+        "paper_live_positions_open": snapshot.get("positions_open"),
+        "paper_live_positions_closed": snapshot.get("positions_closed"),
+        "paper_live_positions_open_count": snapshot.get("positions_open_count"),
+        "paper_live_positions_closed_count": snapshot.get("positions_closed_count"),
+        "paper_live_resting_orders": [item for item in resting_by_key.values()],
+        "paper_live_order_attempts": snapshot.get("order_attempts"),
+        "paper_live_orders_filled": snapshot.get("orders_filled"),
+        "paper_live_orders_partial_filled": snapshot.get("orders_partial_filled"),
+        "paper_live_orders_canceled": snapshot.get("orders_canceled"),
+        "paper_live_orders_expired": snapshot.get("orders_expired"),
+        "paper_live_fill_time_seconds": snapshot.get("fill_time_seconds"),
+        "paper_live_fill_time_seconds_total": round(float(fill_time_seconds_total), 6),
+        "paper_live_fill_events_count": int(fill_events_count),
+        "paper_live_markout_10s_dollars": snapshot.get("markout_10s_dollars"),
+        "paper_live_markout_60s_dollars": snapshot.get("markout_60s_dollars"),
+        "paper_live_markout_300s_dollars": snapshot.get("markout_300s_dollars"),
+        "paper_live_settlement_pnl_dollars": snapshot.get("settlement_pnl_dollars"),
+        "paper_live_expected_value_dollars": snapshot.get("expected_value_dollars"),
+        "paper_live_settlement_expected_value_dollars": round(float(settlement_expected_value_total), 6),
+        "paper_live_expected_vs_realized_delta": snapshot.get("expected_vs_realized_delta"),
+        "paper_live_selected_tickers": snapshot.get("selected_tickers"),
+        "paper_live_attempt_events": snapshot.get("attempt_events"),
+        "paper_live_equity_curve": snapshot.get("equity_curve"),
+        "paper_live_accounting_version": snapshot.get("accounting_version"),
+    }
+    try:
+        state_file.parent.mkdir(parents=True, exist_ok=True)
+        state_file.write_text(json.dumps(state_payload, indent=2), encoding="utf-8")
+    except Exception as exc:  # pragma: no cover - observer lane should never fail overnight
+        snapshot["status"] = "observer_degraded"
+        snapshot["reason"] = "paper_live_state_write_failed"
+        snapshot["state_write_error"] = str(exc)
+
+    return snapshot
+
+
+def _paper_live_report_fields(paper_live: dict[str, Any] | None) -> dict[str, Any]:
+    payload = paper_live if isinstance(paper_live, dict) else {}
+    return {
+        "paper_live_enabled": bool(payload.get("enabled")),
+        "paper_live_status": payload.get("status"),
+        "paper_live_reason": payload.get("reason"),
+        "paper_live_execution_basis": payload.get("execution_basis") or "paper_live_balance",
+        "paper_live_risk_profile": payload.get("risk_profile"),
+        "paper_live_kelly_fraction": payload.get("kelly_fraction"),
+        "paper_live_kelly_high_conf_max": payload.get("kelly_high_conf_max"),
+        "paper_live_max_open_risk_pct": payload.get("max_open_risk_pct"),
+        "paper_live_max_family_risk_pct": payload.get("max_family_risk_pct"),
+        "paper_live_max_strip_risk_pct": payload.get("max_strip_risk_pct"),
+        "paper_live_max_single_position_risk_pct": payload.get("max_single_position_risk_pct"),
+        "paper_live_max_new_attempts_per_run": payload.get("max_new_attempts_per_run"),
+        "paper_live_run_attempt_limit": payload.get("run_attempt_limit"),
+        "paper_live_family_allowlist": payload.get("family_allowlist"),
+        "paper_live_allow_random_cancels": payload.get("allow_random_cancels"),
+        "paper_live_size_from_current_equity": payload.get("size_from_current_equity"),
+        "paper_live_require_live_eligible_hint": payload.get("require_live_eligible_hint"),
+        "paper_live_used_kelly_fraction": payload.get("used_kelly_fraction"),
+        "paper_live_avg_kelly_fraction_used": payload.get("avg_kelly_fraction_used"),
+        "paper_live_sizing_balance_dollars": payload.get("sizing_balance_dollars"),
+        "paper_live_post_trade_sizing_balance_dollars": payload.get("post_trade_sizing_balance_dollars"),
+        "paper_live_open_risk_dollars": payload.get("open_risk_dollars"),
+        "paper_live_open_risk_cap_dollars": payload.get("open_risk_cap_dollars"),
+        "paper_live_open_risk_remaining_dollars": payload.get("open_risk_remaining_dollars"),
+        "paper_live_family_open_risk_dollars": payload.get("family_open_risk_dollars"),
+        "paper_live_family_open_risk_remaining_dollars": payload.get("family_open_risk_remaining_dollars"),
+        "paper_live_strip_open_risk_dollars": payload.get("strip_open_risk_dollars"),
+        "paper_live_strip_open_risk_remaining_dollars": payload.get("strip_open_risk_remaining_dollars"),
+        "paper_live_family_execution_state": payload.get("family_execution_state"),
+        "paper_live_ticker_execution_state": payload.get("ticker_execution_state"),
+        "paper_live_family_mtm_per_risk_pct": payload.get("family_mtm_per_risk_pct"),
+        "paper_live_ticker_mtm_per_risk_pct": payload.get("ticker_mtm_per_risk_pct"),
+        "paper_live_family_markout_300s_mean_dollars": payload.get("family_markout_300s_mean_dollars"),
+        "paper_live_ticker_markout_300s_mean_dollars": payload.get("ticker_markout_300s_mean_dollars"),
+        "paper_live_family_markout_300s_mean_per_contract_dollars": payload.get(
+            "family_markout_300s_mean_per_contract_dollars"
+        ),
+        "paper_live_ticker_markout_300s_mean_per_contract_dollars": payload.get(
+            "ticker_markout_300s_mean_per_contract_dollars"
+        ),
+        "paper_live_family_markout_300s_per_risk_pct": payload.get("family_markout_300s_per_risk_pct"),
+        "paper_live_ticker_markout_300s_per_risk_pct": payload.get("ticker_markout_300s_per_risk_pct"),
+        "paper_live_family_markout_300s_per_contract": payload.get("family_markout_300s_per_contract"),
+        "paper_live_ticker_markout_300s_per_contract": payload.get("ticker_markout_300s_per_contract"),
+        "paper_live_family_fill_rate": payload.get("family_fill_rate"),
+        "paper_live_ticker_fill_rate": payload.get("ticker_fill_rate"),
+        "paper_live_family_cancel_rate": payload.get("family_cancel_rate"),
+        "paper_live_ticker_cancel_rate": payload.get("ticker_cancel_rate"),
+        "paper_live_family_risk_multiplier": payload.get("family_risk_multiplier"),
+        "paper_live_ticker_risk_multiplier": payload.get("ticker_risk_multiplier"),
+        "paper_live_drawdown_throttle_state": payload.get("drawdown_throttle_state"),
+        "paper_live_drawdown_risk_scale": payload.get("drawdown_risk_scale"),
+        "paper_live_state_file": payload.get("state_file"),
+        "paper_live_state_write_error": payload.get("state_write_error"),
+        "paper_live_balance_start_dollars": payload.get("start_dollars"),
+        "paper_live_balance_current_dollars": payload.get("current_dollars"),
+        "paper_live_strategy_equity_dollars": payload.get("current_dollars"),
+        "paper_live_realized_trade_pnl_dollars": payload.get("realized_trade_pnl_dollars"),
+        "paper_live_mark_to_market_pnl_dollars": payload.get("mark_to_market_pnl_dollars"),
+        "paper_live_drawdown_pct": payload.get("drawdown_pct"),
+        "paper_live_strategy_drawdown_pct": payload.get("drawdown_pct"),
+        "paper_live_positions_open_count": payload.get("positions_open_count"),
+        "paper_live_positions_closed_count": payload.get("positions_closed_count"),
+        "paper_live_open_positions": payload.get("positions_open_count"),
+        "paper_live_closed_positions": payload.get("positions_closed_count"),
+        "paper_live_positions_open": payload.get("positions_open"),
+        "paper_live_positions_closed": payload.get("positions_closed"),
+        "paper_live_order_attempts": payload.get("order_attempts"),
+        "paper_live_attempted_orders": payload.get("order_attempts"),
+        "paper_live_orders_resting": payload.get("orders_resting"),
+        "paper_live_orders_filled": payload.get("orders_filled"),
+        "paper_live_filled_orders": payload.get("orders_filled"),
+        "paper_live_orders_partial_filled": payload.get("orders_partial_filled"),
+        "paper_live_orders_canceled": payload.get("orders_canceled"),
+        "paper_live_orders_expired": payload.get("orders_expired"),
+        "paper_live_fill_time_seconds": payload.get("fill_time_seconds"),
+        "paper_live_markout_10s_dollars": payload.get("markout_10s_dollars"),
+        "paper_live_markout_10s": payload.get("markout_10s_dollars"),
+        "paper_live_markout_60s_dollars": payload.get("markout_60s_dollars"),
+        "paper_live_markout_60s": payload.get("markout_60s_dollars"),
+        "paper_live_markout_300s_dollars": payload.get("markout_300s_dollars"),
+        "paper_live_markout_300s": payload.get("markout_300s_dollars"),
+        "paper_live_settlement_pnl_dollars": payload.get("settlement_pnl_dollars"),
+        "paper_live_expected_value_dollars": payload.get("expected_value_dollars"),
+        "paper_live_expected_vs_realized_delta": payload.get("expected_vs_realized_delta"),
+        "paper_live_order_attempts_run": payload.get("order_attempts_run"),
+        "paper_live_orders_filled_run": payload.get("orders_filled_run"),
+        "paper_live_orders_partial_filled_run": payload.get("orders_partial_filled_run"),
+        "paper_live_orders_canceled_run": payload.get("orders_canceled_run"),
+        "paper_live_orders_expired_run": payload.get("orders_expired_run"),
+        "paper_live_selected_tickers": payload.get("selected_tickers"),
+        "paper_live_equity_curve": payload.get("equity_curve"),
+        "paper_live_last_updated_at_utc": payload.get("last_updated_at_utc"),
+        "paper_live_accounting_version": payload.get("accounting_version"),
+        "paper_live_source": payload.get("source"),
+    }
+
+
+def _paper_live_scorecard_fields(paper_live: dict[str, Any] | None) -> dict[str, Any]:
+    payload = paper_live if isinstance(paper_live, dict) else {}
+    attempts_raw = payload.get("attempt_events")
+    attempts = [item for item in attempts_raw if isinstance(item, dict)] if isinstance(attempts_raw, list) else []
+    open_positions_raw = payload.get("positions_open")
+    open_positions = [item for item in open_positions_raw if isinstance(item, dict)] if isinstance(open_positions_raw, list) else []
+    closed_positions_raw = payload.get("positions_closed")
+    closed_positions = [item for item in closed_positions_raw if isinstance(item, dict)] if isinstance(closed_positions_raw, list) else []
+
+    if not attempts:
+        # Backfill minimal attempt records from known positions so scorecards remain populated on older state files.
+        synthesized_attempts: list[dict[str, Any]] = []
+        for position in [*open_positions, *closed_positions]:
+            ticker = str(position.get("market_ticker") or "").strip().upper()
+            if not ticker:
+                continue
+            side = str(position.get("side") or "").strip().lower()
+            if side not in {"yes", "no"}:
+                side = "yes"
+            status = "filled"
+            synthesized_attempts.append(
+                {
+                    "attempt_event_key": str(position.get("attempt_event_key") or _shadow_position_key(market_ticker=ticker, side=side)),
+                    "run_id": None,
+                    "attempted_at_utc": position.get("entry_time_utc"),
+                    "market_ticker": ticker,
+                    "contract_family": str(position.get("contract_family") or "").strip().lower() or None,
+                    "strip_key": str(position.get("strip_key") or "").strip() or None,
+                    "side": side,
+                    "contracts": _coerce_int(position.get("contracts"), 1),
+                    "notional_risk_dollars": _parse_float(position.get("notional_risk_dollars")) or 0.0,
+                    "expected_value_dollars": _parse_float(position.get("expected_value_dollars")) or 0.0,
+                    "source_strategy": str(position.get("source_strategy") or "").strip() or None,
+                    "opportunity_class": str(position.get("opportunity_class") or "").strip() or None,
+                    "status": status,
+                    "partial_fill": bool(position.get("partial_fill")),
+                    "fill_time_seconds": _parse_float(position.get("fill_time_seconds")),
+                }
+            )
+        attempts = synthesized_attempts
+
+    def _new_group(*, family: str | None, ticker: str | None) -> dict[str, Any]:
+        return {
+            "family": family,
+            "ticker": ticker,
+            "strip_id": None,
+            "source_strategy": None,
+            "opportunity_class": None,
+            "attempts": 0,
+            "fills": 0,
+            "partial_fills": 0,
+            "canceled": 0,
+            "expired": 0,
+            "risk_sum_dollars": 0.0,
+            "contracts_sum": 0.0,
+            "expected_ev_entry_total_dollars": 0.0,
+            "fill_time_samples": [],
+            "markout_10s_sum": 0.0,
+            "markout_60s_sum": 0.0,
+            "markout_300s_sum": 0.0,
+            "markout_count": 0,
+            "realized_settlement_pnl_dollars": 0.0,
+            "open_position_count": 0,
+            "close_settlement_count": 0,
+        }
+
+    def _touch_group(store: dict[str, dict[str, Any]], key: str, *, family: str | None, ticker: str | None) -> dict[str, Any]:
+        existing = store.get(key)
+        if isinstance(existing, dict):
+            return existing
+        created = _new_group(family=family, ticker=ticker)
+        store[key] = created
+        return created
+
+    by_family: dict[str, dict[str, Any]] = {}
+    by_ticker: dict[str, dict[str, Any]] = {}
+
+    for attempt in attempts:
+        ticker = str(attempt.get("market_ticker") or "").strip().upper()
+        family = str(attempt.get("contract_family") or "").strip().lower()
+        if not family:
+            family = "unknown_family"
+        ticker_key = ticker or "UNKNOWN_TICKER"
+        family_group = _touch_group(by_family, family, family=family, ticker=None)
+        ticker_group = _touch_group(by_ticker, ticker_key, family=family, ticker=ticker_key)
+        for group in (family_group, ticker_group):
+            group["attempts"] = int(group.get("attempts") or 0) + 1
+            status = str(attempt.get("status") or "").strip().lower()
+            if status == "filled":
+                group["fills"] = int(group.get("fills") or 0) + 1
+            elif status == "canceled":
+                group["canceled"] = int(group.get("canceled") or 0) + 1
+            elif status == "expired":
+                group["expired"] = int(group.get("expired") or 0) + 1
+            if bool(attempt.get("partial_fill")):
+                group["partial_fills"] = int(group.get("partial_fills") or 0) + 1
+            risk = float(_parse_float(attempt.get("notional_risk_dollars")) or 0.0)
+            contracts = float(max(1, _coerce_int(attempt.get("contracts"), 1)))
+            expected_value = float(_parse_float(attempt.get("expected_value_dollars")) or 0.0)
+            group["risk_sum_dollars"] = float(group.get("risk_sum_dollars") or 0.0) + risk
+            group["contracts_sum"] = float(group.get("contracts_sum") or 0.0) + contracts
+            group["expected_ev_entry_total_dollars"] = float(group.get("expected_ev_entry_total_dollars") or 0.0) + expected_value
+            fill_time = _parse_float(attempt.get("fill_time_seconds"))
+            if isinstance(fill_time, float) and fill_time >= 0.0 and status == "filled":
+                samples = group.get("fill_time_samples")
+                if isinstance(samples, list):
+                    samples.append(float(fill_time))
+            strip_id = str(attempt.get("strip_key") or "").strip()
+            if strip_id and not group.get("strip_id"):
+                group["strip_id"] = strip_id
+            source_strategy = str(attempt.get("source_strategy") or "").strip()
+            if source_strategy and not group.get("source_strategy"):
+                group["source_strategy"] = source_strategy
+            opportunity_class = str(attempt.get("opportunity_class") or "").strip()
+            if opportunity_class and not group.get("opportunity_class"):
+                group["opportunity_class"] = opportunity_class
+
+    for position, position_is_open in [*[(item, True) for item in open_positions], *[(item, False) for item in closed_positions]]:
+        ticker = str(position.get("market_ticker") or "").strip().upper()
+        family = str(position.get("contract_family") or "").strip().lower()
+        if not family:
+            family = "unknown_family"
+        ticker_key = ticker or "UNKNOWN_TICKER"
+        family_group = _touch_group(by_family, family, family=family, ticker=None)
+        ticker_group = _touch_group(by_ticker, ticker_key, family=family, ticker=ticker_key)
+        for group in (family_group, ticker_group):
+            markout_10s = _parse_float(position.get("markout_10s_dollars"))
+            markout_60s = _parse_float(position.get("markout_60s_dollars"))
+            markout_300s = _parse_float(position.get("markout_300s_dollars"))
+            if isinstance(markout_300s, float):
+                group["markout_count"] = int(group.get("markout_count") or 0) + 1
+                group["markout_10s_sum"] = float(group.get("markout_10s_sum") or 0.0) + float(markout_10s or 0.0)
+                group["markout_60s_sum"] = float(group.get("markout_60s_sum") or 0.0) + float(markout_60s or 0.0)
+                group["markout_300s_sum"] = float(group.get("markout_300s_sum") or 0.0) + float(markout_300s or 0.0)
+            if position_is_open:
+                group["open_position_count"] = int(group.get("open_position_count") or 0) + 1
+            else:
+                group["close_settlement_count"] = int(group.get("close_settlement_count") or 0) + 1
+                realized = _parse_float(position.get("settlement_pnl_dollars"))
+                if not isinstance(realized, float):
+                    realized = _parse_float(position.get("realized_trade_pnl_dollars"))
+                group["realized_settlement_pnl_dollars"] = float(group.get("realized_settlement_pnl_dollars") or 0.0) + float(realized or 0.0)
+            strip_id = str(position.get("strip_key") or "").strip()
+            if strip_id and not group.get("strip_id"):
+                group["strip_id"] = strip_id
+            source_strategy = str(position.get("source_strategy") or "").strip()
+            if source_strategy and not group.get("source_strategy"):
+                group["source_strategy"] = source_strategy
+            opportunity_class = str(position.get("opportunity_class") or "").strip()
+            if opportunity_class and not group.get("opportunity_class"):
+                group["opportunity_class"] = opportunity_class
+
+    def _median(values: list[float]) -> float | None:
+        if not values:
+            return None
+        sorted_values = sorted(float(v) for v in values)
+        mid = len(sorted_values) // 2
+        if len(sorted_values) % 2 == 1:
+            return round(float(sorted_values[mid]), 6)
+        return round((float(sorted_values[mid - 1]) + float(sorted_values[mid])) / 2.0, 6)
+
+    def _finalize_group(group: dict[str, Any]) -> dict[str, Any]:
+        attempts_count = max(0, _coerce_int(group.get("attempts"), 0))
+        fills_count = max(0, _coerce_int(group.get("fills"), 0))
+        markout_count = max(0, _coerce_int(group.get("markout_count"), 0))
+        fill_time_samples = [float(v) for v in (group.get("fill_time_samples") or []) if isinstance(v, (int, float))]
+        fill_time_mean = round(sum(fill_time_samples) / float(len(fill_time_samples)), 6) if fill_time_samples else None
+        fill_time_median = _median(fill_time_samples)
+        markout_10s_mean = (
+            round(float(group.get("markout_10s_sum") or 0.0) / float(markout_count), 6)
+            if markout_count > 0
+            else None
+        )
+        markout_60s_mean = (
+            round(float(group.get("markout_60s_sum") or 0.0) / float(markout_count), 6)
+            if markout_count > 0
+            else None
+        )
+        markout_300s_mean = (
+            round(float(group.get("markout_300s_sum") or 0.0) / float(markout_count), 6)
+            if markout_count > 0
+            else None
+        )
+        expected_ev_total = round(float(group.get("expected_ev_entry_total_dollars") or 0.0), 6)
+        realized_settlement = round(float(group.get("realized_settlement_pnl_dollars") or 0.0), 6)
+        expected_vs_realized_delta = round(realized_settlement - expected_ev_total, 6)
+        return {
+            "family": group.get("family"),
+            "ticker": group.get("ticker"),
+            "strip_id": group.get("strip_id"),
+            "source_strategy": group.get("source_strategy"),
+            "opportunity_class": group.get("opportunity_class"),
+            "attempts": attempts_count,
+            "fills": fills_count,
+            "fill_rate": round(float(fills_count) / float(attempts_count), 6) if attempts_count > 0 else None,
+            "partial_fills": max(0, _coerce_int(group.get("partial_fills"), 0)),
+            "canceled": max(0, _coerce_int(group.get("canceled"), 0)),
+            "expired": max(0, _coerce_int(group.get("expired"), 0)),
+            "fill_time_mean_seconds": fill_time_mean,
+            "fill_time_median_seconds": fill_time_median,
+            "markout_10s_mean_dollars": markout_10s_mean,
+            "markout_60s_mean_dollars": markout_60s_mean,
+            "markout_300s_mean_dollars": markout_300s_mean,
+            "realized_settlement_pnl_dollars": realized_settlement,
+            "expected_ev_at_entry_total_dollars": expected_ev_total,
+            "expected_vs_realized_delta_dollars": expected_vs_realized_delta,
+            "average_risk_dollars": (
+                round(float(group.get("risk_sum_dollars") or 0.0) / float(attempts_count), 6)
+                if attempts_count > 0
+                else None
+            ),
+            "average_contracts": (
+                round(float(group.get("contracts_sum") or 0.0) / float(attempts_count), 6)
+                if attempts_count > 0
+                else None
+            ),
+            "open_position_count": max(0, _coerce_int(group.get("open_position_count"), 0)),
+            "close_settlement_count": max(0, _coerce_int(group.get("close_settlement_count"), 0)),
+        }
+
+    family_scorecards = [_finalize_group(group) for group in by_family.values()]
+    ticker_scorecards = [_finalize_group(group) for group in by_ticker.values()]
+    family_scorecards.sort(
+        key=lambda row: (
+            _coerce_int(row.get("attempts"), 0),
+            _coerce_int(row.get("fills"), 0),
+            str(row.get("family") or ""),
+        ),
+        reverse=True,
+    )
+    ticker_scorecards.sort(
+        key=lambda row: (
+            _coerce_int(row.get("attempts"), 0),
+            _coerce_int(row.get("fills"), 0),
+            str(row.get("ticker") or ""),
+        ),
+        reverse=True,
+    )
+
+    markout_rows = [row for row in family_scorecards if isinstance(_parse_float(row.get("markout_300s_mean_dollars")), float)]
+    top_negative_markout = sorted(
+        markout_rows,
+        key=lambda row: float(_parse_float(row.get("markout_300s_mean_dollars")) or 0.0),
+    )[:5]
+    top_positive_markout = sorted(
+        markout_rows,
+        key=lambda row: float(_parse_float(row.get("markout_300s_mean_dollars")) or 0.0),
+        reverse=True,
+    )[:5]
+    delta_ranked = sorted(
+        family_scorecards,
+        key=lambda row: abs(float(_parse_float(row.get("expected_vs_realized_delta_dollars")) or 0.0)),
+        reverse=True,
+    )[:10]
+    monthly_row = next(
+        (row for row in family_scorecards if str(row.get("family") or "").strip().lower() == "monthly_climate_anomaly"),
+        None,
+    )
+
+    monthly_family = "monthly_climate_anomaly"
+
+    def _parse_iso_timestamp(value: Any) -> datetime | None:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        if text.endswith("Z"):
+            text = f"{text[:-1]}+00:00"
+        try:
+            parsed = datetime.fromisoformat(text)
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+
+    def _mean(values: list[float]) -> float | None:
+        samples = [float(v) for v in values if isinstance(v, (int, float))]
+        if not samples:
+            return None
+        return round(sum(samples) / float(len(samples)), 6)
+
+    def _sample_band(sample_size: int) -> str:
+        if sample_size < 5:
+            return "anecdotal"
+        if sample_size < 20:
+            return "early_directional"
+        if sample_size < 50:
+            return "real_family_signal"
+        return "policy_change_ready"
+
+    monthly_position_samples: list[dict[str, Any]] = []
+    for idx, (position, position_is_open) in enumerate(
+        [*[(item, True) for item in open_positions], *[(item, False) for item in closed_positions]]
+    ):
+        family = str(position.get("contract_family") or "").strip().lower()
+        if family != monthly_family:
+            continue
+        entry_time_utc = str(position.get("entry_time_utc") or "").strip() or None
+        entry_dt = _parse_iso_timestamp(entry_time_utc)
+        settlement_pnl: float | None = None
+        if not position_is_open:
+            settlement_pnl = _parse_float(position.get("settlement_pnl_dollars"))
+            if not isinstance(settlement_pnl, float):
+                settlement_pnl = _parse_float(position.get("realized_trade_pnl_dollars"))
+        monthly_position_samples.append(
+            {
+                "entry_time_utc": entry_time_utc,
+                "entry_epoch": float(entry_dt.timestamp()) if isinstance(entry_dt, datetime) else float(idx),
+                "expected_value_dollars": float(_parse_float(position.get("expected_value_dollars")) or 0.0),
+                "fill_time_seconds": _parse_float(position.get("fill_time_seconds")),
+                "markout_10s_dollars": _parse_float(position.get("markout_10s_dollars")),
+                "markout_60s_dollars": _parse_float(position.get("markout_60s_dollars")),
+                "markout_300s_dollars": _parse_float(position.get("markout_300s_dollars")),
+                "settlement_pnl_dollars": settlement_pnl if isinstance(settlement_pnl, float) else None,
+            }
+        )
+
+    monthly_position_samples.sort(key=lambda row: (float(row.get("entry_epoch") or 0.0), str(row.get("entry_time_utc") or "")))
+
+    def _rolling_summary(samples: list[dict[str, Any]], window_size: int) -> dict[str, Any]:
+        if window_size <= 0:
+            window_size = 1
+        subset = samples[-window_size:]
+        attempts_n = len(subset)
+        fills_n = attempts_n
+        settled_rows = [row for row in subset if isinstance(row.get("settlement_pnl_dollars"), float)]
+        settled_n = len(settled_rows)
+        positive_settlements = sum(1 for row in settled_rows if float(row.get("settlement_pnl_dollars") or 0.0) > 0.0)
+        realized_settlement = (
+            round(sum(float(row.get("settlement_pnl_dollars") or 0.0) for row in settled_rows), 6)
+            if settled_n > 0
+            else None
+        )
+        expected_settlement = (
+            round(sum(float(row.get("expected_value_dollars") or 0.0) for row in settled_rows), 6)
+            if settled_n > 0
+            else None
+        )
+        expected_vs_realized = (
+            round(float(realized_settlement) - float(expected_settlement), 6)
+            if isinstance(realized_settlement, float) and isinstance(expected_settlement, float)
+            else None
+        )
+        return {
+            "window_size": int(window_size),
+            "attempts": int(attempts_n),
+            "fills": int(fills_n),
+            "fill_rate": round(float(fills_n) / float(attempts_n), 6) if attempts_n > 0 else None,
+            "fill_time_mean_seconds": _mean(
+                [float(row.get("fill_time_seconds")) for row in subset if isinstance(row.get("fill_time_seconds"), (int, float))]
+            ),
+            "markout_10s_mean_dollars": _mean(
+                [float(row.get("markout_10s_dollars")) for row in subset if isinstance(row.get("markout_10s_dollars"), (int, float))]
+            ),
+            "markout_60s_mean_dollars": _mean(
+                [float(row.get("markout_60s_dollars")) for row in subset if isinstance(row.get("markout_60s_dollars"), (int, float))]
+            ),
+            "markout_300s_mean_dollars": _mean(
+                [float(row.get("markout_300s_dollars")) for row in subset if isinstance(row.get("markout_300s_dollars"), (int, float))]
+            ),
+            "settled_count": int(settled_n),
+            "positive_settlement_count": int(positive_settlements),
+            "positive_settlement_rate": (
+                round(float(positive_settlements) / float(settled_n), 6) if settled_n > 0 else None
+            ),
+            "realized_settlement_pnl_dollars": realized_settlement,
+            "expected_vs_realized_delta_dollars": expected_vs_realized,
+        }
+
+    rolling_windows = [_rolling_summary(monthly_position_samples, size) for size in [5, 20, 50]]
+    latest_window = next((row for row in rolling_windows if _coerce_int(row.get("window_size"), 0) == 20), None)
+    if latest_window is None and rolling_windows:
+        latest_window = rolling_windows[0]
+
+    attempts_total = (
+        max(0, _coerce_int(monthly_row.get("attempts"), 0)) if isinstance(monthly_row, dict) else len(monthly_position_samples)
+    )
+    fills_total = (
+        max(0, _coerce_int(monthly_row.get("fills"), 0)) if isinstance(monthly_row, dict) else len(monthly_position_samples)
+    )
+    settled_total = sum(
+        1 for row in monthly_position_samples if isinstance(row.get("settlement_pnl_dollars"), float)
+    )
+    positive_settlements_total = sum(
+        1
+        for row in monthly_position_samples
+        if isinstance(row.get("settlement_pnl_dollars"), float) and float(row.get("settlement_pnl_dollars") or 0.0) > 0.0
+    )
+    monthly_trend = {
+        "family": monthly_family,
+        "sample_band": _sample_band(attempts_total),
+        "attempts_total": int(attempts_total),
+        "fills_total": int(fills_total),
+        "settled_total": int(settled_total),
+        "positive_settlements_total": int(positive_settlements_total),
+        "positive_settlement_rate_total": (
+            round(float(positive_settlements_total) / float(settled_total), 6) if settled_total > 0 else None
+        ),
+        "rolling_n": int(min(20, attempts_total)) if attempts_total > 0 else 0,
+        "rolling_windows": rolling_windows,
+        "latest_window": latest_window,
+        "updated_at_utc": payload.get("last_updated_at_utc"),
+    }
+
+    return {
+        "paper_live_family_scorecards": family_scorecards[:20],
+        "paper_live_ticker_scorecards": ticker_scorecards[:50],
+        "paper_live_top_negative_markout_families": top_negative_markout,
+        "paper_live_top_positive_markout_families": top_positive_markout,
+        "paper_live_top_expected_vs_realized_deltas": delta_ranked,
+        "paper_live_monthly_climate_anomaly_scorecard": monthly_row,
+        "paper_live_monthly_climate_anomaly_trend": monthly_trend,
+        "paper_live_monthly_climate_anomaly_trend_band": monthly_trend.get("sample_band"),
+    }
+
+
+def _shadow_position_key(*, market_ticker: str, side: str) -> str:
+    ticker = str(market_ticker or "").strip().upper()
+    normalized_side = str(side or "").strip().lower()
+    if normalized_side not in {"yes", "no"}:
+        normalized_side = "yes"
+    return f"{ticker}|{normalized_side}" if ticker else ""
+
+
+def _shadow_close_time_estimate(*, as_of: datetime | None, hours_to_close: float | None) -> str | None:
+    if not isinstance(as_of, datetime):
+        return None
+    if not isinstance(hours_to_close, float):
+        return None
+    close_dt = as_of + timedelta(hours=float(hours_to_close))
+    return close_dt.astimezone(timezone.utc).isoformat()
+
+
+def _shadow_primary_position(
+    positions_open: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    if not positions_open:
+        return None
+    ranked = sorted(
+        [item for item in positions_open if isinstance(item, dict)],
+        key=lambda item: (
+            float(_parse_float(item.get("notional_risk_dollars")) or 0.0),
+            float(_parse_float(item.get("mark_to_model_pnl_dollars")) or 0.0),
+            str(item.get("market_ticker") or ""),
+        ),
+        reverse=True,
+    )
+    return ranked[0] if ranked else None
+
+
+def _shadow_current_targets(
+    *,
+    climate_router_step: dict[str, Any] | None,
+    climate_router_shadow_plan: dict[str, Any] | None,
+    run_finished_at: datetime | None,
+) -> tuple[dict[str, dict[str, Any]], dict[str, float]]:
+    targets: dict[str, dict[str, Any]] = {}
+    marks_by_key: dict[str, float] = {}
+
+    allocations_raw: Any = None
+    if isinstance(climate_router_step, dict):
+        allocations_raw = climate_router_step.get("routing_allocator_allocations")
+    if not isinstance(allocations_raw, list):
+        allocations_raw = (
+            climate_router_shadow_plan.get("top_shadow_allocations")
+            if isinstance(climate_router_shadow_plan, dict)
+            else None
+        )
+    allocations = [item for item in allocations_raw if isinstance(item, dict)] if isinstance(allocations_raw, list) else []
+
+    tradable_rows = _load_router_tradable_rows(climate_router_step)
+    tradable_by_key: dict[str, dict[str, Any]] = {}
+    for row in tradable_rows:
+        if not isinstance(row, dict):
+            continue
+        ticker = str(row.get("market_ticker") or "").strip().upper()
+        side = str(row.get("theoretical_side") or "").strip().lower()
+        key = _shadow_position_key(market_ticker=ticker, side=side)
+        if not key:
+            continue
+        tradable_by_key[key] = row
+        price = _parse_float(row.get("theoretical_reference_price"))
+        if isinstance(price, float):
+            marks_by_key[key] = float(price)
+
+    for row in allocations:
+        ticker = str(row.get("market_ticker") or "").strip().upper()
+        side = str(row.get("side") or row.get("theoretical_side") or "").strip().lower()
+        key = _shadow_position_key(market_ticker=ticker, side=side)
+        if not key:
+            continue
+
+        tradable_row = tradable_by_key.get(key) or {}
+        reference_price = _parse_float(row.get("reference_price_dollars"))
+        if not isinstance(reference_price, float):
+            reference_price = _parse_float(row.get("theoretical_reference_price"))
+        if not isinstance(reference_price, float):
+            reference_price = _parse_float(tradable_row.get("theoretical_reference_price"))
+        if not isinstance(reference_price, float):
+            reference_price = 0.0
+        marks_by_key[key] = float(reference_price)
+
+        contracts = max(
+            1,
+            _coerce_int(
+                row.get("contracts"),
+                _coerce_int(tradable_row.get("contracts"), 1),
+            ),
+        )
+        risk_dollars = _parse_float(row.get("risk_dollars"))
+        if not isinstance(risk_dollars, float):
+            risk_dollars = max(0.0, float(reference_price) * float(contracts))
+
+        hours_to_close = _parse_float(row.get("hours_to_close"))
+        if not isinstance(hours_to_close, float):
+            hours_to_close = _parse_float(tradable_row.get("hours_to_close"))
+
+        target = {
+            "position_key": key,
+            "market_ticker": ticker,
+            "contract_family": (
+                str(row.get("contract_family") or tradable_row.get("contract_family") or "").strip().lower() or None
+            ),
+            "strip_key": str(row.get("strip_key") or tradable_row.get("strip_key") or "").strip() or None,
+            "side": str(side or "yes").strip().lower(),
+            "contracts": int(contracts),
+            "entry_price_dollars": round(float(reference_price), 6),
+            "mark_price_dollars": round(float(reference_price), 6),
+            "notional_risk_dollars": round(float(risk_dollars), 6),
+            "expected_value_dollars": round(float(_parse_float(row.get("expected_value_dollars")) or 0.0), 6),
+            "availability_state": (
+                str(row.get("availability_state") or tradable_row.get("availability_state") or "").strip().lower() or None
+            ),
+            "hours_to_close": round(float(hours_to_close), 6) if isinstance(hours_to_close, float) else None,
+            "close_time_estimate_utc": _shadow_close_time_estimate(as_of=run_finished_at, hours_to_close=hours_to_close),
+        }
+        targets[key] = target
+
+    return targets, marks_by_key
+
+
+def _update_shadow_bankroll(
+    *,
+    run_id: str,
+    run_finished_at_utc: str,
+    enabled: bool,
+    start_dollars: float,
+    state_file: Path | None,
+    climate_router_step: dict[str, Any] | None,
+    climate_router_shadow_plan: dict[str, Any] | None,
+    climate_router_pilot: dict[str, Any] | None,
+) -> dict[str, Any]:
+    snapshot = _shadow_bankroll_defaults(
+        enabled=enabled,
+        start_dollars=start_dollars,
+        state_file=state_file,
+        status="observer_not_run",
+        reason=None,
+    )
+    if not enabled:
+        snapshot["status"] = "disabled"
+        snapshot["reason"] = "shadow_bankroll_disabled"
+        return snapshot
+    if not isinstance(state_file, Path):
+        snapshot["status"] = "observer_degraded"
+        snapshot["reason"] = "shadow_bankroll_state_file_missing"
+        return snapshot
+
+    start = max(0.0, float(start_dollars))
+    total_realized = 0.0
+    total_realized_trade = 0.0
+    previous_peak = start
+    previous_strategy_peak = start
+    previous_last_run_id = ""
+    strategy_accounting_version = 0
+    existing_open_positions: list[dict[str, Any]] = []
+    existing_closed_positions: list[dict[str, Any]] = []
+    existing_equity_curve: list[dict[str, Any]] = []
+
+    existing_payload = _load_json(state_file)
+    if isinstance(existing_payload, dict):
+        strategy_accounting_version = max(
+            0,
+            _coerce_int(existing_payload.get("shadow_strategy_accounting_version"), 0),
+        )
+        previous_start = _parse_float(existing_payload.get("shadow_bankroll_start_dollars"))
+        if isinstance(previous_start, float) and previous_start > 0.0:
+            if abs(previous_start - start) > 1e-9:
+                total_realized = 0.0
+                previous_peak = start
+                previous_last_run_id = ""
+                snapshot["reason"] = "shadow_bankroll_start_changed_reset"
+            else:
+                start = previous_start
+                total_realized = float(_parse_float(existing_payload.get("shadow_realized_pnl_dollars")) or 0.0)
+                total_realized_trade = float(
+                    _parse_float(existing_payload.get("shadow_realized_trade_pnl_dollars"))
+                    or _parse_float(existing_payload.get("shadow_realized_pnl_dollars"))
+                    or 0.0
+                )
+                previous_peak = max(
+                    start,
+                    float(
+                        _parse_float(existing_payload.get("shadow_theoretical_peak_value_dollars"))
+                        or _parse_float(existing_payload.get("shadow_bankroll_peak_dollars"))
+                        or start
+                    ),
+                    float(
+                        _parse_float(existing_payload.get("shadow_theoretical_value_dollars"))
+                        or _parse_float(existing_payload.get("shadow_bankroll_current_dollars"))
+                        or start
+                    ),
+                )
+                previous_strategy_peak = max(
+                    start,
+                    float(
+                        _parse_float(existing_payload.get("shadow_strategy_peak_equity_dollars"))
+                        or start
+                    ),
+                )
+                previous_last_run_id = str(existing_payload.get("last_run_id") or "").strip()
+                raw_open = existing_payload.get("shadow_positions_open")
+                if isinstance(raw_open, list):
+                    existing_open_positions = [item for item in raw_open if isinstance(item, dict)]
+                raw_closed = existing_payload.get("shadow_positions_closed")
+                if isinstance(raw_closed, list):
+                    existing_closed_positions = [item for item in raw_closed if isinstance(item, dict)]
+                raw_curve = existing_payload.get("shadow_equity_curve")
+                if isinstance(raw_curve, list):
+                    existing_equity_curve = [item for item in raw_curve if isinstance(item, dict)]
+                if strategy_accounting_version < 2:
+                    previous_strategy_peak = max(
+                        start,
+                        float(_parse_float(existing_payload.get("shadow_strategy_equity_dollars")) or start),
+                    )
+
+    expected_value_dollars = 0.0
+    allocator_total_risk_dollars = 0.0
+    allocator_selected_rows = 0
+    if isinstance(climate_router_shadow_plan, dict):
+        expected_value_dollars = float(
+            _parse_float(climate_router_shadow_plan.get("total_expected_value_dollars")) or 0.0
+        )
+        allocator_total_risk_dollars = float(
+            _parse_float(climate_router_shadow_plan.get("total_risk_dollars")) or 0.0
+        )
+        allocator_selected_rows = max(
+            0,
+            _coerce_int(
+                climate_router_shadow_plan.get("would_trade_rows"),
+                _coerce_int(climate_router_shadow_plan.get("eligible_rows"), 0),
+            ),
+        )
+
+    run_finished_at_dt = _parse_iso(run_finished_at_utc)
+    if not isinstance(run_finished_at_dt, datetime):
+        run_finished_at_dt = datetime.now(timezone.utc)
+    run_is_new = bool(run_id and run_id != previous_last_run_id)
+
+    current_targets, marks_by_key = _shadow_current_targets(
+        climate_router_step=climate_router_step,
+        climate_router_shadow_plan=climate_router_shadow_plan,
+        run_finished_at=run_finished_at_dt,
+    )
+
+    updated_open_positions: list[dict[str, Any]] = []
+    closed_positions_history: list[dict[str, Any]] = list(existing_closed_positions)
+    realized_trade_delta_dollars = 0.0
+
+    open_by_key: dict[str, dict[str, Any]] = {}
+    for raw_position in existing_open_positions:
+        key = _shadow_position_key(
+            market_ticker=str(raw_position.get("market_ticker") or ""),
+            side=str(raw_position.get("side") or ""),
+        )
+        if key and key not in open_by_key:
+            open_by_key[key] = dict(raw_position)
+
+    if run_is_new:
+        for key, current_position in open_by_key.items():
+            target = current_targets.get(key)
+            current_mark = _parse_float(marks_by_key.get(key))
+            if not isinstance(current_mark, float):
+                current_mark = _parse_float(current_position.get("mark_price_dollars"))
+            if not isinstance(current_mark, float):
+                current_mark = _parse_float(current_position.get("entry_price_dollars"))
+            if not isinstance(current_mark, float):
+                current_mark = 0.0
+
+            entry_price = float(_parse_float(current_position.get("entry_price_dollars")) or 0.0)
+            contracts = max(1, _coerce_int(current_position.get("contracts"), 1))
+            mark_to_model = (float(current_mark) - float(entry_price)) * float(contracts)
+
+            should_close = target is None
+            close_reason = "deallocated"
+            close_time_estimate_text = (
+                str(target.get("close_time_estimate_utc") or "").strip()
+                if isinstance(target, dict)
+                else ""
+            ) or str(current_position.get("close_time_estimate_utc") or "").strip()
+            close_time_estimate_dt = _parse_iso(close_time_estimate_text)
+            if isinstance(close_time_estimate_dt, datetime):
+                close_time_estimate_dt = close_time_estimate_dt.astimezone(timezone.utc)
+            if isinstance(close_time_estimate_dt, datetime) and run_finished_at_dt >= close_time_estimate_dt:
+                should_close = True
+                close_reason = "market_closed_estimate"
+            if not should_close:
+                target_contracts = max(1, _coerce_int(target.get("contracts"), 1))
+                if target_contracts != contracts:
+                    should_close = True
+                    close_reason = "rebalance_contracts"
+
+            if should_close:
+                closed_position = dict(current_position)
+                closed_position["position_key"] = key
+                closed_position["exit_price_dollars"] = round(float(current_mark), 6)
+                closed_position["exit_time_utc"] = run_finished_at_dt.astimezone(timezone.utc).isoformat()
+                closed_position["close_reason"] = close_reason
+                closed_position["realized_trade_pnl_dollars"] = round(float(mark_to_model), 6)
+                closed_positions_history.append(closed_position)
+                realized_trade_delta_dollars += float(mark_to_model)
+                continue
+
+            merged = dict(current_position)
+            merged.update(
+                {
+                    "position_key": key,
+                    "contract_family": target.get("contract_family"),
+                    "strip_key": target.get("strip_key"),
+                    "availability_state": target.get("availability_state"),
+                    "notional_risk_dollars": round(float(_parse_float(target.get("notional_risk_dollars")) or 0.0), 6),
+                    "hours_to_close": target.get("hours_to_close"),
+                    "close_time_estimate_utc": target.get("close_time_estimate_utc"),
+                    "mark_price_dollars": round(float(current_mark), 6),
+                    "mark_time_utc": run_finished_at_dt.astimezone(timezone.utc).isoformat(),
+                    "mark_to_model_pnl_dollars": round(float(mark_to_model), 6),
+                    "expected_value_dollars": round(float(_parse_float(target.get("expected_value_dollars")) or 0.0), 6),
+                }
+            )
+            updated_open_positions.append(merged)
+
+        existing_keys = {
+            _shadow_position_key(
+                market_ticker=str(item.get("market_ticker") or ""),
+                side=str(item.get("side") or ""),
+            )
+            for item in updated_open_positions
+            if isinstance(item, dict)
+        }
+        for key, target in current_targets.items():
+            if key in existing_keys:
+                continue
+            entry_price = float(_parse_float(target.get("entry_price_dollars")) or 0.0)
+            contracts = max(1, _coerce_int(target.get("contracts"), 1))
+            opened = {
+                "position_id": f"{key}|{run_finished_at_dt.strftime('%Y%m%d%H%M%S')}",
+                "position_key": key,
+                "market_ticker": target.get("market_ticker"),
+                "contract_family": target.get("contract_family"),
+                "strip_key": target.get("strip_key"),
+                "side": target.get("side"),
+                "contracts": int(contracts),
+                "entry_price_dollars": round(float(entry_price), 6),
+                "entry_time_utc": run_finished_at_dt.astimezone(timezone.utc).isoformat(),
+                "notional_risk_dollars": round(float(_parse_float(target.get("notional_risk_dollars")) or 0.0), 6),
+                "hours_to_close": target.get("hours_to_close"),
+                "close_time_estimate_utc": target.get("close_time_estimate_utc"),
+                "availability_state": target.get("availability_state"),
+                "mark_price_dollars": round(float(entry_price), 6),
+                "mark_time_utc": run_finished_at_dt.astimezone(timezone.utc).isoformat(),
+                "mark_to_model_pnl_dollars": 0.0,
+                "expected_value_dollars": round(float(_parse_float(target.get("expected_value_dollars")) or 0.0), 6),
+            }
+            updated_open_positions.append(opened)
+    else:
+        updated_open_positions = [dict(item) for item in existing_open_positions if isinstance(item, dict)]
+        closed_positions_history = [dict(item) for item in existing_closed_positions if isinstance(item, dict)]
+
+    # Keep position history bounded for payload size control.
+    max_closed_positions = 250
+    if len(closed_positions_history) > max_closed_positions:
+        closed_positions_history = closed_positions_history[-max_closed_positions:]
+
+    if run_is_new:
+        total_realized_trade = float(total_realized_trade) + float(realized_trade_delta_dollars)
+
+    mark_to_model_pnl_dollars = 0.0
+    normalized_open_positions: list[dict[str, Any]] = []
+    for raw_position in updated_open_positions:
+        key = _shadow_position_key(
+            market_ticker=str(raw_position.get("market_ticker") or ""),
+            side=str(raw_position.get("side") or ""),
+        )
+        if not key:
+            continue
+        mark_price = _parse_float(marks_by_key.get(key))
+        if not isinstance(mark_price, float):
+            mark_price = _parse_float(raw_position.get("mark_price_dollars"))
+        if not isinstance(mark_price, float):
+            mark_price = _parse_float(raw_position.get("entry_price_dollars"))
+        if not isinstance(mark_price, float):
+            mark_price = 0.0
+
+        entry_price = float(_parse_float(raw_position.get("entry_price_dollars")) or 0.0)
+        contracts = max(1, _coerce_int(raw_position.get("contracts"), 1))
+        mark_to_model = (float(mark_price) - float(entry_price)) * float(contracts)
+        mark_to_model_pnl_dollars += float(mark_to_model)
+
+        normalized = dict(raw_position)
+        normalized["position_key"] = key
+        normalized["mark_price_dollars"] = round(float(mark_price), 6)
+        normalized["mark_time_utc"] = run_finished_at_dt.astimezone(timezone.utc).isoformat()
+        normalized["mark_to_model_pnl_dollars"] = round(float(mark_to_model), 6)
+        normalized["contracts"] = int(contracts)
+        normalized_open_positions.append(normalized)
+
+    strategy_equity_dollars = float(start) + float(total_realized_trade) + float(mark_to_model_pnl_dollars)
+    strategy_peak_dollars = max(float(previous_strategy_peak), float(start), float(strategy_equity_dollars))
+    strategy_drawdown_pct = (
+        ((strategy_peak_dollars - strategy_equity_dollars) / strategy_peak_dollars) * 100.0
+        if strategy_peak_dollars > 0.0
+        else 0.0
+    )
+
+    total_realized = float(total_realized_trade)
+    theoretical_unrealized_ev_dollars = float(expected_value_dollars)
+    theoretical_value_dollars = float(start) + float(total_realized) + float(theoretical_unrealized_ev_dollars)
+    peak_dollars = max(float(previous_peak), float(start), float(theoretical_value_dollars))
+    theoretical_drawdown_pct = (
+        ((peak_dollars - theoretical_value_dollars) / peak_dollars) * 100.0
+        if peak_dollars > 0.0
+        else 0.0
+    )
+
+    equity_curve = [dict(item) for item in existing_equity_curve if isinstance(item, dict)]
+    equity_point = {
+        "run_id": run_id,
+        "as_of_utc": run_finished_at_dt.astimezone(timezone.utc).isoformat(),
+        "equity_dollars": round(float(strategy_equity_dollars), 6),
+        "realized_trade_pnl_dollars": round(float(total_realized_trade), 6),
+        "mark_to_model_pnl_dollars": round(float(mark_to_model_pnl_dollars), 6),
+        "positions_open": len(normalized_open_positions),
+        "positions_closed": len(closed_positions_history),
+    }
+    if run_is_new:
+        equity_curve.append(equity_point)
+    elif equity_curve:
+        equity_curve[-1] = equity_point
+    else:
+        equity_curve.append(equity_point)
+    max_equity_points = 500
+    if len(equity_curve) > max_equity_points:
+        equity_curve = equity_curve[-max_equity_points:]
+
+    primary_position = _shadow_primary_position(normalized_open_positions)
+    primary_entry_price = None
+    primary_entry_time = None
+    primary_side = None
+    primary_contracts = None
+    primary_notional_risk = None
+    primary_mark_price = None
+    if isinstance(primary_position, dict):
+        primary_entry_price = _parse_float(primary_position.get("entry_price_dollars"))
+        primary_entry_time = str(primary_position.get("entry_time_utc") or "").strip() or None
+        primary_side = str(primary_position.get("side") or "").strip().lower() or None
+        primary_contracts = _coerce_int(primary_position.get("contracts"), 0)
+        primary_notional_risk = _parse_float(primary_position.get("notional_risk_dollars"))
+        primary_mark_price = _parse_float(primary_position.get("mark_price_dollars"))
+
+    snapshot.update(
+        {
+            "enabled": True,
+            "status": "observer_ready",
+            "reason": snapshot.get("reason") or "shadow_bankroll_updated",
+            "last_updated_at_utc": run_finished_at_utc,
+            "start_dollars": round(float(start), 4),
+            "theoretical_value_dollars": round(float(theoretical_value_dollars), 4),
+            "realized_pnl_dollars": round(float(total_realized), 4),
+            "theoretical_unrealized_ev_dollars": round(float(theoretical_unrealized_ev_dollars), 4),
+            "theoretical_drawdown_pct": round(max(0.0, float(theoretical_drawdown_pct)), 4),
+            "allocator_total_risk_dollars": round(float(allocator_total_risk_dollars), 4),
+            "allocator_selected_rows": int(allocator_selected_rows),
+            "expected_value_dollars": round(float(expected_value_dollars), 4),
+            "strategy_equity_dollars": round(float(strategy_equity_dollars), 4),
+            "strategy_drawdown_pct": round(max(0.0, float(strategy_drawdown_pct)), 4),
+            "strategy_peak_equity_dollars": round(float(strategy_peak_dollars), 4),
+            "mark_to_model_pnl_dollars": round(float(mark_to_model_pnl_dollars), 4),
+            "realized_trade_pnl_dollars": round(float(total_realized_trade), 4),
+            "positions_open": normalized_open_positions,
+            "positions_closed": closed_positions_history,
+            "positions_open_count": len(normalized_open_positions),
+            "positions_closed_count": len(closed_positions_history),
+            "equity_curve": equity_curve,
+            "strategy_accounting_version": 2,
+            "entry_price": round(float(primary_entry_price), 6) if isinstance(primary_entry_price, float) else None,
+            "entry_time_utc": primary_entry_time,
+            "side": primary_side,
+            "contracts": int(primary_contracts) if isinstance(primary_contracts, int) and primary_contracts > 0 else None,
+            "notional_risk_dollars": (
+                round(float(primary_notional_risk), 6) if isinstance(primary_notional_risk, float) else None
+            ),
+            "mark_price": round(float(primary_mark_price), 6) if isinstance(primary_mark_price, float) else None,
+        }
+    )
+
+    state_payload = {
+        "updated_at_utc": run_finished_at_utc,
+        "last_run_id": run_id,
+        "shadow_bankroll_start_dollars": round(float(start), 4),
+        "shadow_theoretical_value_dollars": round(float(theoretical_value_dollars), 4),
+        "shadow_theoretical_peak_value_dollars": round(float(peak_dollars), 4),
+        "shadow_realized_pnl_dollars": round(float(total_realized), 4),
+        "shadow_theoretical_unrealized_ev_dollars": round(float(theoretical_unrealized_ev_dollars), 4),
+        "shadow_theoretical_drawdown_pct": round(max(0.0, float(theoretical_drawdown_pct)), 4),
+        "shadow_allocator_total_risk_dollars": round(float(allocator_total_risk_dollars), 4),
+        "shadow_allocator_selected_rows": int(allocator_selected_rows),
+        "shadow_expected_value_dollars": round(float(expected_value_dollars), 4),
+        "shadow_strategy_equity_dollars": round(float(strategy_equity_dollars), 4),
+        "shadow_strategy_drawdown_pct": round(max(0.0, float(strategy_drawdown_pct)), 4),
+        "shadow_strategy_peak_equity_dollars": round(float(strategy_peak_dollars), 4),
+        "shadow_mark_to_model_pnl_dollars": round(float(mark_to_model_pnl_dollars), 4),
+        "shadow_realized_trade_pnl_dollars": round(float(total_realized_trade), 4),
+        "shadow_positions_open": normalized_open_positions,
+        "shadow_positions_closed": closed_positions_history,
+        "shadow_positions_open_count": len(normalized_open_positions),
+        "shadow_positions_closed_count": len(closed_positions_history),
+        "shadow_equity_curve": equity_curve,
+        "shadow_strategy_accounting_version": 2,
+    }
+    try:
+        state_file.parent.mkdir(parents=True, exist_ok=True)
+        state_file.write_text(json.dumps(state_payload, indent=2), encoding="utf-8")
+    except Exception as exc:  # pragma: no cover - observer lane should never fail run
+        snapshot["status"] = "observer_degraded"
+        snapshot["state_write_error"] = str(exc)
+        snapshot["reason"] = "shadow_bankroll_state_write_failed"
+    return snapshot
+
+
 def _runtime_version_for_report(
     *,
     run_started_at: str,
@@ -2638,6 +6159,738 @@ def _top_level_probe_policy(step: dict[str, Any] | None) -> dict[str, Any]:
         "untrusted_bucket_probe_blocked_attempts": step.get("untrusted_bucket_probe_blocked_attempts"),
         "untrusted_bucket_probe_reason_counts": step.get("untrusted_bucket_probe_reason_counts"),
     }
+
+
+def _top_level_climate_router_pilot(
+    *,
+    prior_trader_step: dict[str, Any] | None,
+    climate_router_step: dict[str, Any] | None,
+) -> dict[str, Any]:
+    selected_tickers_raw = (
+        prior_trader_step.get("climate_router_pilot_selected_tickers")
+        if isinstance(prior_trader_step, dict)
+        else []
+    )
+    selected_tickers: list[str] = []
+    if isinstance(selected_tickers_raw, list):
+        for raw_value in selected_tickers_raw:
+            ticker = str(raw_value or "").strip().upper()
+            if ticker and ticker not in selected_tickers:
+                selected_tickers.append(ticker)
+
+    top_router_rows_raw = (
+        climate_router_step.get("top_tradable_candidates")
+        if isinstance(climate_router_step, dict)
+        else None
+    )
+    top_router_rows: list[dict[str, Any]] = []
+    if isinstance(top_router_rows_raw, list):
+        top_router_rows = [row for row in top_router_rows_raw if isinstance(row, dict)]
+    router_rows_by_ticker: dict[str, dict[str, Any]] = {}
+    for row in top_router_rows:
+        ticker = str(row.get("market_ticker") or "").strip().upper()
+        if ticker and ticker not in router_rows_by_ticker:
+            router_rows_by_ticker[ticker] = row
+
+    selected_candidates: list[dict[str, Any]] = []
+    for ticker in selected_tickers:
+        row = router_rows_by_ticker.get(ticker)
+        if not isinstance(row, dict):
+            continue
+        selected_candidates.append(
+            {
+                "market_ticker": ticker,
+                "market_title": row.get("market_title"),
+                "contract_family": row.get("contract_family"),
+                "strip_key": row.get("strip_key"),
+                "hours_to_close": _parse_float(row.get("hours_to_close")),
+                "availability_state": row.get("availability_state"),
+                "opportunity_class": row.get("opportunity_class"),
+                "theoretical_side": row.get("theoretical_side"),
+                "theoretical_reference_price": _parse_float(row.get("theoretical_reference_price")),
+                "theoretical_edge_net": _parse_float(row.get("theoretical_edge_net")),
+                "fair_yes_probability": _parse_float(row.get("fair_yes_probability")),
+                "expected_value_dollars": _parse_float(row.get("expected_value_dollars")),
+            }
+        )
+
+    if not selected_candidates:
+        for row in top_router_rows[:5]:
+            ticker = str(row.get("market_ticker") or "").strip().upper()
+            selected_candidates.append(
+                {
+                    "market_ticker": ticker or None,
+                    "market_title": row.get("market_title"),
+                    "contract_family": row.get("contract_family"),
+                    "strip_key": row.get("strip_key"),
+                    "hours_to_close": _parse_float(row.get("hours_to_close")),
+                    "availability_state": row.get("availability_state"),
+                    "opportunity_class": row.get("opportunity_class"),
+                    "theoretical_side": row.get("theoretical_side"),
+                    "theoretical_reference_price": _parse_float(row.get("theoretical_reference_price")),
+                    "theoretical_edge_net": _parse_float(row.get("theoretical_edge_net")),
+                    "fair_yes_probability": _parse_float(row.get("fair_yes_probability")),
+                    "expected_value_dollars": _parse_float(row.get("expected_value_dollars")),
+                }
+            )
+
+    contracts_cap = max(
+        1,
+        _coerce_int(
+            prior_trader_step.get("climate_router_pilot_contracts_cap")
+            if isinstance(prior_trader_step, dict)
+            else 1,
+            1,
+        ),
+    )
+    total_risk_dollars = 0.0
+    for candidate in selected_candidates:
+        reference_price = _parse_float(candidate.get("theoretical_reference_price"))
+        if isinstance(reference_price, float) and reference_price > 0.0:
+            total_risk_dollars += reference_price * float(contracts_cap)
+
+    return {
+        "enabled": bool(
+            prior_trader_step.get("climate_router_pilot_enabled")
+            if isinstance(prior_trader_step, dict)
+            else False
+        ),
+        "status": (
+            prior_trader_step.get("climate_router_pilot_status")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        "reason": (
+            prior_trader_step.get("climate_router_pilot_reason")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        "summary_file": (
+            prior_trader_step.get("climate_router_pilot_summary_file")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        "selection_mode": (
+            prior_trader_step.get("climate_router_pilot_selection_mode")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        "summary_status": (
+            prior_trader_step.get("climate_router_pilot_summary_status")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        "allowed_classes": (
+            prior_trader_step.get("climate_router_pilot_allowed_classes")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        "allowed_families": (
+            prior_trader_step.get("climate_router_pilot_allowed_families")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        "excluded_families": (
+            prior_trader_step.get("climate_router_pilot_excluded_families")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        "allowed_families_effective": (
+            prior_trader_step.get("climate_router_pilot_allowed_families_effective")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        "excluded_families_effective": (
+            prior_trader_step.get("climate_router_pilot_excluded_families_effective")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        "max_orders_per_run": (
+            prior_trader_step.get("climate_router_pilot_max_orders_per_run")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        "contracts_cap": (
+            prior_trader_step.get("climate_router_pilot_contracts_cap")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        "required_ev_dollars": _parse_float(
+            prior_trader_step.get("climate_router_pilot_required_ev_dollars")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        "policy_scope_override_enabled": (
+            prior_trader_step.get("climate_router_pilot_policy_scope_override_enabled")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        "policy_scope_override_active": (
+            prior_trader_step.get("climate_router_pilot_policy_scope_override_active")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        "policy_scope_override_status": (
+            prior_trader_step.get("climate_router_pilot_policy_scope_override_status")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        "policy_scope_override_gate_active": (
+            prior_trader_step.get("climate_router_pilot_policy_scope_override_gate_active")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        "policy_scope_override_applicable": (
+            prior_trader_step.get("climate_router_pilot_policy_scope_override_applicable")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        "policy_scope_override_attempts": (
+            _coerce_int(prior_trader_step.get("climate_router_pilot_policy_scope_override_attempts"), 0)
+            if isinstance(prior_trader_step, dict)
+            else 0
+        ),
+        "policy_scope_override_submissions": (
+            _coerce_int(prior_trader_step.get("climate_router_pilot_policy_scope_override_submissions"), 0)
+            if isinstance(prior_trader_step, dict)
+            else 0
+        ),
+        "policy_scope_override_blocked_reason_counts": (
+            prior_trader_step.get("climate_router_pilot_policy_scope_override_blocked_reason_counts")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        "considered_rows": (
+            prior_trader_step.get("climate_router_pilot_considered_rows")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        "promoted_rows": (
+            prior_trader_step.get("climate_router_pilot_promoted_rows")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        "submitted_rows": (
+            prior_trader_step.get("climate_router_pilot_submitted_rows")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        "execute_considered_rows": (
+            prior_trader_step.get("climate_router_pilot_execute_considered_rows")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        "live_mode_enabled": (
+            prior_trader_step.get("climate_router_pilot_live_mode_enabled")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        "live_eligible_rows": (
+            _coerce_int(prior_trader_step.get("climate_router_pilot_live_eligible_rows"), 0)
+            if isinstance(prior_trader_step, dict)
+            else 0
+        ),
+        "would_attempt_live_if_enabled": (
+            _coerce_int(prior_trader_step.get("climate_router_pilot_would_attempt_live_if_enabled"), 0)
+            if isinstance(prior_trader_step, dict)
+            else 0
+        ),
+        "blocked_dry_run_only_rows": (
+            _coerce_int(prior_trader_step.get("climate_router_pilot_blocked_dry_run_only_rows"), 0)
+            if isinstance(prior_trader_step, dict)
+            else 0
+        ),
+        "blocked_research_dry_run_only_reason_counts": (
+            prior_trader_step.get("climate_router_pilot_blocked_research_dry_run_only_reason_counts")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        "non_policy_gates_passed_rows": (
+            _coerce_int(prior_trader_step.get("climate_router_pilot_non_policy_gates_passed_rows"), 0)
+            if isinstance(prior_trader_step, dict)
+            else 0
+        ),
+        "expected_value_dollars": _parse_float(
+            prior_trader_step.get("climate_router_pilot_expected_value_dollars")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        "blocked_reason_counts": (
+            prior_trader_step.get("climate_router_pilot_blocked_reason_counts")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        "selected_tickers": selected_tickers,
+        "top_candidates": selected_candidates[:5],
+        "promoted_from_router_count": (
+            _coerce_int(prior_trader_step.get("climate_router_pilot_submitted_rows"), 0)
+            if isinstance(prior_trader_step, dict)
+            else 0
+        ),
+        "total_risk_dollars": round(total_risk_dollars, 6),
+        "attempted_orders": (
+            _coerce_int(prior_trader_step.get("climate_router_pilot_attempted_orders"), 0)
+            if isinstance(prior_trader_step, dict)
+            else 0
+        ),
+        "acked_orders": (
+            _coerce_int(prior_trader_step.get("climate_router_pilot_acked_orders"), 0)
+            if isinstance(prior_trader_step, dict)
+            else 0
+        ),
+        "resting_orders": (
+            _coerce_int(prior_trader_step.get("climate_router_pilot_resting_orders"), 0)
+            if isinstance(prior_trader_step, dict)
+            else 0
+        ),
+        "filled_orders": (
+            _coerce_int(prior_trader_step.get("climate_router_pilot_filled_orders"), 0)
+            if isinstance(prior_trader_step, dict)
+            else 0
+        ),
+        "partial_fills": (
+            _coerce_int(prior_trader_step.get("climate_router_pilot_partial_fills"), 0)
+            if isinstance(prior_trader_step, dict)
+            else 0
+        ),
+        "markout_10s_dollars": _parse_float(
+            prior_trader_step.get("climate_router_pilot_markout_10s_dollars")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        "markout_60s_dollars": _parse_float(
+            prior_trader_step.get("climate_router_pilot_markout_60s_dollars")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        "markout_300s_dollars": _parse_float(
+            prior_trader_step.get("climate_router_pilot_markout_300s_dollars")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        "realized_pnl_dollars": _parse_float(
+            prior_trader_step.get("climate_router_pilot_realized_pnl_dollars")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        "expected_vs_realized_delta": _parse_float(
+            prior_trader_step.get("climate_router_pilot_expected_vs_realized_delta")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        "blocked_post_promotion_reason_counts": (
+            prior_trader_step.get("climate_router_pilot_blocked_post_promotion_reason_counts")
+            if isinstance(prior_trader_step, dict)
+            else None
+        ),
+        "blocked_frontier_insufficient_data": (
+            _coerce_int(prior_trader_step.get("climate_router_pilot_blocked_frontier_insufficient_data"), 0)
+            if isinstance(prior_trader_step, dict)
+            else 0
+        ),
+        "blocked_balance": (
+            _coerce_int(prior_trader_step.get("climate_router_pilot_blocked_balance"), 0)
+            if isinstance(prior_trader_step, dict)
+            else 0
+        ),
+        "blocked_board_stale": (
+            _coerce_int(prior_trader_step.get("climate_router_pilot_blocked_board_stale"), 0)
+            if isinstance(prior_trader_step, dict)
+            else 0
+        ),
+        "blocked_weather_history": (
+            _coerce_int(prior_trader_step.get("climate_router_pilot_blocked_weather_history"), 0)
+            if isinstance(prior_trader_step, dict)
+            else 0
+        ),
+        "blocked_duplicate_ticker": (
+            _coerce_int(prior_trader_step.get("climate_router_pilot_blocked_duplicate_ticker"), 0)
+            if isinstance(prior_trader_step, dict)
+            else 0
+        ),
+        "blocked_no_orderable_side_on_recheck": (
+            _coerce_int(prior_trader_step.get("climate_router_pilot_blocked_no_orderable_side_on_recheck"), 0)
+            if isinstance(prior_trader_step, dict)
+            else 0
+        ),
+        "blocked_ev_below_threshold": (
+            _coerce_int(prior_trader_step.get("climate_router_pilot_blocked_ev_below_threshold"), 0)
+            if isinstance(prior_trader_step, dict)
+            else 0
+        ),
+        "blocked_research_dry_run_only": (
+            _coerce_int(prior_trader_step.get("climate_router_pilot_blocked_research_dry_run_only"), 0)
+            if isinstance(prior_trader_step, dict)
+            else 0
+        ),
+        "blocked_live_disabled": (
+            _coerce_int(prior_trader_step.get("climate_router_pilot_blocked_live_disabled"), 0)
+            if isinstance(prior_trader_step, dict)
+            else 0
+        ),
+        "blocked_policy_scope": (
+            _coerce_int(prior_trader_step.get("climate_router_pilot_blocked_policy_scope"), 0)
+            if isinstance(prior_trader_step, dict)
+            else 0
+        ),
+        "blocked_family_filter": (
+            _coerce_int(prior_trader_step.get("climate_router_pilot_blocked_family_filter"), 0)
+            if isinstance(prior_trader_step, dict)
+            else 0
+        ),
+        "blocked_contract_cap": (
+            _coerce_int(prior_trader_step.get("climate_router_pilot_blocked_contract_cap"), 0)
+            if isinstance(prior_trader_step, dict)
+            else 0
+        ),
+        "frontier_bootstrap_submitted_attempts": (
+            _coerce_int(prior_trader_step.get("climate_router_pilot_frontier_bootstrap_submitted_attempts"), 0)
+            if isinstance(prior_trader_step, dict)
+            else 0
+        ),
+        "frontier_bootstrap_blocked_attempts": (
+            _coerce_int(prior_trader_step.get("climate_router_pilot_frontier_bootstrap_blocked_attempts"), 0)
+            if isinstance(prior_trader_step, dict)
+            else 0
+        ),
+    }
+
+
+def _top_level_pilot_execution_evidence(
+    *,
+    step: dict[str, Any] | None,
+    climate_router_pilot: dict[str, Any] | None,
+) -> dict[str, Any]:
+    summary_file = (
+        str(step.get("pilot_execution_summary_file") or step.get("output_file") or "").strip()
+        if isinstance(step, dict)
+        else ""
+    )
+    payload: dict[str, Any] = {}
+    if summary_file and not (isinstance(step, dict) and bool(step.get("observer_failure"))):
+        payload = _load_json(Path(summary_file))
+        if not isinstance(payload, dict):
+            payload = {}
+
+    core_state = payload.get("core_state")
+    if not isinstance(core_state, dict):
+        core_state = {}
+
+    pilot_funnel = payload.get("pilot_funnel")
+    if not isinstance(pilot_funnel, dict):
+        pilot_funnel = {}
+
+    first_attempt_evidence = payload.get("first_attempt_evidence")
+    if not isinstance(first_attempt_evidence, dict):
+        first_attempt_evidence = {}
+
+    attempt_snapshot = first_attempt_evidence.get("attempt_snapshot")
+    if not isinstance(attempt_snapshot, dict):
+        attempt_snapshot = {}
+
+    selected_ticker = str(
+        pilot_funnel.get("selected_ticker")
+        or attempt_snapshot.get("market_ticker")
+        or ""
+    ).strip()
+    if not selected_ticker and isinstance(climate_router_pilot, dict):
+        selected_tickers = climate_router_pilot.get("selected_tickers")
+        if isinstance(selected_tickers, list):
+            for raw in selected_tickers:
+                ticker = str(raw or "").strip()
+                if ticker:
+                    selected_ticker = ticker
+                    break
+
+    would_attempt_live_if_enabled = _coerce_int(
+        pilot_funnel.get("would_attempt_live_if_enabled"),
+        _coerce_int(
+            climate_router_pilot.get("would_attempt_live_if_enabled") if isinstance(climate_router_pilot, dict) else 0,
+            0,
+        ),
+    )
+    attempted_orders = _coerce_int(
+        pilot_funnel.get("attempted_orders"),
+        _coerce_int(climate_router_pilot.get("attempted_orders") if isinstance(climate_router_pilot, dict) else 0, 0),
+    )
+    filled_orders = _coerce_int(
+        pilot_funnel.get("filled_orders"),
+        _coerce_int(climate_router_pilot.get("filled_orders") if isinstance(climate_router_pilot, dict) else 0, 0),
+    )
+
+    frontier_status_raw = core_state.get("frontier_status")
+    frontier_status = str(frontier_status_raw or "").strip() or None
+
+    selected_family: str | None = None
+    expected_value_dollars = None
+    total_risk_dollars = None
+    blocked_reason_counts = None
+
+    if isinstance(climate_router_pilot, dict):
+        expected_value_dollars = _parse_float(climate_router_pilot.get("expected_value_dollars"))
+        total_risk_dollars = _parse_float(climate_router_pilot.get("total_risk_dollars"))
+        blocked_reason_counts = climate_router_pilot.get("blocked_reason_counts")
+        top_candidates = climate_router_pilot.get("top_candidates")
+        if isinstance(top_candidates, list):
+            normalized_selected = selected_ticker.upper()
+            selected_candidate: dict[str, Any] | None = None
+            for raw_candidate in top_candidates:
+                if not isinstance(raw_candidate, dict):
+                    continue
+                candidate_ticker = str(raw_candidate.get("market_ticker") or "").strip().upper()
+                if normalized_selected and candidate_ticker == normalized_selected:
+                    selected_candidate = raw_candidate
+                    break
+            if selected_candidate is None:
+                for raw_candidate in top_candidates:
+                    if isinstance(raw_candidate, dict):
+                        selected_candidate = raw_candidate
+                        break
+            if isinstance(selected_candidate, dict):
+                selected_family = str(selected_candidate.get("contract_family") or "").strip() or None
+                if expected_value_dollars is None:
+                    expected_value_dollars = _parse_float(selected_candidate.get("expected_value_dollars"))
+
+    status = str(first_attempt_evidence.get("status") or "").strip() or None
+    if status is None:
+        if filled_orders > 0:
+            status = "filled"
+        elif attempted_orders > 0:
+            status = "attempted_no_fill"
+        elif would_attempt_live_if_enabled > 0:
+            status = "blocked_before_submit"
+        elif selected_ticker:
+            status = "selected_no_attempt_signal"
+
+    recommended_next_action = str(payload.get("recommended_next_action") or "").strip() or None
+    if recommended_next_action is None:
+        if filled_orders > 0:
+            recommended_next_action = "collect_markout_and_roll_forward"
+        elif attempted_orders > 0:
+            recommended_next_action = "collect_no_fill_diagnostics_and_retry_single_shot"
+        elif would_attempt_live_if_enabled > 0:
+            recommended_next_action = "enable_single_shot_live_for_1x1_evidence"
+        elif str(frontier_status or "").strip().lower() == "insufficient_data":
+            recommended_next_action = "collect_more_frontier_samples_before_scaling"
+
+    return {
+        "status": status,
+        "selected_ticker": selected_ticker or None,
+        "would_attempt_live_if_enabled": would_attempt_live_if_enabled,
+        "attempted_orders": attempted_orders,
+        "filled_orders": filled_orders,
+        "frontier_status": frontier_status,
+        "recommended_next_action": recommended_next_action,
+        "summary_file": summary_file or None,
+        "blocked_reason_counts": blocked_reason_counts,
+        "selected_family": selected_family,
+        "expected_value_dollars": expected_value_dollars,
+        "total_risk_dollars": total_risk_dollars,
+    }
+
+
+def _pilot_execution_report_fields(pilot_execution_evidence: dict[str, Any] | None) -> dict[str, Any]:
+    evidence = pilot_execution_evidence if isinstance(pilot_execution_evidence, dict) else {}
+    return {
+        "pilot_execution_evidence_status": evidence.get("status"),
+        "pilot_execution_selected_ticker": evidence.get("selected_ticker"),
+        "pilot_execution_would_attempt_live_if_enabled": evidence.get("would_attempt_live_if_enabled"),
+        "pilot_execution_attempted_orders": evidence.get("attempted_orders"),
+        "pilot_execution_filled_orders": evidence.get("filled_orders"),
+        "pilot_execution_frontier_status": evidence.get("frontier_status"),
+        "pilot_execution_recommended_next_action": evidence.get("recommended_next_action"),
+        "pilot_execution_summary_file": evidence.get("summary_file"),
+        "pilot_execution_blocked_reason_counts": evidence.get("blocked_reason_counts"),
+        "pilot_execution_selected_family": evidence.get("selected_family"),
+        "pilot_execution_expected_value_dollars": evidence.get("expected_value_dollars"),
+        "pilot_execution_total_risk_dollars": evidence.get("total_risk_dollars"),
+    }
+
+
+def _default_lane_comparison_lane() -> dict[str, Any]:
+    return {
+        "picked_ticker": None,
+        "picked_side": None,
+        "selected_fair_probability": None,
+        "selected_fair_probability_conservative": None,
+        "maker_entry_edge": None,
+        "maker_entry_edge_net_fees": None,
+        "expected_value_dollars": None,
+        "expected_value_per_cost": None,
+        "estimated_entry_cost_dollars": None,
+        "estimated_max_loss_dollars": None,
+        "estimated_max_profit_dollars": None,
+        "expected_value_per_max_loss": None,
+        "gate_status": None,
+        "gate_blockers": None,
+        "summary_file": None,
+    }
+
+
+def _default_lane_comparison(
+    *,
+    status: str = "not_run",
+    reason: str | None = None,
+    executed_lane: str = "maker_edge",
+    comparison_basis: str = "same_snapshot_same_filters",
+) -> dict[str, Any]:
+    return {
+        "status": status,
+        "reason": reason,
+        "comparison_basis": comparison_basis,
+        "executed_lane": executed_lane,
+        "fully_frozen": False,
+        "snapshot_inputs": {},
+        "maker_edge": _default_lane_comparison_lane(),
+        "probability_first": _default_lane_comparison_lane(),
+        "delta": {
+            "same_pick": None,
+            "selected_fair_probability_delta": None,
+            "maker_entry_edge_delta": None,
+            "expected_value_dollars_delta": None,
+            "expected_value_per_cost_delta": None,
+            "estimated_max_loss_dollars_delta": None,
+            "expected_value_per_max_loss_delta": None,
+        },
+        "errors": [],
+    }
+
+
+def _safe_lane_float(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    return _parse_float(value)
+
+
+def _lane_value_delta(probability_first_value: Any, maker_edge_value: Any) -> float | None:
+    probability_first_number = _safe_lane_float(probability_first_value)
+    maker_edge_number = _safe_lane_float(maker_edge_value)
+    if not isinstance(probability_first_number, float) or not isinstance(maker_edge_number, float):
+        return None
+    return round(float(probability_first_number) - float(maker_edge_number), 6)
+
+
+def _lane_snapshot_from_execute_summary(summary: dict[str, Any] | None) -> dict[str, Any]:
+    lane = _default_lane_comparison_lane()
+    if not isinstance(summary, dict):
+        return lane
+
+    prior_gate = summary.get("prior_trade_gate_summary")
+    if not isinstance(prior_gate, dict):
+        prior_gate = {}
+
+    expected_value_dollars = _safe_lane_float(summary.get("top_market_expected_value_dollars"))
+    estimated_entry_cost_dollars = _safe_lane_float(summary.get("top_market_estimated_entry_cost_dollars"))
+    expected_value_per_cost = _safe_lane_float(summary.get("top_market_expected_roi_on_cost"))
+    if not isinstance(expected_value_per_cost, float):
+        if isinstance(expected_value_dollars, float) and isinstance(estimated_entry_cost_dollars, float) and (
+            estimated_entry_cost_dollars > 0.0
+        ):
+            expected_value_per_cost = round(expected_value_dollars / estimated_entry_cost_dollars, 6)
+        else:
+            expected_value_per_cost = None
+
+    estimated_max_loss_dollars = _safe_lane_float(summary.get("top_market_estimated_max_loss_dollars"))
+    expected_value_per_max_loss = None
+    if isinstance(expected_value_dollars, float) and isinstance(estimated_max_loss_dollars, float) and (
+        estimated_max_loss_dollars > 0.0
+    ):
+        expected_value_per_max_loss = round(expected_value_dollars / estimated_max_loss_dollars, 6)
+
+    lane.update(
+        {
+            "picked_ticker": str(summary.get("top_market_ticker") or "").strip() or None,
+            "picked_side": str(summary.get("top_market_side") or "").strip().lower() or None,
+            "selected_fair_probability": _safe_lane_float(summary.get("top_market_fair_probability")),
+            "selected_fair_probability_conservative": _safe_lane_float(
+                summary.get("top_market_fair_probability_conservative")
+            ),
+            "maker_entry_edge": _safe_lane_float(summary.get("top_market_maker_entry_edge")),
+            "maker_entry_edge_net_fees": _safe_lane_float(summary.get("top_market_maker_entry_edge_net_fees")),
+            "expected_value_dollars": expected_value_dollars,
+            "expected_value_per_cost": expected_value_per_cost,
+            "estimated_entry_cost_dollars": estimated_entry_cost_dollars,
+            "estimated_max_loss_dollars": estimated_max_loss_dollars,
+            "estimated_max_profit_dollars": _safe_lane_float(summary.get("top_market_estimated_max_profit_dollars")),
+            "expected_value_per_max_loss": expected_value_per_max_loss,
+            "gate_status": (
+                str(prior_gate.get("gate_status") or "").strip()
+                or str(summary.get("prior_trade_gate_status") or "").strip()
+                or None
+            ),
+            "gate_blockers": (
+                prior_gate.get("gate_blockers")
+                if isinstance(prior_gate.get("gate_blockers"), list)
+                else summary.get("prior_trade_gate_blockers")
+            ),
+            "summary_file": str(summary.get("output_file") or "").strip() or None,
+        }
+    )
+    return lane
+
+
+def _build_lane_comparison(
+    *,
+    maker_edge_summary: dict[str, Any] | None,
+    probability_first_summary: dict[str, Any] | None,
+    executed_lane: str = "maker_edge",
+    comparison_basis: str = "same_snapshot_same_filters",
+    reason: str | None = None,
+    errors: list[str] | None = None,
+    fully_frozen: bool = False,
+    snapshot_inputs: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    payload = _default_lane_comparison(
+        status="ready",
+        reason=reason,
+        executed_lane=executed_lane,
+        comparison_basis=comparison_basis,
+    )
+    payload["fully_frozen"] = bool(fully_frozen)
+    payload["snapshot_inputs"] = dict(snapshot_inputs or {})
+    payload["maker_edge"] = _lane_snapshot_from_execute_summary(maker_edge_summary)
+    payload["probability_first"] = _lane_snapshot_from_execute_summary(probability_first_summary)
+    payload["delta"] = {
+        "same_pick": (
+            bool(payload["maker_edge"].get("picked_ticker"))
+            and bool(payload["probability_first"].get("picked_ticker"))
+            and str(payload["maker_edge"].get("picked_ticker") or "").strip().upper()
+            == str(payload["probability_first"].get("picked_ticker") or "").strip().upper()
+            and str(payload["maker_edge"].get("picked_side") or "").strip().lower()
+            == str(payload["probability_first"].get("picked_side") or "").strip().lower()
+        ),
+        "selected_fair_probability_delta": _lane_value_delta(
+            payload["probability_first"].get("selected_fair_probability"),
+            payload["maker_edge"].get("selected_fair_probability"),
+        ),
+        "maker_entry_edge_delta": _lane_value_delta(
+            payload["probability_first"].get("maker_entry_edge"),
+            payload["maker_edge"].get("maker_entry_edge"),
+        ),
+        "expected_value_dollars_delta": _lane_value_delta(
+            payload["probability_first"].get("expected_value_dollars"),
+            payload["maker_edge"].get("expected_value_dollars"),
+        ),
+        "expected_value_per_cost_delta": _lane_value_delta(
+            payload["probability_first"].get("expected_value_per_cost"),
+            payload["maker_edge"].get("expected_value_per_cost"),
+        ),
+        "estimated_max_loss_dollars_delta": _lane_value_delta(
+            payload["probability_first"].get("estimated_max_loss_dollars"),
+            payload["maker_edge"].get("estimated_max_loss_dollars"),
+        ),
+        "expected_value_per_max_loss_delta": _lane_value_delta(
+            payload["probability_first"].get("expected_value_per_max_loss"),
+            payload["maker_edge"].get("expected_value_per_max_loss"),
+        ),
+    }
+    payload_errors = [str(item).strip() for item in (errors or []) if str(item).strip()]
+    payload["errors"] = payload_errors
+    if payload_errors:
+        payload["status"] = "observer_degraded"
+        if not payload.get("reason"):
+            payload["reason"] = "lane_comparison_observer_degraded"
+    return payload
 
 
 def _top_level_no_candidates_diagnostics(step: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -2844,6 +7097,769 @@ def _top_level_daily_weather_funnel(
     }
 
 
+def _daily_weather_strip_key_from_ticker(value: Any) -> str:
+    ticker = str(value or "").strip().upper()
+    if not ticker:
+        return ""
+    if "-" in ticker:
+        return ticker.rsplit("-", 1)[0]
+    return ticker
+
+
+def _daily_weather_market_availability_regime(
+    *,
+    tradable_positive_rows: int,
+    priced_watch_only_rows: int,
+    wakeup_count_total: int,
+    non_endpoint_observations_total: int,
+    orderable_side_observations_total: int,
+) -> tuple[str, str]:
+    if tradable_positive_rows > 0 or orderable_side_observations_total > 0:
+        return "tradable", "tradable_positive_or_orderable_observations_present"
+    if priced_watch_only_rows > 0:
+        return "priced_watch_only", "priced_watch_only_rows_present_without_tradable_rows"
+    if wakeup_count_total > 0 or non_endpoint_observations_total > 0:
+        return "wakeups_rare", "wakeups_or_non_endpoint_observations_present_without_priced_rows"
+    return "dead", "endpoint_only_without_wakeups_or_priced_rows"
+
+
+def _build_daily_weather_market_availability_study(
+    *,
+    prior_trader_step: dict[str, Any] | None,
+    state_file_path: Any,
+    lookback_days: float,
+    top_n: int = 20,
+) -> dict[str, Any]:
+    study: dict[str, Any] = {
+        "regime": "unknown",
+        "regime_reason": "availability_state_missing",
+        "lookback_days_requested": round(float(lookback_days), 3),
+        "state_file": None,
+        "state_file_status": "missing",
+        "state_updated_at_utc": None,
+        "run_counter": 0,
+        "ticker_count": 0,
+        "strip_count": 0,
+        "sessions_watched_total": 0,
+        "observations_total": 0,
+        "endpoint_only_observations_total": 0,
+        "non_endpoint_observations_total": 0,
+        "orderable_side_observations_total": 0,
+        "non_endpoint_quote_observations_total": 0,
+        "wakeup_count_total": 0,
+        "first_observed_at_utc": None,
+        "last_observed_at_utc": None,
+        "duration_observed_hours": None,
+        "priced_watch_only_rows_latest": 0,
+        "tradable_positive_rows_latest": 0,
+        "unpriced_model_view_rows_latest": 0,
+        "ticker_summaries_top": [],
+        "strip_summaries_top": [],
+    }
+    if isinstance(prior_trader_step, dict):
+        study["priced_watch_only_rows_latest"] = max(
+            0,
+            _coerce_int(prior_trader_step.get("daily_weather_priced_watch_only_rows"), 0),
+        )
+        study["tradable_positive_rows_latest"] = max(
+            0,
+            _coerce_int(prior_trader_step.get("daily_weather_tradable_positive_rows"), 0),
+        )
+        study["unpriced_model_view_rows_latest"] = max(
+            0,
+            _coerce_int(prior_trader_step.get("daily_weather_unpriced_model_view_rows"), 0),
+        )
+
+    state_path_text = str(state_file_path or "").strip()
+    study["state_file"] = state_path_text or None
+    if not state_path_text:
+        regime, reason = _daily_weather_market_availability_regime(
+            tradable_positive_rows=study["tradable_positive_rows_latest"],
+            priced_watch_only_rows=study["priced_watch_only_rows_latest"],
+            wakeup_count_total=0,
+            non_endpoint_observations_total=0,
+            orderable_side_observations_total=0,
+        )
+        study["regime"] = regime
+        study["regime_reason"] = reason
+        return study
+
+    payload = _load_json(Path(state_path_text))
+    if not isinstance(payload, dict):
+        study["state_file_status"] = "invalid_or_unreadable"
+        regime, reason = _daily_weather_market_availability_regime(
+            tradable_positive_rows=study["tradable_positive_rows_latest"],
+            priced_watch_only_rows=study["priced_watch_only_rows_latest"],
+            wakeup_count_total=0,
+            non_endpoint_observations_total=0,
+            orderable_side_observations_total=0,
+        )
+        study["regime"] = regime
+        study["regime_reason"] = reason
+        return study
+
+    study["state_file_status"] = "loaded"
+    study["state_updated_at_utc"] = str(payload.get("updated_at_utc") or "").strip() or None
+    study["run_counter"] = max(0, _coerce_int(payload.get("run_counter"), 0))
+    ticker_stats_by_ticker_raw = payload.get("ticker_stats_by_ticker")
+    ticker_stats_by_ticker = (
+        dict(ticker_stats_by_ticker_raw)
+        if isinstance(ticker_stats_by_ticker_raw, dict)
+        else {}
+    )
+    opportunity_class_by_ticker = {}
+    if isinstance(prior_trader_step, dict):
+        raw_opportunity_class_by_ticker = prior_trader_step.get("daily_weather_opportunity_class_by_ticker")
+        if isinstance(raw_opportunity_class_by_ticker, dict):
+            opportunity_class_by_ticker = {
+                str(ticker or "").strip().upper(): str(opportunity_class or "").strip().lower()
+                for ticker, opportunity_class in raw_opportunity_class_by_ticker.items()
+                if str(ticker or "").strip()
+            }
+
+    ticker_summaries: list[dict[str, Any]] = []
+    strip_rollup: dict[str, dict[str, Any]] = {}
+    first_observed_values: list[datetime] = []
+    last_observed_values: list[datetime] = []
+
+    for raw_ticker, raw_stats in ticker_stats_by_ticker.items():
+        ticker = str(raw_ticker or "").strip().upper()
+        if not ticker:
+            continue
+        stats = dict(raw_stats or {}) if isinstance(raw_stats, dict) else {}
+        strip_key = _daily_weather_strip_key_from_ticker(ticker)
+        sessions_watched = max(0, _coerce_int(stats.get("watch_selected_count"), 0))
+        observations_total = max(0, _coerce_int(stats.get("observations_total"), 0))
+        endpoint_only_observations = max(0, _coerce_int(stats.get("endpoint_only_observations"), 0))
+        non_endpoint_observations = max(0, _coerce_int(stats.get("non_endpoint_observations"), 0))
+        orderable_side_observations = max(0, _coerce_int(stats.get("orderable_side_observations"), 0))
+        non_endpoint_quote_observations = max(0, _coerce_int(stats.get("non_endpoint_quote_observations"), 0))
+        wakeup_count = max(0, _coerce_int(stats.get("wakeup_count"), 0))
+        max_endpoint_only_streak = max(
+            max(0, _coerce_int(stats.get("max_endpoint_only_streak_count"), 0)),
+            max(0, _coerce_int(stats.get("endpoint_only_streak_count"), 0)),
+        )
+        orderable_side_observed_minutes = round(
+            float(_parse_float(stats.get("orderable_side_observed_minutes")) or 0.0),
+            4,
+        )
+        non_endpoint_quote_observed_minutes = round(
+            float(_parse_float(stats.get("non_endpoint_quote_observed_minutes")) or 0.0),
+            4,
+        )
+        first_wakeup_hours_to_close = _parse_float(stats.get("first_wakeup_hours_to_close"))
+        first_wakeup_minutes_to_close = (
+            round(float(first_wakeup_hours_to_close) * 60.0, 3)
+            if isinstance(first_wakeup_hours_to_close, float)
+            else None
+        )
+        first_observed = _parse_iso(stats.get("first_observed_at_utc"))
+        last_observed = _parse_iso(stats.get("last_observed_at_utc"))
+        if isinstance(first_observed, datetime):
+            first_observed_values.append(first_observed)
+        if isinstance(last_observed, datetime):
+            last_observed_values.append(last_observed)
+        observations_for_rate = max(1, observations_total)
+        endpoint_only_rate = round(float(endpoint_only_observations) / float(observations_for_rate), 4)
+        non_endpoint_rate = round(float(non_endpoint_observations) / float(observations_for_rate), 4)
+        wakeup_rate = round(float(wakeup_count) / float(max(1, sessions_watched)), 4)
+        opportunity_class = str(opportunity_class_by_ticker.get(ticker) or "").strip().lower()
+        ticker_summary = {
+            "market_ticker": ticker,
+            "strip_key": strip_key,
+            "sessions_watched": sessions_watched,
+            "observations_total": observations_total,
+            "endpoint_only_observations": endpoint_only_observations,
+            "non_endpoint_observations": non_endpoint_observations,
+            "orderable_side_observations": orderable_side_observations,
+            "non_endpoint_quote_observations": non_endpoint_quote_observations,
+            "endpoint_only_rate": endpoint_only_rate,
+            "non_endpoint_rate": non_endpoint_rate,
+            "wakeup_count": wakeup_count,
+            "wakeup_rate": wakeup_rate,
+            "orderable_side_observed_minutes": orderable_side_observed_minutes,
+            "non_endpoint_quote_observed_minutes": non_endpoint_quote_observed_minutes,
+            "avg_minutes_orderable": round(orderable_side_observed_minutes / float(observations_for_rate), 4),
+            "avg_minutes_non_endpoint_quote": round(
+                non_endpoint_quote_observed_minutes / float(observations_for_rate),
+                4,
+            ),
+            "first_wakeup_minutes_to_close": first_wakeup_minutes_to_close,
+            "max_endpoint_only_streak": max_endpoint_only_streak,
+            "last_observed_lane": str(stats.get("last_observed_lane") or "").strip(),
+            "had_orderable_side_ever": bool(stats.get("had_orderable_side_ever")),
+            "opportunity_class_latest": opportunity_class or None,
+        }
+        ticker_summaries.append(ticker_summary)
+
+        strip_stats = strip_rollup.setdefault(
+            strip_key or ticker,
+            {
+                "strip_key": strip_key or ticker,
+                "ticker_count": 0,
+                "sessions_watched": 0,
+                "observations_total": 0,
+                "endpoint_only_observations": 0,
+                "non_endpoint_observations": 0,
+                "orderable_side_observations": 0,
+                "non_endpoint_quote_observations": 0,
+                "wakeup_count": 0,
+                "orderable_side_observed_minutes": 0.0,
+                "non_endpoint_quote_observed_minutes": 0.0,
+                "first_wakeup_minutes_to_close_values": [],
+                "priced_watch_only_rows": 0,
+                "tradable_positive_rows": 0,
+            },
+        )
+        strip_stats["ticker_count"] += 1
+        strip_stats["sessions_watched"] += sessions_watched
+        strip_stats["observations_total"] += observations_total
+        strip_stats["endpoint_only_observations"] += endpoint_only_observations
+        strip_stats["non_endpoint_observations"] += non_endpoint_observations
+        strip_stats["orderable_side_observations"] += orderable_side_observations
+        strip_stats["non_endpoint_quote_observations"] += non_endpoint_quote_observations
+        strip_stats["wakeup_count"] += wakeup_count
+        strip_stats["orderable_side_observed_minutes"] += orderable_side_observed_minutes
+        strip_stats["non_endpoint_quote_observed_minutes"] += non_endpoint_quote_observed_minutes
+        if isinstance(first_wakeup_minutes_to_close, float):
+            strip_stats["first_wakeup_minutes_to_close_values"].append(first_wakeup_minutes_to_close)
+        if opportunity_class == "priced_watch_only":
+            strip_stats["priced_watch_only_rows"] += 1
+        elif opportunity_class == "tradable_positive":
+            strip_stats["tradable_positive_rows"] += 1
+
+    ticker_summaries.sort(
+        key=lambda item: (
+            float(item.get("wakeup_count") or 0.0),
+            float(item.get("non_endpoint_observations") or 0.0),
+            float(item.get("orderable_side_observations") or 0.0),
+            str(item.get("market_ticker") or ""),
+        ),
+        reverse=True,
+    )
+    strip_summaries: list[dict[str, Any]] = []
+    for strip_key, raw_strip_stats in strip_rollup.items():
+        strip_stats = dict(raw_strip_stats or {})
+        ticker_count = max(1, int(strip_stats.get("ticker_count") or 1))
+        observations_total = max(1, int(strip_stats.get("observations_total") or 1))
+        endpoint_only_observations = int(strip_stats.get("endpoint_only_observations") or 0)
+        non_endpoint_observations = int(strip_stats.get("non_endpoint_observations") or 0)
+        wakeup_count = int(strip_stats.get("wakeup_count") or 0)
+        orderable_side_observed_minutes = float(strip_stats.get("orderable_side_observed_minutes") or 0.0)
+        first_wakeup_values = list(strip_stats.get("first_wakeup_minutes_to_close_values") or [])
+        first_wakeup_minutes_to_close = (
+            round(min(float(value) for value in first_wakeup_values), 3)
+            if first_wakeup_values
+            else None
+        )
+        strip_summary = {
+            "strip_key": strip_key,
+            "strip_ticker_count": ticker_count,
+            "strip_endpoint_only_rate": round(float(endpoint_only_observations) / float(observations_total), 4),
+            "strip_non_endpoint_rate": round(float(non_endpoint_observations) / float(observations_total), 4),
+            "strip_wakeup_rate": round(float(wakeup_count) / float(max(1, observations_total)), 4),
+            "strip_avg_minutes_orderable": round(orderable_side_observed_minutes / float(max(1, observations_total)), 4),
+            "strip_first_wakeup_minutes_to_close": first_wakeup_minutes_to_close,
+            "strip_priced_watch_only_rate": round(
+                float(strip_stats.get("priced_watch_only_rows") or 0) / float(ticker_count),
+                4,
+            ),
+            "strip_tradable_positive_rate": round(
+                float(strip_stats.get("tradable_positive_rows") or 0) / float(ticker_count),
+                4,
+            ),
+            "strip_sessions_watched": int(strip_stats.get("sessions_watched") or 0),
+            "strip_observations_total": int(strip_stats.get("observations_total") or 0),
+        }
+        strip_summaries.append(strip_summary)
+    strip_summaries.sort(
+        key=lambda item: (
+            float(item.get("strip_tradable_positive_rate") or 0.0),
+            float(item.get("strip_priced_watch_only_rate") or 0.0),
+            float(item.get("strip_wakeup_rate") or 0.0),
+            -float(item.get("strip_endpoint_only_rate") or 0.0),
+            str(item.get("strip_key") or ""),
+        ),
+        reverse=True,
+    )
+
+    study["ticker_count"] = len(ticker_summaries)
+    study["strip_count"] = len(strip_summaries)
+    study["ticker_summaries_top"] = ticker_summaries[: max(1, int(top_n))]
+    study["strip_summaries_top"] = strip_summaries[: max(1, int(top_n))]
+    study["sessions_watched_total"] = sum(int(item.get("sessions_watched") or 0) for item in ticker_summaries)
+    study["observations_total"] = sum(int(item.get("observations_total") or 0) for item in ticker_summaries)
+    study["endpoint_only_observations_total"] = sum(
+        int(item.get("endpoint_only_observations") or 0)
+        for item in ticker_summaries
+    )
+    study["non_endpoint_observations_total"] = sum(
+        int(item.get("non_endpoint_observations") or 0)
+        for item in ticker_summaries
+    )
+    study["orderable_side_observations_total"] = sum(
+        int(item.get("orderable_side_observations") or 0)
+        for item in ticker_summaries
+    )
+    study["non_endpoint_quote_observations_total"] = sum(
+        int(item.get("non_endpoint_quote_observations") or 0)
+        for item in ticker_summaries
+    )
+    study["wakeup_count_total"] = sum(int(item.get("wakeup_count") or 0) for item in ticker_summaries)
+    if first_observed_values:
+        first_observed = min(first_observed_values)
+        study["first_observed_at_utc"] = first_observed.isoformat()
+    if last_observed_values:
+        last_observed = max(last_observed_values)
+        study["last_observed_at_utc"] = last_observed.isoformat()
+    if first_observed_values and last_observed_values:
+        duration_hours = max(0.0, (max(last_observed_values) - min(first_observed_values)).total_seconds() / 3600.0)
+        study["duration_observed_hours"] = round(duration_hours, 4)
+
+    regime, reason = _daily_weather_market_availability_regime(
+        tradable_positive_rows=study["tradable_positive_rows_latest"],
+        priced_watch_only_rows=study["priced_watch_only_rows_latest"],
+        wakeup_count_total=study["wakeup_count_total"],
+        non_endpoint_observations_total=study["non_endpoint_observations_total"],
+        orderable_side_observations_total=study["orderable_side_observations_total"],
+    )
+    study["regime"] = regime
+    study["regime_reason"] = reason
+    return study
+
+
+def _load_csv_rows(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    rows: list[dict[str, Any]] = []
+    try:
+        with path.open("r", newline="", encoding="utf-8") as handle:
+            for row in csv.DictReader(handle):
+                rows.append(dict(row))
+    except Exception:
+        return []
+    return rows
+
+
+def _normalized_counts_map(raw: Any) -> dict[str, int]:
+    if not isinstance(raw, dict):
+        return {}
+    normalized: dict[str, int] = {}
+    for raw_key, raw_value in raw.items():
+        key = str(raw_key or "").strip()
+        if not key:
+            continue
+        count: int | None = None
+        if isinstance(raw_value, bool):
+            count = int(raw_value)
+        elif isinstance(raw_value, (int, float)):
+            count = int(raw_value)
+        else:
+            parsed = _parse_float(raw_value)
+            if isinstance(parsed, float):
+                count = int(parsed)
+        if count is None:
+            continue
+        normalized[key] = max(0, int(count))
+    return normalized
+
+
+def _nonzero_counts_map(raw: Any) -> dict[str, int]:
+    counts = _normalized_counts_map(raw)
+    return {key: value for key, value in counts.items() if int(value) > 0}
+
+
+def _count_from_map(raw: Any, key: str) -> int:
+    counts = _normalized_counts_map(raw)
+    return max(0, int(counts.get(str(key or "").strip(), 0)))
+
+
+def _bool_from_any(value: Any) -> bool:
+    return bool(_as_bool(value))
+
+
+def _load_prior_trader_payload(prior_trader_step: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(prior_trader_step, dict):
+        return {}
+    output_file_text = str(prior_trader_step.get("output_file") or "").strip()
+    if not output_file_text:
+        return {}
+    payload = _load_json(Path(output_file_text))
+    return payload if isinstance(payload, dict) else {}
+
+
+def _load_plan_summary_payload(prior_trader_step: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(prior_trader_step, dict):
+        return {}
+    plan_summary_text = str(prior_trader_step.get("prior_plan_summary_file") or "").strip()
+    if not plan_summary_text:
+        return {}
+    payload = _load_json(Path(plan_summary_text))
+    return payload if isinstance(payload, dict) else {}
+
+
+def _planned_tickers_from_plan_summary(payload: dict[str, Any]) -> list[str]:
+    planned: list[str] = []
+    seen: set[str] = set()
+
+    def _add_ticker(raw_value: Any) -> None:
+        ticker = str(raw_value or "").strip().upper()
+        if not ticker:
+            return
+        if ticker in seen:
+            return
+        seen.add(ticker)
+        planned.append(ticker)
+
+    canonical_tickers = payload.get("canonical_covered_planned_tickers")
+    if isinstance(canonical_tickers, list):
+        for value in canonical_tickers:
+            _add_ticker(value)
+
+    top_plans = payload.get("top_plans")
+    if isinstance(top_plans, list):
+        for item in top_plans:
+            if isinstance(item, dict):
+                _add_ticker(item.get("market_ticker"))
+
+    for key in ("top_market_ticker",):
+        _add_ticker(payload.get(key))
+
+    for key in ("plans", "planned_rows", "planned_entries", "planned_orders_rows"):
+        values = payload.get(key)
+        if not isinstance(values, list):
+            continue
+        for item in values:
+            if isinstance(item, dict):
+                _add_ticker(item.get("market_ticker"))
+
+    return planned
+
+
+def _normalize_climate_router_row(raw_row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "market_ticker": str(raw_row.get("market_ticker") or "").strip().upper(),
+        "market_title": str(raw_row.get("market_title") or "").strip(),
+        "contract_family": str(raw_row.get("contract_family") or "").strip().lower(),
+        "strip_key": str(raw_row.get("strip_key") or "").strip(),
+        "availability_state": str(raw_row.get("availability_state") or "").strip().lower(),
+        "opportunity_class": str(raw_row.get("opportunity_class") or "").strip().lower(),
+        "theoretical_side": str(raw_row.get("theoretical_side") or "").strip().lower(),
+        "theoretical_reference_source": str(raw_row.get("theoretical_reference_source") or "").strip(),
+        "theoretical_reference_price": _parse_float(raw_row.get("theoretical_reference_price")),
+        "theoretical_reference_usable": _bool_from_any(raw_row.get("theoretical_reference_usable")),
+        "theoretical_reference_endpoint": _bool_from_any(raw_row.get("theoretical_reference_endpoint")),
+        "theoretical_edge_net": _parse_float(raw_row.get("theoretical_edge_net")),
+        "hours_to_close": _parse_float(raw_row.get("hours_to_close")),
+    }
+
+
+def _load_router_tradable_rows(climate_router_step: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if not isinstance(climate_router_step, dict):
+        return []
+
+    output_csv_text = str(climate_router_step.get("output_csv") or "").strip()
+    csv_rows: list[dict[str, Any]] = []
+    if output_csv_text:
+        csv_rows = _load_csv_rows(Path(output_csv_text))
+
+    tradable: list[dict[str, Any]] = []
+    for row in csv_rows:
+        normalized = _normalize_climate_router_row(row)
+        if not normalized.get("market_ticker"):
+            continue
+        if normalized.get("opportunity_class") not in {"tradable_positive", "hot_positive"}:
+            continue
+        tradable.append(normalized)
+
+    if tradable:
+        return tradable
+
+    top_rows = climate_router_step.get("top_tradable_candidates")
+    if isinstance(top_rows, list):
+        for row in top_rows:
+            if not isinstance(row, dict):
+                continue
+            normalized = _normalize_climate_router_row(row)
+            if not normalized.get("market_ticker"):
+                continue
+            if normalized.get("opportunity_class") not in {"tradable_positive", "hot_positive"}:
+                continue
+            tradable.append(normalized)
+    return tradable
+
+
+def _build_climate_router_shadow_plan(
+    *,
+    climate_router_step: dict[str, Any] | None,
+    top_n: int = 5,
+) -> dict[str, Any]:
+    summary: dict[str, Any] = {
+        "status": "not_run",
+        "reason": "climate_router_not_run",
+        "eligible_rows": 0,
+        "would_trade_rows": 0,
+        "total_risk_dollars": 0.0,
+        "total_expected_value_dollars": 0.0,
+        "family_routed_capital_budget": {},
+        "strip_routed_capital_budget": {},
+        "top_shadow_allocations": [],
+    }
+    if not isinstance(climate_router_step, dict):
+        return summary
+
+    router_status = str(climate_router_step.get("status") or "").strip().lower()
+    summary["status"] = router_status or "unknown"
+    summary["reason"] = climate_router_step.get("reason")
+    summary["eligible_rows"] = _coerce_int(climate_router_step.get("routing_allocator_eligible_rows"), 0)
+    summary["would_trade_rows"] = _coerce_int(climate_router_step.get("routing_allocator_allocated_rows"), 0)
+    summary["total_risk_dollars"] = round(float(_parse_float(climate_router_step.get("routing_allocator_total_risk_dollars")) or 0.0), 4)
+    summary["total_expected_value_dollars"] = round(
+        float(_parse_float(climate_router_step.get("routing_allocator_total_expected_value_dollars")) or 0.0),
+        4,
+    )
+
+    family_budget = climate_router_step.get("family_routed_capital_budget")
+    if isinstance(family_budget, dict):
+        normalized_family_budget: dict[str, float] = {}
+        for raw_family, raw_value in family_budget.items():
+            family = str(raw_family or "").strip()
+            if not family:
+                continue
+            value = _parse_float(raw_value)
+            if value is None:
+                continue
+            normalized_family_budget[family] = round(float(value), 4)
+        summary["family_routed_capital_budget"] = normalized_family_budget
+
+    allocations_raw = climate_router_step.get("routing_allocator_allocations")
+    normalized_allocations: list[dict[str, Any]] = []
+    strip_budget: dict[str, float] = {}
+    if isinstance(allocations_raw, list):
+        for row in allocations_raw:
+            if not isinstance(row, dict):
+                continue
+            ticker = str(row.get("market_ticker") or "").strip().upper()
+            if not ticker:
+                continue
+            risk = float(_parse_float(row.get("risk_dollars")) or 0.0)
+            expected_value = float(_parse_float(row.get("expected_value_dollars")) or 0.0)
+            strip_key = str(row.get("strip_key") or "").strip()
+            normalized = {
+                "market_ticker": ticker,
+                "contract_family": str(row.get("contract_family") or "").strip().lower(),
+                "strip_key": strip_key,
+                "side": str(row.get("side") or "").strip().lower(),
+                "availability_state": str(row.get("availability_state") or "").strip().lower(),
+                "risk_dollars": round(risk, 4),
+                "expected_value_dollars": round(expected_value, 4),
+                "edge_net": round(float(_parse_float(row.get("edge_net")) or 0.0), 6),
+                "reference_price_dollars": _parse_float(row.get("reference_price_dollars")),
+                "contracts": _coerce_int(row.get("contracts"), 0),
+            }
+            normalized_allocations.append(normalized)
+            if strip_key:
+                strip_budget[strip_key] = round(float(strip_budget.get(strip_key, 0.0)) + risk, 4)
+
+    normalized_allocations.sort(
+        key=lambda item: (
+            float(item.get("expected_value_dollars") or 0.0),
+            float(item.get("risk_dollars") or 0.0),
+            str(item.get("market_ticker") or ""),
+        ),
+        reverse=True,
+    )
+    summary["top_shadow_allocations"] = normalized_allocations[: max(1, int(top_n))]
+    summary["strip_routed_capital_budget"] = dict(
+        sorted(
+            ((strip, round(float(risk), 4)) for strip, risk in strip_budget.items()),
+            key=lambda item: (-item[1], item[0]),
+        )
+    )
+
+    if router_status in {"ready", "ok"}:
+        summary["status"] = "ready"
+        summary["reason"] = "shadow_plan_derived_from_climate_router_allocations"
+    elif not str(summary.get("reason") or "").strip():
+        summary["reason"] = "climate_router_not_ready"
+    return summary
+
+
+def _build_router_vs_planner_gap(
+    *,
+    climate_router_step: dict[str, Any] | None,
+    prior_trader_step: dict[str, Any] | None,
+    balance_step: dict[str, Any] | None,
+    balance_smoke_step: dict[str, Any] | None,
+    top_n: int = 10,
+) -> dict[str, Any]:
+    gap: dict[str, Any] = {
+        "status": "not_run",
+        "reason": "climate_router_not_run",
+        "climate_router_output_csv": None,
+        "plan_summary_file": None,
+        "router_tradable_rows": 0,
+        "planner_planned_rows": 0,
+        "router_tradable_not_planned_count": 0,
+        "router_tradable_not_planned_tickers": [],
+        "router_vs_planner_gap_reason_counts": {},
+        "router_vs_planner_gap_top_rows": [],
+        "planner_skip_counts_nonzero": {},
+        "enforce_daily_weather_live_only": None,
+        "routine_max_hours_to_close": None,
+    }
+    if not isinstance(climate_router_step, dict):
+        return gap
+
+    gap["climate_router_output_csv"] = climate_router_step.get("output_csv")
+    tradable_rows = _load_router_tradable_rows(climate_router_step)
+    gap["router_tradable_rows"] = len(tradable_rows)
+    if not tradable_rows:
+        gap["status"] = "no_router_tradable_rows"
+        gap["reason"] = "router_has_no_tradable_positive_rows"
+        return gap
+
+    prior_payload = _load_prior_trader_payload(prior_trader_step)
+    plan_payload = _load_plan_summary_payload(prior_trader_step)
+    gap["plan_summary_file"] = (
+        str(prior_trader_step.get("prior_plan_summary_file") or "").strip()
+        if isinstance(prior_trader_step, dict)
+        else None
+    ) or None
+    planned_tickers = _planned_tickers_from_plan_summary(plan_payload)
+    planned_set = {ticker for ticker in planned_tickers if ticker}
+    gap["planner_planned_rows"] = len(planned_set)
+
+    skip_counts_nonzero = _nonzero_counts_map(plan_payload.get("skip_counts"))
+    gap["planner_skip_counts_nonzero"] = dict(sorted(skip_counts_nonzero.items()))
+
+    enforce_daily_weather_live_only = _bool_from_any(prior_payload.get("enforce_daily_weather_live_only"))
+    gap["enforce_daily_weather_live_only"] = enforce_daily_weather_live_only
+    routine_max_hours_to_close = _parse_float(plan_payload.get("routine_max_hours_to_close"))
+    gap["routine_max_hours_to_close"] = routine_max_hours_to_close
+
+    balance_blocked = False
+    if isinstance(balance_step, dict) and not bool(balance_step.get("balance_live_ready")):
+        balance_blocked = True
+    if isinstance(balance_smoke_step, dict) and not bool(balance_smoke_step.get("kalshi_ok")):
+        balance_blocked = True
+
+    risk_cap_signal = False
+    for key, value in skip_counts_nonzero.items():
+        lower_key = str(key).strip().lower()
+        if "risk" in lower_key or "budget" in lower_key:
+            if int(value) > 0:
+                risk_cap_signal = True
+                break
+    if not risk_cap_signal:
+        remaining_risk = _parse_float(plan_payload.get("daily_weather_allocator_remaining_unallocated_risk_dollars"))
+        if isinstance(remaining_risk, float) and remaining_risk <= 0.0:
+            risk_cap_signal = True
+
+    weather_history_unhealthy_signal = (
+        _coerce_int(plan_payload.get("weather_history_unhealthy_filtered"), 0) > 0
+    )
+
+    reason_priority = [
+        "gap_out_of_scope_family",
+        "gap_daily_weather_only_mode",
+        "gap_no_orderable_side_on_recheck",
+        "gap_maker_only_requirement",
+        "gap_edge_below_min",
+        "gap_net_edge_below_min",
+        "gap_risk_cap",
+        "gap_balance",
+        "gap_hours_to_close",
+        "gap_weather_history_unhealthy",
+        "gap_unknown",
+    ]
+    weather_daily_families = {"daily_rain", "daily_temperature", "daily_snow"}
+    climate_families = weather_daily_families | {"monthly_climate_anomaly"}
+
+    unmatched_rows: list[dict[str, Any]] = []
+    reason_counts: dict[str, int] = {}
+    for row in tradable_rows:
+        ticker = str(row.get("market_ticker") or "").strip().upper()
+        if not ticker:
+            continue
+        if ticker in planned_set:
+            continue
+
+        family = str(row.get("contract_family") or "").strip().lower()
+        hours_to_close = _parse_float(row.get("hours_to_close"))
+        reference_source = str(row.get("theoretical_reference_source") or "").strip().lower()
+        reference_usable = _bool_from_any(row.get("theoretical_reference_usable"))
+        availability_state = str(row.get("availability_state") or "").strip().lower()
+
+        reason_candidates: list[str] = []
+        if family not in climate_families:
+            reason_candidates.append("gap_out_of_scope_family")
+        if enforce_daily_weather_live_only and family not in weather_daily_families:
+            reason_candidates.append("gap_daily_weather_only_mode")
+        if (not reference_usable) or availability_state not in {"tradable", "hot"}:
+            reason_candidates.append("gap_no_orderable_side_on_recheck")
+        if "ask" in reference_source:
+            reason_candidates.append("gap_maker_only_requirement")
+        if _count_from_map(skip_counts_nonzero, "maker_edge_below_min") > 0:
+            reason_candidates.append("gap_edge_below_min")
+        if _count_from_map(skip_counts_nonzero, "maker_edge_net_fees_below_min") > 0:
+            reason_candidates.append("gap_net_edge_below_min")
+        if risk_cap_signal:
+            reason_candidates.append("gap_risk_cap")
+        if balance_blocked:
+            reason_candidates.append("gap_balance")
+        if isinstance(hours_to_close, float) and isinstance(routine_max_hours_to_close, float):
+            if hours_to_close > routine_max_hours_to_close:
+                reason_candidates.append("gap_hours_to_close")
+        if weather_history_unhealthy_signal and family in weather_daily_families:
+            reason_candidates.append("gap_weather_history_unhealthy")
+        if not reason_candidates:
+            reason_candidates.append("gap_unknown")
+
+        primary_reason = "gap_unknown"
+        for reason in reason_priority:
+            if reason in reason_candidates:
+                primary_reason = reason
+                break
+
+        reason_counts[primary_reason] = int(reason_counts.get(primary_reason, 0)) + 1
+        unmatched_rows.append(
+            {
+                **row,
+                "gap_primary_reason": primary_reason,
+                "gap_reason_candidates": reason_candidates,
+            }
+        )
+
+    unmatched_rows.sort(
+        key=lambda item: (
+            float(_parse_float(item.get("theoretical_edge_net")) or 0.0),
+            str(item.get("market_ticker") or ""),
+        ),
+        reverse=True,
+    )
+
+    gap["router_tradable_not_planned_count"] = len(unmatched_rows)
+    gap["router_tradable_not_planned_tickers"] = [
+        str(item.get("market_ticker") or "").strip().upper()
+        for item in unmatched_rows[:50]
+        if str(item.get("market_ticker") or "").strip()
+    ]
+    gap["router_vs_planner_gap_reason_counts"] = dict(
+        sorted(reason_counts.items(), key=lambda item: (-int(item[1]), item[0]))
+    )
+    gap["router_vs_planner_gap_top_rows"] = unmatched_rows[: max(1, int(top_n))]
+
+    if not unmatched_rows:
+        gap["status"] = "reconciled"
+        gap["reason"] = "all_router_tradable_rows_present_in_planner_output"
+        return gap
+
+    gap["status"] = "gap_detected"
+    gap["reason"] = "router_tradable_rows_missing_from_planner_output"
+    return gap
+
+
 def _collect_wakeup_transition_tickers(steps: list[dict[str, Any]]) -> list[str]:
     collected: list[str] = []
     seen: set[str] = set()
@@ -2982,6 +7998,80 @@ def main() -> int:
 
     run_report_path = run_reports / f"overnight_alpha_{run_stamp}.json"
     latest_report_path = output_dir / "overnight_alpha_latest.json"
+    shadow_bankroll_enabled = _is_enabled(os.environ.get("BETBOT_SHADOW_BANKROLL_ENABLED"), default=True)
+    shadow_bankroll_start_dollars = max(
+        0.0,
+        float(os.environ.get("BETBOT_SHADOW_BANKROLL_START_DOLLARS", "1000") or 1000.0),
+    )
+    paper_live_enabled = _is_enabled(os.environ.get("BETBOT_PAPER_LIVE_ENABLED"), default=True)
+    paper_live_start_dollars = max(
+        0.0,
+        float(os.environ.get("BETBOT_PAPER_LIVE_START_DOLLARS", str(shadow_bankroll_start_dollars)) or shadow_bankroll_start_dollars),
+    )
+    paper_live_state_file_raw = str(
+        os.environ.get("BETBOT_PAPER_LIVE_STATE_FILE")
+        or (output_dir / "overnight_alpha" / "paper_live_account_state.json")
+    ).strip()
+    paper_live_state_file = Path(paper_live_state_file_raw).expanduser()
+    if not paper_live_state_file.is_absolute():
+        paper_live_state_file = (repo_root / paper_live_state_file).resolve()
+    paper_live_risk_profile = str(
+        os.environ.get("BETBOT_PAPER_LIVE_RISK_PROFILE", "growth_aggressive") or "growth_aggressive"
+    ).strip() or "growth_aggressive"
+    paper_live_kelly_fraction = max(
+        0.0,
+        float(os.environ.get("BETBOT_PAPER_LIVE_KELLY_FRACTION", "0.5") or 0.5),
+    )
+    paper_live_kelly_high_conf_max = max(
+        0.0,
+        float(os.environ.get("BETBOT_PAPER_LIVE_KELLY_HIGH_CONF_MAX", "0.75") or 0.75),
+    )
+    paper_live_max_open_risk_pct = max(
+        0.01,
+        float(os.environ.get("BETBOT_PAPER_LIVE_MAX_OPEN_RISK_PCT", "0.25") or 0.25),
+    )
+    paper_live_max_family_risk_pct = max(
+        0.01,
+        float(os.environ.get("BETBOT_PAPER_LIVE_MAX_FAMILY_RISK_PCT", "0.15") or 0.15),
+    )
+    paper_live_max_strip_risk_pct = max(
+        0.01,
+        float(os.environ.get("BETBOT_PAPER_LIVE_MAX_STRIP_RISK_PCT", "0.08") or 0.08),
+    )
+    paper_live_max_single_position_risk_pct = max(
+        0.005,
+        float(os.environ.get("BETBOT_PAPER_LIVE_MAX_SINGLE_POSITION_RISK_PCT", "0.06") or 0.06),
+    )
+    paper_live_max_new_attempts_per_run = max(
+        1,
+        _coerce_int(os.environ.get("BETBOT_PAPER_LIVE_MAX_NEW_ATTEMPTS_PER_RUN"), 8),
+    )
+    paper_live_family_allowlist = [
+        token.strip().lower()
+        for token in str(os.environ.get("BETBOT_PAPER_LIVE_FAMILY_ALLOWLIST", "monthly_climate_anomaly") or "").split(",")
+        if token.strip()
+    ]
+    if not paper_live_family_allowlist:
+        paper_live_family_allowlist = ["monthly_climate_anomaly"]
+    paper_live_allow_random_cancels = _is_enabled(
+        os.environ.get("BETBOT_PAPER_LIVE_ALLOW_RANDOM_CANCELS"),
+        default=False,
+    )
+    paper_live_size_from_current_equity = _is_enabled(
+        os.environ.get("BETBOT_PAPER_LIVE_SIZE_FROM_CURRENT_EQUITY"),
+        default=True,
+    )
+    paper_live_require_live_eligible_hint = _is_enabled(
+        os.environ.get("BETBOT_PAPER_LIVE_REQUIRE_LIVE_ELIGIBLE_HINT"),
+        default=False,
+    )
+    shadow_bankroll_state_file_raw = str(
+        os.environ.get("BETBOT_SHADOW_BANKROLL_STATE_FILE")
+        or (output_dir / "overnight_alpha" / "shadow_bankroll_state.json")
+    ).strip()
+    shadow_bankroll_state_file = Path(shadow_bankroll_state_file_raw).expanduser()
+    if not shadow_bankroll_state_file.is_absolute():
+        shadow_bankroll_state_file = (repo_root / shadow_bankroll_state_file).resolve()
     launcher = _choose_betbot_launcher(repo_root)
     started_at = _now_iso()
 
@@ -2992,6 +8082,10 @@ def main() -> int:
         if previous_started is not None:
             age_seconds = max(0.0, (datetime.now(timezone.utc) - previous_started).total_seconds())
             if age_seconds < min_seconds_between_runs:
+                pilot_execution_evidence = _top_level_pilot_execution_evidence(
+                    step=None,
+                    climate_router_pilot=None,
+                )
                 report = {
                     "run_id": run_id,
                     "run_started_at_utc": started_at,
@@ -3032,10 +8126,42 @@ def main() -> int:
                     "pipeline_ready": False,
                     "live_ready": False,
                     "live_blockers": ["run_skipped_recent_run"],
+                    **_pilot_execution_report_fields(pilot_execution_evidence),
+                    **_shadow_bankroll_report_fields(
+                        _shadow_bankroll_defaults(
+                            enabled=shadow_bankroll_enabled,
+                            start_dollars=shadow_bankroll_start_dollars,
+                            state_file=shadow_bankroll_state_file,
+                            status="observer_not_run",
+                            reason="shadow_bankroll_skipped_recent_run",
+                        )
+                    ),
+                    **_paper_live_report_fields(
+                        _paper_live_defaults(
+                            enabled=paper_live_enabled,
+                            start_dollars=paper_live_start_dollars,
+                            state_file=paper_live_state_file,
+                            status="observer_not_run",
+                            reason="paper_live_skipped_recent_run",
+                        )
+                    ),
+                    **_paper_live_scorecard_fields(
+                        _paper_live_defaults(
+                            enabled=paper_live_enabled,
+                            start_dollars=paper_live_start_dollars,
+                            state_file=paper_live_state_file,
+                            status="observer_not_run",
+                            reason="paper_live_skipped_recent_run",
+                        )
+                    ),
                     "balance_heartbeat": _top_level_balance_heartbeat(None),
                     "execution_frontier": _top_level_execution_frontier(None),
                     "decision_identity": _top_level_decision_identity(None),
                     "probe_policy": _top_level_probe_policy(None),
+                    "lane_comparison": _default_lane_comparison(
+                        status="not_run",
+                        reason="skipped_recent_run",
+                    ),
                     "no_candidates_diagnostics": None,
                     "daily_weather_funnel": _top_level_daily_weather_funnel(
                         prior_trader_step=None,
@@ -3099,6 +8225,10 @@ def main() -> int:
     steps.append(preflight_step)
     if not bool(preflight_step.get("ok")):
         failed_steps = [step["name"] for step in steps if not bool(step.get("ok"))]
+        pilot_execution_evidence = _top_level_pilot_execution_evidence(
+            step=None,
+            climate_router_pilot=None,
+        )
         report = {
             "run_id": run_id,
             "run_started_at_utc": started_at,
@@ -3127,10 +8257,42 @@ def main() -> int:
             "pipeline_ready": False,
             "live_ready": False,
             "live_blockers": ["preflight_failed"],
+            **_pilot_execution_report_fields(pilot_execution_evidence),
+            **_shadow_bankroll_report_fields(
+                _shadow_bankroll_defaults(
+                    enabled=shadow_bankroll_enabled,
+                    start_dollars=shadow_bankroll_start_dollars,
+                    state_file=shadow_bankroll_state_file,
+                    status="observer_not_run",
+                    reason="shadow_bankroll_preflight_failed",
+                )
+            ),
+            **_paper_live_report_fields(
+                _paper_live_defaults(
+                    enabled=paper_live_enabled,
+                    start_dollars=paper_live_start_dollars,
+                    state_file=paper_live_state_file,
+                    status="observer_not_run",
+                    reason="paper_live_preflight_failed",
+                )
+            ),
+            **_paper_live_scorecard_fields(
+                _paper_live_defaults(
+                    enabled=paper_live_enabled,
+                    start_dollars=paper_live_start_dollars,
+                    state_file=paper_live_state_file,
+                    status="observer_not_run",
+                    reason="paper_live_preflight_failed",
+                )
+            ),
             "balance_heartbeat": _top_level_balance_heartbeat(None),
             "execution_frontier": _top_level_execution_frontier(None),
             "decision_identity": _top_level_decision_identity(None),
             "probe_policy": _top_level_probe_policy(None),
+            "lane_comparison": _default_lane_comparison(
+                status="not_run",
+                reason="preflight_failed",
+            ),
             "no_candidates_diagnostics": None,
             "daily_weather_funnel": _top_level_daily_weather_funnel(
                 prior_trader_step=None,
@@ -3501,28 +8663,42 @@ def main() -> int:
     )
 
     if bool(weather_prior_state_before.get("stale")) or force_weather_prior_refresh_reason is not None:
+        weather_priors_args = [
+            "kalshi-weather-priors",
+            "--priors-csv",
+            str(priors_csv),
+            "--history-csv",
+            str(history_csv),
+            "--allowed-contract-families",
+            ",".join(allowed_weather_contract_families),
+            "--max-markets",
+            str(max(1, int(os.environ.get("BETBOT_WEATHER_PRIOR_MAX_MARKETS", "30")))),
+            "--timeout-seconds",
+            str(float(os.environ.get("BETBOT_TIMEOUT_SECONDS", "15"))),
+            "--historical-lookback-years",
+            str(int(os.environ.get("BETBOT_WEATHER_LOOKBACK_YEARS", "15"))),
+            "--station-history-cache-max-age-hours",
+            str(float(os.environ.get("BETBOT_WEATHER_CACHE_MAX_AGE_HOURS", "24"))),
+            "--output-dir",
+            str(output_dir),
+        ]
+        if not _is_enabled(os.environ.get("BETBOT_WEATHER_INCLUDE_NWS_GRIDPOINT_DATA"), default=True):
+            weather_priors_args.append("--disable-nws-gridpoint-data")
+        if not _is_enabled(os.environ.get("BETBOT_WEATHER_INCLUDE_NWS_OBSERVATIONS"), default=True):
+            weather_priors_args.append("--disable-nws-observations")
+        if not _is_enabled(os.environ.get("BETBOT_WEATHER_INCLUDE_NWS_ALERTS"), default=True):
+            weather_priors_args.append("--disable-nws-alerts")
+        if not _is_enabled(os.environ.get("BETBOT_WEATHER_INCLUDE_NCEI_NORMALS"), default=True):
+            weather_priors_args.append("--disable-ncei-normals")
+        if not _is_enabled(os.environ.get("BETBOT_WEATHER_INCLUDE_MRMS_QPE"), default=True):
+            weather_priors_args.append("--disable-mrms-qpe")
+        if not _is_enabled(os.environ.get("BETBOT_WEATHER_INCLUDE_NBM_SNAPSHOT"), default=True):
+            weather_priors_args.append("--disable-nbm-snapshot")
+
         weather_prior_step = _run_step(
             name="weather_prior_refresh",
             launcher=launcher,
-            args=[
-                "kalshi-weather-priors",
-                "--priors-csv",
-                str(priors_csv),
-                "--history-csv",
-                str(history_csv),
-                "--allowed-contract-families",
-                ",".join(allowed_weather_contract_families),
-                "--max-markets",
-                str(max(1, int(os.environ.get("BETBOT_WEATHER_PRIOR_MAX_MARKETS", "30")))),
-                "--timeout-seconds",
-                str(float(os.environ.get("BETBOT_TIMEOUT_SECONDS", "15"))),
-                "--historical-lookback-years",
-                str(int(os.environ.get("BETBOT_WEATHER_LOOKBACK_YEARS", "15"))),
-                "--station-history-cache-max-age-hours",
-                str(float(os.environ.get("BETBOT_WEATHER_CACHE_MAX_AGE_HOURS", "24"))),
-                "--output-dir",
-                str(output_dir),
-            ],
+            args=weather_priors_args,
             cwd=repo_root,
             run_dir=run_logs,
             env_overrides=env_file_values,
@@ -3658,6 +8834,144 @@ def main() -> int:
             )
         )
 
+    climate_router_enabled = _is_enabled(
+        os.environ.get("BETBOT_CLIMATE_ROUTER_ENABLED"),
+        default=True,
+    )
+    climate_router_step: dict[str, Any] | None = None
+    climate_router_skip_realtime_collect = _is_enabled(
+        os.environ.get("BETBOT_CLIMATE_ROUTER_SKIP_REALTIME_COLLECT"),
+        default=False,
+    )
+    climate_router_market_tickers = _parse_csv_list(os.environ.get("BETBOT_CLIMATE_ROUTER_MARKET_TICKERS"))
+    climate_router_ws_channels = _parse_csv_list(os.environ.get("BETBOT_CLIMATE_ROUTER_WS_CHANNELS"))
+    if not climate_router_ws_channels:
+        climate_router_ws_channels = [
+            "orderbook_snapshot",
+            "orderbook_delta",
+            "ticker",
+            "public_trades",
+            "user_fills",
+            "market_positions",
+        ]
+    climate_router_seed_recent_markets = _is_enabled(
+        os.environ.get("BETBOT_CLIMATE_ROUTER_SEED_RECENT_MARKETS"),
+        default=True,
+    )
+    climate_router_include_contract_families = _parse_csv_list(
+        os.environ.get("BETBOT_CLIMATE_ROUTER_INCLUDE_CONTRACT_FAMILIES")
+    )
+    if not climate_router_include_contract_families:
+        climate_router_include_contract_families = [
+            "daily_rain",
+            "daily_temperature",
+            "daily_snow",
+            "monthly_climate_anomaly",
+        ]
+    if climate_router_enabled:
+        climate_router_args = [
+            "kalshi-climate-realtime-router",
+            "--env-file",
+            str(env_file),
+            "--priors-csv",
+            str(priors_csv),
+            "--history-csv",
+            str(history_csv),
+            "--output-dir",
+            str(output_dir),
+            "--availability-db-path",
+            str(
+                os.environ.get(
+                    "BETBOT_CLIMATE_ROUTER_AVAILABILITY_DB_PATH",
+                    str(output_dir / "kalshi_climate_availability.sqlite3"),
+                )
+            ),
+            "--ws-channels",
+            ",".join(climate_router_ws_channels),
+            "--run-seconds",
+            str(max(1.0, float(os.environ.get("BETBOT_CLIMATE_ROUTER_RUN_SECONDS", "20")))),
+            "--max-markets",
+            str(max(1, int(os.environ.get("BETBOT_CLIMATE_ROUTER_MAX_MARKETS", "40")))),
+            "--recent-markets-min-updated-seconds",
+            str(max(1.0, float(os.environ.get("BETBOT_CLIMATE_ROUTER_RECENT_MARKETS_MIN_UPDATED_SECONDS", "900")))),
+            "--recent-markets-timeout-seconds",
+            str(max(1.0, float(os.environ.get("BETBOT_CLIMATE_ROUTER_RECENT_MARKETS_TIMEOUT_SECONDS", "8")))),
+            "--ws-state-max-age-seconds",
+            str(max(1.0, float(os.environ.get("BETBOT_CLIMATE_ROUTER_WS_STATE_MAX_AGE_SECONDS", "30")))),
+            "--min-theoretical-edge-net-fees",
+            str(float(os.environ.get("BETBOT_CLIMATE_ROUTER_MIN_THEORETICAL_EDGE_NET_FEES", "0.005"))),
+            "--max-quote-age-seconds",
+            str(max(0.0, float(os.environ.get("BETBOT_CLIMATE_ROUTER_MAX_QUOTE_AGE_SECONDS", "900")))),
+            "--planning-bankroll",
+            str(max(0.0, float(os.environ.get("BETBOT_CLIMATE_ROUTER_PLANNING_BANKROLL_DOLLARS", "40")))),
+            "--daily-risk-cap",
+            str(max(0.0, float(os.environ.get("BETBOT_CLIMATE_ROUTER_DAILY_RISK_CAP_DOLLARS", "3")))),
+            "--max-risk-per-bet",
+            str(max(0.0, float(os.environ.get("BETBOT_CLIMATE_ROUTER_MAX_RISK_PER_BET_DOLLARS", "1")))),
+            "--availability-lookback-days",
+            str(max(1.0, float(os.environ.get("BETBOT_CLIMATE_ROUTER_AVAILABILITY_LOOKBACK_DAYS", "7")))),
+            "--availability-recent-seconds",
+            str(max(1.0, float(os.environ.get("BETBOT_CLIMATE_ROUTER_AVAILABILITY_RECENT_SECONDS", "900")))),
+            "--availability-hot-trade-window-seconds",
+            str(max(1.0, float(os.environ.get("BETBOT_CLIMATE_ROUTER_AVAILABILITY_HOT_TRADE_WINDOW_SECONDS", "300")))),
+            "--include-contract-families",
+            ",".join(climate_router_include_contract_families),
+        ]
+        if climate_router_market_tickers:
+            climate_router_args.extend(["--market-tickers", ",".join(climate_router_market_tickers)])
+        if not climate_router_seed_recent_markets:
+            climate_router_args.append("--no-seed-recent-markets")
+        if climate_router_skip_realtime_collect:
+            climate_router_args.append("--skip-realtime-collect")
+        climate_router_step = _run_step(
+            name="climate_realtime_router",
+            launcher=launcher,
+            args=climate_router_args,
+            cwd=repo_root,
+            run_dir=run_logs,
+            env_overrides=env_file_values,
+        )
+        # Availability routing is additive control-plane intelligence and should
+        # not hard-fail overnight orchestration when upstream WS/API is flaky.
+        climate_router_step["ok"] = True
+        climate_router_step["diagnostic_only"] = True
+        steps.append(climate_router_step)
+    else:
+        climate_router_step = _synthetic_step(
+            name="climate_realtime_router",
+            status="skipped_disabled",
+            ok=True,
+            reason="climate_router_disabled",
+        )
+        steps.append(climate_router_step)
+
+    climate_router_pilot_enabled = _is_enabled(
+        os.environ.get("BETBOT_CLIMATE_ROUTER_PILOT_ENABLED"),
+        default=False,
+    )
+    climate_router_pilot_allowed_classes = ",".join(
+        _parse_csv_list(os.environ.get("BETBOT_CLIMATE_ROUTER_PILOT_ALLOWED_CLASSES"))
+    )
+    climate_router_pilot_allowed_families = ",".join(
+        _parse_csv_list(os.environ.get("BETBOT_CLIMATE_ROUTER_PILOT_ALLOWED_FAMILIES"))
+    )
+    climate_router_pilot_excluded_families = ",".join(
+        _parse_csv_list(os.environ.get("BETBOT_CLIMATE_ROUTER_PILOT_EXCLUDED_FAMILIES"))
+    )
+    climate_router_pilot_policy_scope_override_enabled = _is_enabled(
+        os.environ.get("BETBOT_CLIMATE_ROUTER_PILOT_POLICY_SCOPE_OVERRIDE_ENABLED"),
+        default=True,
+    )
+    climate_router_pilot_summary_json = str(os.environ.get("BETBOT_CLIMATE_ROUTER_PILOT_SUMMARY_JSON") or "").strip()
+    if not climate_router_pilot_summary_json and isinstance(climate_router_step, dict):
+        routed_summary_path = str(climate_router_step.get("output_file") or "").strip()
+        if routed_summary_path and Path(routed_summary_path).exists():
+            climate_router_pilot_summary_json = routed_summary_path
+    disable_daily_weather_live_only = _is_enabled(
+        os.environ.get("BETBOT_DISABLE_DAILY_WEATHER_LIVE_ONLY"),
+        default=False,
+    )
+
     prior_trader_args = [
         "kalshi-micro-prior-trader",
         "--env-file",
@@ -3674,6 +8988,30 @@ def main() -> int:
         "--disable-auto-refresh-weather-priors",
         "--disable-auto-refresh-priors",
     ]
+    if disable_daily_weather_live_only:
+        prior_trader_args.append("--disable-daily-weather-live-only")
+    if climate_router_pilot_enabled:
+        prior_trader_args.append("--climate-router-pilot-enabled")
+    if climate_router_pilot_enabled and climate_router_pilot_policy_scope_override_enabled:
+        prior_trader_args.append("--climate-router-pilot-policy-scope-override-enabled")
+    if climate_router_pilot_summary_json:
+        prior_trader_args.extend(["--climate-router-summary-json", climate_router_pilot_summary_json])
+    prior_trader_args.extend(
+        [
+            "--climate-router-pilot-max-orders-per-run",
+            str(max(0, int(os.environ.get("BETBOT_CLIMATE_ROUTER_PILOT_MAX_ORDERS_PER_RUN", "1")))),
+            "--climate-router-pilot-contracts-cap",
+            str(max(1, int(os.environ.get("BETBOT_CLIMATE_ROUTER_PILOT_CONTRACTS_CAP", "1")))),
+            "--climate-router-pilot-required-ev-dollars",
+            str(max(0.0, float(os.environ.get("BETBOT_CLIMATE_ROUTER_PILOT_REQUIRED_EV_DOLLARS", "0.05")))),
+        ]
+    )
+    if climate_router_pilot_allowed_classes:
+        prior_trader_args.extend(["--climate-router-pilot-allowed-classes", climate_router_pilot_allowed_classes])
+    if climate_router_pilot_allowed_families:
+        prior_trader_args.extend(["--climate-router-pilot-allowed-families", climate_router_pilot_allowed_families])
+    if climate_router_pilot_excluded_families:
+        prior_trader_args.extend(["--climate-router-pilot-excluded-families", climate_router_pilot_excluded_families])
     frontier_report_path = str(frontier_refresh_step.get("output_file") or "").strip()
     if bool(frontier_refresh_step.get("ok")) and frontier_report_path and Path(frontier_report_path).exists():
         prior_trader_args.extend(
@@ -3858,6 +9196,11 @@ def main() -> int:
             payload=dict(daily_weather_recovery_alert_state),
         )
     )
+    # Router executes before prior-trader so the same-run summary can seed pilot promotion.
+    climate_router_step = next(
+        (step for step in steps if str(step.get("name") or "").strip() == "climate_realtime_router"),
+        None,
+    )
     daily_weather_ticker_refresh_step = next(
         (
             step
@@ -3880,6 +9223,383 @@ def main() -> int:
         (step for step in reversed(steps) if str(step.get("name") or "").strip() == "daily_weather_ticker_refresh_wakeup_burst"),
         None,
     )
+    balance_step_for_gap = next((step for step in steps if step.get("name") == "balance_heartbeat"), None)
+    balance_smoke_step_for_gap = next((step for step in steps if step.get("name") == "balance_smoke"), None)
+    climate_router_shadow_plan = _build_climate_router_shadow_plan(
+        climate_router_step=climate_router_step if isinstance(climate_router_step, dict) else None,
+    )
+    steps.append(
+        _synthetic_step(
+            name="climate_router_shadow_plan",
+            status=str(climate_router_shadow_plan.get("status") or "not_run"),
+            ok=True,
+            reason=(
+                str(climate_router_shadow_plan.get("reason") or "").strip()
+                or None
+            ),
+            payload=dict(climate_router_shadow_plan),
+        )
+    )
+    router_vs_planner_gap = _build_router_vs_planner_gap(
+        climate_router_step=climate_router_step if isinstance(climate_router_step, dict) else None,
+        prior_trader_step=prior_trader_step if isinstance(prior_trader_step, dict) else None,
+        balance_step=balance_step_for_gap if isinstance(balance_step_for_gap, dict) else None,
+        balance_smoke_step=balance_smoke_step_for_gap if isinstance(balance_smoke_step_for_gap, dict) else None,
+    )
+    steps.append(
+        _synthetic_step(
+            name="router_vs_planner_gap",
+            status=str(router_vs_planner_gap.get("status") or "not_run"),
+            ok=True,
+            reason=(
+                str(router_vs_planner_gap.get("reason") or "").strip()
+                or None
+            ),
+            payload=dict(router_vs_planner_gap),
+        )
+    )
+    pilot_execution_summary_path = output_dir / "pilot_execution_evidence_latest.json"
+    pilot_execution_evidence_step = _run_step(
+        name="pilot_execution_evidence",
+        launcher=[launcher[0]],
+        args=[
+            str(repo_root / "scripts" / "pilot_execution_evidence.py"),
+            "--outputs-dir",
+            str(output_dir),
+            "--output-json",
+            str(pilot_execution_summary_path),
+        ],
+        cwd=repo_root,
+        run_dir=run_logs,
+        env_overrides=env_file_values,
+    )
+    pilot_execution_evidence_step["pilot_execution_summary_file"] = str(pilot_execution_summary_path)
+    pilot_execution_evidence_step["output_file"] = str(pilot_execution_summary_path)
+    pilot_execution_evidence_step["diagnostic_only"] = True
+    if not bool(pilot_execution_evidence_step.get("ok")):
+        pilot_execution_evidence_step["status"] = (
+            str(pilot_execution_evidence_step.get("status") or "").strip() or "observer_failed"
+        )
+        pilot_execution_evidence_step["reason"] = (
+            str(pilot_execution_evidence_step.get("reason") or "").strip() or "pilot_execution_evidence_observer_failed"
+        )
+        pilot_execution_evidence_step["observer_failure"] = True
+        pilot_execution_evidence_step["ok"] = True
+    else:
+        observer_payload = _load_json(pilot_execution_summary_path)
+        first_attempt_evidence = observer_payload.get("first_attempt_evidence") if isinstance(observer_payload, dict) else {}
+        first_attempt_status = (
+            str(first_attempt_evidence.get("status") or "").strip()
+            if isinstance(first_attempt_evidence, dict)
+            else ""
+        )
+        pilot_execution_evidence_step["status"] = first_attempt_status or "observer_ready"
+    steps.append(pilot_execution_evidence_step)
+
+    # Keep pilot scorecard freshness current on every overnight run.
+    alpha_scoreboard_step = _run_step(
+        name="alpha_scoreboard_refresh",
+        launcher=launcher,
+        args=[
+            "alpha-scoreboard",
+            "--output-dir",
+            str(output_dir),
+            "--planning-bankroll",
+            str(shadow_bankroll_start_dollars),
+        ],
+        cwd=repo_root,
+        run_dir=run_logs,
+        env_overrides=env_file_values,
+    )
+    alpha_scoreboard_step["diagnostic_only"] = True
+    if not bool(alpha_scoreboard_step.get("ok")):
+        alpha_scoreboard_step["status"] = (
+            str(alpha_scoreboard_step.get("status") or "").strip() or "observer_failed"
+        )
+        alpha_scoreboard_step["reason"] = (
+            str(alpha_scoreboard_step.get("reason") or "").strip() or "alpha_scoreboard_refresh_failed"
+        )
+        alpha_scoreboard_step["observer_failure"] = True
+        alpha_scoreboard_step["ok"] = True
+    else:
+        alpha_scoreboard_step["status"] = (
+            str(alpha_scoreboard_step.get("status") or "").strip() or "observer_ready"
+        )
+    steps.append(alpha_scoreboard_step)
+
+    lane_comparison_errors: list[str] = []
+    lane_comparison = _default_lane_comparison(
+        status="not_run",
+        reason="lane_comparison_observer_not_run",
+    )
+    lane_comparison_enabled = _is_enabled(
+        os.environ.get("BETBOT_LANE_COMPARISON_ENABLED"),
+        default=True,
+    )
+    if lane_comparison_enabled:
+        lane_compare_snapshot_dir = run_logs / "lane_comparison_snapshot"
+        lane_snapshot_inputs: dict[str, Any] = {}
+        lane_compare_priors_csv, priors_snapshot_info = _snapshot_lane_input_artifact(
+            artifact_name="priors_csv",
+            source_path=priors_csv,
+            snapshot_dir=lane_compare_snapshot_dir,
+            snapshot_filename="kalshi_nonsports_priors.snapshot.csv",
+            required_for_run=True,
+            errors=lane_comparison_errors,
+            missing_error_key="lane_compare_priors_snapshot_missing_source",
+            copy_error_prefix="lane_compare_priors_snapshot_copy_failed",
+        )
+        lane_snapshot_inputs["priors_csv"] = priors_snapshot_info
+
+        lane_compare_history_csv, history_snapshot_info = _snapshot_lane_input_artifact(
+            artifact_name="history_csv",
+            source_path=history_csv,
+            snapshot_dir=lane_compare_snapshot_dir,
+            snapshot_filename="kalshi_nonsports_history.snapshot.csv",
+            required_for_run=True,
+            errors=lane_comparison_errors,
+            missing_error_key="lane_compare_history_snapshot_missing_source",
+            copy_error_prefix="lane_compare_history_snapshot_copy_failed",
+        )
+        lane_snapshot_inputs["history_csv"] = history_snapshot_info
+
+        lane_compare_frontier_source_path: Path | None = None
+        if bool(frontier_refresh_step.get("ok")) and frontier_report_path:
+            frontier_candidate = Path(frontier_report_path)
+            if not frontier_candidate.is_absolute():
+                frontier_candidate = (repo_root / frontier_candidate).resolve()
+            if frontier_candidate.exists():
+                lane_compare_frontier_source_path = frontier_candidate
+        lane_compare_frontier_report_json, frontier_snapshot_info = _snapshot_lane_input_artifact(
+            artifact_name="execution_frontier_report_json",
+            source_path=lane_compare_frontier_source_path,
+            snapshot_dir=lane_compare_snapshot_dir,
+            snapshot_filename="execution_frontier_report.snapshot.json",
+            required_for_run=lane_compare_frontier_source_path is not None,
+            errors=lane_comparison_errors,
+            missing_error_key="lane_compare_frontier_snapshot_missing_source",
+            copy_error_prefix="lane_compare_frontier_snapshot_copy_failed",
+        )
+        lane_snapshot_inputs["execution_frontier_report_json"] = frontier_snapshot_info
+
+        lane_compare_climate_summary_source_path: Path | None = None
+        if climate_router_pilot_summary_json:
+            lane_compare_climate_summary_source_path = Path(climate_router_pilot_summary_json)
+            if not lane_compare_climate_summary_source_path.is_absolute():
+                lane_compare_climate_summary_source_path = (repo_root / lane_compare_climate_summary_source_path).resolve()
+        lane_compare_climate_summary_json, climate_summary_snapshot_info = _snapshot_lane_input_artifact(
+            artifact_name="climate_router_summary_json",
+            source_path=lane_compare_climate_summary_source_path,
+            snapshot_dir=lane_compare_snapshot_dir,
+            snapshot_filename="climate_router_summary.snapshot.json",
+            required_for_run=lane_compare_climate_summary_source_path is not None,
+            errors=lane_comparison_errors,
+            missing_error_key="lane_compare_climate_summary_snapshot_missing_source",
+            copy_error_prefix="lane_compare_climate_summary_snapshot_copy_failed",
+        )
+        lane_snapshot_inputs["climate_router_summary_json"] = climate_summary_snapshot_info
+
+        lane_compare_ws_state_source_text = str(
+            os.environ.get("BETBOT_WS_STATE_JSON") or (output_dir / "kalshi_ws_state_latest.json")
+        ).strip()
+        lane_compare_ws_state_source_path = Path(lane_compare_ws_state_source_text).expanduser()
+        if not lane_compare_ws_state_source_path.is_absolute():
+            lane_compare_ws_state_source_path = (repo_root / lane_compare_ws_state_source_path).resolve()
+        lane_compare_ws_state_json, ws_state_snapshot_info = _snapshot_lane_input_artifact(
+            artifact_name="ws_state_json",
+            source_path=lane_compare_ws_state_source_path,
+            snapshot_dir=lane_compare_snapshot_dir,
+            snapshot_filename="kalshi_ws_state_latest.snapshot.json",
+            required_for_run=True,
+            errors=lane_comparison_errors,
+            missing_error_key="lane_compare_ws_state_snapshot_missing_source",
+            copy_error_prefix="lane_compare_ws_state_snapshot_copy_failed",
+        )
+        lane_snapshot_inputs["ws_state_json"] = ws_state_snapshot_info
+
+        required_lane_snapshot_inputs = [
+            item for item in lane_snapshot_inputs.values() if isinstance(item, dict) and bool(item.get("required_for_run"))
+        ]
+        lane_compare_fully_frozen = bool(required_lane_snapshot_inputs) and all(
+            bool(item.get("frozen")) and bool(item.get("used_snapshot")) for item in required_lane_snapshot_inputs
+        )
+        lane_compare_comparison_basis = (
+            "same_snapshot_same_filters_frozen_artifacts"
+            if lane_compare_fully_frozen
+            else "same_snapshot_same_filters_partial_freeze"
+        )
+
+        lane_compare_execute_common_args = [
+            "kalshi-micro-prior-execute",
+            "--env-file",
+            str(env_file),
+            "--priors-csv",
+            str(lane_compare_priors_csv or priors_csv),
+            "--history-csv",
+            str(lane_compare_history_csv or history_csv),
+            "--output-dir",
+            str(output_dir),
+            "--timeout-seconds",
+            str(float(os.environ.get("BETBOT_TIMEOUT_SECONDS", "15"))),
+            "--enforce-ws-state-authority",
+            "--daily-weather-board-max-age-seconds",
+            str(max(0.0, float(os.environ.get("BETBOT_DAILY_WEATHER_BOARD_MAX_AGE_SECONDS", "900")))),
+        ]
+        if isinstance(lane_compare_ws_state_json, Path):
+            lane_compare_execute_common_args.extend(["--ws-state-json", str(lane_compare_ws_state_json)])
+        if disable_daily_weather_live_only:
+            lane_compare_execute_common_args.append("--disable-daily-weather-live-only")
+        if climate_router_pilot_enabled:
+            lane_compare_execute_common_args.append("--climate-router-pilot-enabled")
+        if climate_router_pilot_enabled and climate_router_pilot_policy_scope_override_enabled:
+            lane_compare_execute_common_args.append("--climate-router-pilot-policy-scope-override-enabled")
+        if isinstance(lane_compare_climate_summary_json, Path):
+            lane_compare_execute_common_args.extend(["--climate-router-summary-json", str(lane_compare_climate_summary_json)])
+        lane_compare_execute_common_args.extend(
+            [
+                "--climate-router-pilot-max-orders-per-run",
+                str(max(0, int(os.environ.get("BETBOT_CLIMATE_ROUTER_PILOT_MAX_ORDERS_PER_RUN", "1")))),
+                "--climate-router-pilot-contracts-cap",
+                str(max(1, int(os.environ.get("BETBOT_CLIMATE_ROUTER_PILOT_CONTRACTS_CAP", "1")))),
+                "--climate-router-pilot-required-ev-dollars",
+                str(max(0.0, float(os.environ.get("BETBOT_CLIMATE_ROUTER_PILOT_REQUIRED_EV_DOLLARS", "0.05")))),
+            ]
+        )
+        if climate_router_pilot_allowed_classes:
+            lane_compare_execute_common_args.extend(
+                ["--climate-router-pilot-allowed-classes", climate_router_pilot_allowed_classes]
+            )
+        if climate_router_pilot_allowed_families:
+            lane_compare_execute_common_args.extend(
+                ["--climate-router-pilot-allowed-families", climate_router_pilot_allowed_families]
+            )
+        if climate_router_pilot_excluded_families:
+            lane_compare_execute_common_args.extend(
+                ["--climate-router-pilot-excluded-families", climate_router_pilot_excluded_families]
+            )
+        if isinstance(lane_compare_frontier_report_json, Path):
+            lane_compare_execute_common_args.extend(
+                [
+                    "--execution-frontier-report-json",
+                    str(lane_compare_frontier_report_json),
+                    "--execution-frontier-max-report-age-seconds",
+                    str(max(0.0, float(os.environ.get("BETBOT_FRONTIER_MAX_AGE_SECONDS", "10800")))),
+                ]
+            )
+
+        configured_min_selected_probability = _parse_float(
+            os.environ.get("BETBOT_MIN_SELECTED_FAIR_PROBABILITY")
+        )
+        configured_min_live_selected_probability = _parse_float(
+            os.environ.get("BETBOT_MIN_LIVE_SELECTED_FAIR_PROBABILITY")
+        )
+        if isinstance(configured_min_selected_probability, float):
+            lane_compare_execute_common_args.extend(
+                ["--min-selected-fair-probability", str(configured_min_selected_probability)]
+            )
+        if isinstance(configured_min_live_selected_probability, float):
+            lane_compare_execute_common_args.extend(
+                ["--min-live-selected-fair-probability", str(configured_min_live_selected_probability)]
+            )
+
+        lane_compare_maker_step = _run_step(
+            name="lane_compare_execute_maker_edge",
+            launcher=launcher,
+            args=lane_compare_execute_common_args + ["--selection-lane", "maker_edge"],
+            cwd=repo_root,
+            run_dir=run_logs,
+            env_overrides=env_file_values,
+        )
+        lane_compare_maker_step["snapshot_frozen"] = lane_compare_fully_frozen
+        lane_compare_maker_step["snapshot_priors_csv"] = str(lane_compare_priors_csv or priors_csv)
+        lane_compare_maker_step["snapshot_history_csv"] = str(lane_compare_history_csv or history_csv)
+        lane_compare_maker_step["snapshot_inputs"] = lane_snapshot_inputs
+        lane_compare_maker_step["diagnostic_only"] = True
+        if not bool(lane_compare_maker_step.get("ok")):
+            lane_compare_maker_step["status"] = (
+                str(lane_compare_maker_step.get("status") or "").strip() or "observer_failed"
+            )
+            lane_compare_maker_step["reason"] = (
+                str(lane_compare_maker_step.get("reason") or "").strip() or "lane_compare_maker_edge_failed"
+            )
+            lane_compare_maker_step["observer_failure"] = True
+            lane_compare_maker_step["ok"] = True
+            lane_comparison_errors.append("maker_edge_lane_compare_execute_failed")
+        else:
+            lane_compare_maker_step["status"] = (
+                str(lane_compare_maker_step.get("status") or "").strip() or "observer_ready"
+            )
+        steps.append(lane_compare_maker_step)
+
+        lane_compare_probability_step = _run_step(
+            name="lane_compare_execute_probability_first",
+            launcher=launcher,
+            args=lane_compare_execute_common_args + ["--selection-lane", "probability_first"],
+            cwd=repo_root,
+            run_dir=run_logs,
+            env_overrides=env_file_values,
+        )
+        lane_compare_probability_step["snapshot_frozen"] = lane_compare_fully_frozen
+        lane_compare_probability_step["snapshot_priors_csv"] = str(lane_compare_priors_csv or priors_csv)
+        lane_compare_probability_step["snapshot_history_csv"] = str(lane_compare_history_csv or history_csv)
+        lane_compare_probability_step["snapshot_inputs"] = lane_snapshot_inputs
+        lane_compare_probability_step["diagnostic_only"] = True
+        if not bool(lane_compare_probability_step.get("ok")):
+            lane_compare_probability_step["status"] = (
+                str(lane_compare_probability_step.get("status") or "").strip() or "observer_failed"
+            )
+            lane_compare_probability_step["reason"] = (
+                str(lane_compare_probability_step.get("reason") or "").strip()
+                or "lane_compare_probability_first_execute_failed"
+            )
+            lane_compare_probability_step["observer_failure"] = True
+            lane_compare_probability_step["ok"] = True
+            lane_comparison_errors.append("probability_first_lane_compare_execute_failed")
+        else:
+            lane_compare_probability_step["status"] = (
+                str(lane_compare_probability_step.get("status") or "").strip() or "observer_ready"
+            )
+        steps.append(lane_compare_probability_step)
+
+        lane_compare_maker_summary: dict[str, Any] | None = None
+        maker_summary_file = str(lane_compare_maker_step.get("output_file") or "").strip()
+        if maker_summary_file:
+            lane_compare_maker_summary = _load_json(Path(maker_summary_file))
+            if not isinstance(lane_compare_maker_summary, dict):
+                lane_compare_maker_summary = None
+                lane_comparison_errors.append("maker_edge_lane_compare_summary_parse_failed")
+        else:
+            lane_comparison_errors.append("maker_edge_lane_compare_missing_output_file")
+
+        lane_compare_probability_summary: dict[str, Any] | None = None
+        probability_summary_file = str(lane_compare_probability_step.get("output_file") or "").strip()
+        if probability_summary_file:
+            lane_compare_probability_summary = _load_json(Path(probability_summary_file))
+            if not isinstance(lane_compare_probability_summary, dict):
+                lane_compare_probability_summary = None
+                lane_comparison_errors.append("probability_first_lane_compare_summary_parse_failed")
+        else:
+            lane_comparison_errors.append("probability_first_lane_compare_missing_output_file")
+
+        executed_lane = "maker_edge"
+        if isinstance(lane_compare_maker_summary, dict):
+            executed_lane_candidate = str(lane_compare_maker_summary.get("selection_lane") or "").strip().lower()
+            if executed_lane_candidate:
+                executed_lane = executed_lane_candidate
+        lane_comparison = _build_lane_comparison(
+            maker_edge_summary=lane_compare_maker_summary,
+            probability_first_summary=lane_compare_probability_summary,
+            executed_lane=executed_lane,
+            comparison_basis=lane_compare_comparison_basis,
+            errors=lane_comparison_errors,
+            fully_frozen=lane_compare_fully_frozen,
+            snapshot_inputs=lane_snapshot_inputs,
+        )
+    else:
+        lane_comparison = _default_lane_comparison(
+            status="skipped_disabled",
+            reason="lane_comparison_disabled",
+        )
 
     failed_steps = [step["name"] for step in steps if not bool(step.get("ok"))]
     degraded_reasons: list[str] = []
@@ -3897,6 +9617,7 @@ def main() -> int:
     balance_step = next((step for step in steps if step.get("name") == "balance_heartbeat"), None)
     balance_smoke_step = next((step for step in steps if step.get("name") == "balance_smoke"), None)
     frontier_step = next((step for step in steps if step.get("name") == "execution_frontier_refresh"), None)
+    climate_router_step = next((step for step in steps if step.get("name") == "climate_realtime_router"), None)
     weather_prior_step = next((step for step in steps if step.get("name") == "weather_prior_refresh"), None)
     weather_prior_state_after = _weather_prior_state(
         priors_csv=priors_csv,
@@ -3966,6 +9687,46 @@ def main() -> int:
     top_level_frontier = _top_level_execution_frontier(frontier_step if isinstance(frontier_step, dict) else None)
     decision_identity = _top_level_decision_identity(prior_trader_step if isinstance(prior_trader_step, dict) else None)
     probe_policy = _top_level_probe_policy(prior_trader_step if isinstance(prior_trader_step, dict) else None)
+    climate_router_pilot = _top_level_climate_router_pilot(
+        prior_trader_step=prior_trader_step if isinstance(prior_trader_step, dict) else None,
+        climate_router_step=climate_router_step if isinstance(climate_router_step, dict) else None,
+    )
+    shadow_bankroll = _update_shadow_bankroll(
+        run_id=run_id,
+        run_finished_at_utc=_now_iso(),
+        enabled=shadow_bankroll_enabled,
+        start_dollars=shadow_bankroll_start_dollars,
+        state_file=shadow_bankroll_state_file,
+        climate_router_step=climate_router_step if isinstance(climate_router_step, dict) else None,
+        climate_router_shadow_plan=climate_router_shadow_plan,
+        climate_router_pilot=climate_router_pilot,
+    )
+    paper_live_account = _paper_live_update(
+        run_id=run_id,
+        run_finished_at_utc=_now_iso(),
+        climate_router_pilot=climate_router_pilot,
+        climate_router_shadow_plan=climate_router_shadow_plan,
+        enabled=paper_live_enabled,
+        start_dollars=paper_live_start_dollars,
+        state_file=paper_live_state_file,
+        risk_profile=paper_live_risk_profile,
+        kelly_fraction=paper_live_kelly_fraction,
+        kelly_high_conf_max=paper_live_kelly_high_conf_max,
+        max_open_risk_pct=paper_live_max_open_risk_pct,
+        max_family_risk_pct=paper_live_max_family_risk_pct,
+        max_strip_risk_pct=paper_live_max_strip_risk_pct,
+        max_single_position_risk_pct=paper_live_max_single_position_risk_pct,
+        max_new_attempts_per_run=paper_live_max_new_attempts_per_run,
+        family_allowlist=paper_live_family_allowlist,
+        allow_random_cancels=paper_live_allow_random_cancels,
+        size_from_current_equity=paper_live_size_from_current_equity,
+        require_live_eligible_hint=paper_live_require_live_eligible_hint,
+    )
+    pilot_execution_evidence_step = next((step for step in steps if step.get("name") == "pilot_execution_evidence"), None)
+    pilot_execution_evidence = _top_level_pilot_execution_evidence(
+        step=pilot_execution_evidence_step if isinstance(pilot_execution_evidence_step, dict) else None,
+        climate_router_pilot=climate_router_pilot,
+    )
     no_candidates_diagnostics = _top_level_no_candidates_diagnostics(
         prior_trader_step if isinstance(prior_trader_step, dict) else None
     )
@@ -3994,6 +9755,198 @@ def main() -> int:
         weather_prior_state_after=weather_prior_state_after,
         weather_history_state=weather_history_state,
     )
+    daily_weather_availability_lookback_days = max(
+        1.0,
+        float(os.environ.get("BETBOT_DAILY_WEATHER_AVAILABILITY_LOOKBACK_DAYS", "7") or 7.0),
+    )
+    daily_weather_market_availability = _build_daily_weather_market_availability_study(
+        prior_trader_step=prior_trader_step if isinstance(prior_trader_step, dict) else None,
+        state_file_path=daily_weather_ticker_refresh_state_file,
+        lookback_days=daily_weather_availability_lookback_days,
+        top_n=20,
+    )
+    top_level_climate_router = {
+        "status": (
+            str(climate_router_step.get("status") or "").strip()
+            if isinstance(climate_router_step, dict)
+            else "not_run"
+        ),
+        "reason": (
+            climate_router_step.get("reason")
+            if isinstance(climate_router_step, dict)
+            else None
+        ),
+        "output_file": (
+            climate_router_step.get("output_file")
+            if isinstance(climate_router_step, dict)
+            else None
+        ),
+        "output_csv": (
+            climate_router_step.get("output_csv")
+            if isinstance(climate_router_step, dict)
+            else None
+        ),
+        "availability_db_path": (
+            climate_router_step.get("availability_db_path")
+            if isinstance(climate_router_step, dict)
+            else None
+        ),
+        "ws_collect_status": (
+            climate_router_step.get("ws_collect_status")
+            if isinstance(climate_router_step, dict)
+            else None
+        ),
+        "ws_events_logged": (
+            climate_router_step.get("ws_events_logged")
+            if isinstance(climate_router_step, dict)
+            else None
+        ),
+        "ticker_events_processed": (
+            climate_router_step.get("ticker_events_processed")
+            if isinstance(climate_router_step, dict)
+            else None
+        ),
+        "lifecycle_events_processed": (
+            climate_router_step.get("lifecycle_events_processed")
+            if isinstance(climate_router_step, dict)
+            else None
+        ),
+        "wakeup_transitions_processed": (
+            climate_router_step.get("wakeup_transitions_processed")
+            if isinstance(climate_router_step, dict)
+            else None
+        ),
+        "recent_market_discovery_status": (
+            climate_router_step.get("recent_market_discovery_status")
+            if isinstance(climate_router_step, dict)
+            else None
+        ),
+        "recent_market_discovery_reason": (
+            climate_router_step.get("recent_market_discovery_reason")
+            if isinstance(climate_router_step, dict)
+            else None
+        ),
+        "recent_market_discovery_tickers_count": (
+            climate_router_step.get("recent_market_discovery_tickers_count")
+            if isinstance(climate_router_step, dict)
+            else None
+        ),
+        "climate_rows_total": (
+            climate_router_step.get("climate_rows_total")
+            if isinstance(climate_router_step, dict)
+            else None
+        ),
+        "climate_family_counts": (
+            climate_router_step.get("climate_family_counts")
+            if isinstance(climate_router_step, dict)
+            else None
+        ),
+        "climate_availability_state_counts": (
+            climate_router_step.get("climate_availability_state_counts")
+            if isinstance(climate_router_step, dict)
+            else None
+        ),
+        "climate_opportunity_class_counts": (
+            climate_router_step.get("climate_opportunity_class_counts")
+            if isinstance(climate_router_step, dict)
+            else None
+        ),
+        "climate_theoretical_positive_rows": (
+            climate_router_step.get("climate_theoretical_positive_rows")
+            if isinstance(climate_router_step, dict)
+            else None
+        ),
+        "climate_priced_watch_only_rows": (
+            climate_router_step.get("climate_priced_watch_only_rows")
+            if isinstance(climate_router_step, dict)
+            else None
+        ),
+        "climate_unpriced_model_view_rows": (
+            climate_router_step.get("climate_unpriced_model_view_rows")
+            if isinstance(climate_router_step, dict)
+            else None
+        ),
+        "climate_tradable_rows": (
+            climate_router_step.get("climate_tradable_rows")
+            if isinstance(climate_router_step, dict)
+            else None
+        ),
+        "climate_hot_rows": (
+            climate_router_step.get("climate_hot_rows")
+            if isinstance(climate_router_step, dict)
+            else None
+        ),
+        "climate_dead_rows": (
+            climate_router_step.get("climate_dead_rows")
+            if isinstance(climate_router_step, dict)
+            else None
+        ),
+        "climate_tradable_positive_rows": (
+            climate_router_step.get("climate_tradable_positive_rows")
+            if isinstance(climate_router_step, dict)
+            else None
+        ),
+        "climate_hot_positive_rows": (
+            climate_router_step.get("climate_hot_positive_rows")
+            if isinstance(climate_router_step, dict)
+            else None
+        ),
+        "climate_negative_or_neutral_rows": (
+            climate_router_step.get("climate_negative_or_neutral_rows")
+            if isinstance(climate_router_step, dict)
+            else None
+        ),
+        "top_theoretical_candidates": (
+            climate_router_step.get("top_theoretical_candidates")
+            if isinstance(climate_router_step, dict)
+            else None
+        ),
+        "top_tradable_candidates": (
+            climate_router_step.get("top_tradable_candidates")
+            if isinstance(climate_router_step, dict)
+            else None
+        ),
+        "top_watch_only_candidates": (
+            climate_router_step.get("top_watch_only_candidates")
+            if isinstance(climate_router_step, dict)
+            else None
+        ),
+        "top_waking_strips": (
+            climate_router_step.get("top_waking_strips")
+            if isinstance(climate_router_step, dict)
+            else None
+        ),
+        "strip_summaries_count": (
+            climate_router_step.get("strip_summaries_count")
+            if isinstance(climate_router_step, dict)
+            else None
+        ),
+        "routing_allocator_eligible_rows": (
+            climate_router_step.get("routing_allocator_eligible_rows")
+            if isinstance(climate_router_step, dict)
+            else None
+        ),
+        "routing_allocator_allocated_rows": (
+            climate_router_step.get("routing_allocator_allocated_rows")
+            if isinstance(climate_router_step, dict)
+            else None
+        ),
+        "routing_allocator_total_risk_dollars": (
+            climate_router_step.get("routing_allocator_total_risk_dollars")
+            if isinstance(climate_router_step, dict)
+            else None
+        ),
+        "routing_allocator_total_expected_value_dollars": (
+            climate_router_step.get("routing_allocator_total_expected_value_dollars")
+            if isinstance(climate_router_step, dict)
+            else None
+        ),
+        "family_routed_capital_budget": (
+            climate_router_step.get("family_routed_capital_budget")
+            if isinstance(climate_router_step, dict)
+            else None
+        ),
+    }
     runtime_version = _runtime_version_for_report(
         run_started_at=started_at,
         run_id=run_id,
@@ -4035,6 +9988,10 @@ def main() -> int:
         "pipeline_ready": pipeline_ready,
         "live_ready": live_ready,
         "live_blockers": live_blockers,
+        **_pilot_execution_report_fields(pilot_execution_evidence),
+        **_shadow_bankroll_report_fields(shadow_bankroll),
+        **_paper_live_report_fields(paper_live_account),
+        **_paper_live_scorecard_fields(paper_live_account),
         "balance_heartbeat": top_level_balance,
         "balance_smoke_status": (
             balance_smoke_step.get("smoke_status")
@@ -4057,6 +10014,189 @@ def main() -> int:
             else None
         ),
         "execution_frontier": top_level_frontier,
+        "lane_comparison": lane_comparison,
+        "climate_router_enabled": climate_router_enabled,
+        "climate_router_skip_realtime_collect": climate_router_skip_realtime_collect,
+        "climate_router_run_seconds": max(1.0, float(os.environ.get("BETBOT_CLIMATE_ROUTER_RUN_SECONDS", "20"))),
+        "climate_router_max_markets": max(1, int(os.environ.get("BETBOT_CLIMATE_ROUTER_MAX_MARKETS", "40"))),
+        "climate_router_market_tickers": climate_router_market_tickers,
+        "climate_router_ws_channels": climate_router_ws_channels,
+        "climate_router_seed_recent_markets": _is_enabled(
+            os.environ.get("BETBOT_CLIMATE_ROUTER_SEED_RECENT_MARKETS"),
+            default=True,
+        ),
+        "climate_router_recent_markets_min_updated_seconds": max(
+            1.0, float(os.environ.get("BETBOT_CLIMATE_ROUTER_RECENT_MARKETS_MIN_UPDATED_SECONDS", "900"))
+        ),
+        "climate_router_include_contract_families": climate_router_include_contract_families,
+        "disable_daily_weather_live_only": disable_daily_weather_live_only,
+        "climate_router_pilot_enabled": climate_router_pilot_enabled,
+        "climate_router_pilot_summary_json": climate_router_pilot_summary_json or None,
+        "climate_router_pilot_max_orders_per_run": max(
+            0, int(os.environ.get("BETBOT_CLIMATE_ROUTER_PILOT_MAX_ORDERS_PER_RUN", "1"))
+        ),
+        "climate_router_pilot_contracts_cap": max(
+            1, int(os.environ.get("BETBOT_CLIMATE_ROUTER_PILOT_CONTRACTS_CAP", "1"))
+        ),
+        "climate_router_pilot_required_ev_dollars": max(
+            0.0, float(os.environ.get("BETBOT_CLIMATE_ROUTER_PILOT_REQUIRED_EV_DOLLARS", "0.05"))
+        ),
+        "climate_router_pilot_policy_scope_override_enabled": climate_router_pilot_policy_scope_override_enabled,
+        "climate_router_pilot_allowed_classes": _parse_csv_list(
+            os.environ.get("BETBOT_CLIMATE_ROUTER_PILOT_ALLOWED_CLASSES")
+        )
+        or ["tradable"],
+        "climate_router_pilot_allowed_families": _parse_csv_list(
+            os.environ.get("BETBOT_CLIMATE_ROUTER_PILOT_ALLOWED_FAMILIES")
+        ),
+        "climate_router_pilot_excluded_families": _parse_csv_list(
+            os.environ.get("BETBOT_CLIMATE_ROUTER_PILOT_EXCLUDED_FAMILIES")
+        ),
+        "climate_router_pilot_dedup_tickers": _is_enabled(
+            os.environ.get("BETBOT_CLIMATE_ROUTER_PILOT_DEDUP_TICKERS"),
+            default=True,
+        ),
+        "climate_router_summary": top_level_climate_router,
+        "climate_router_status": top_level_climate_router.get("status"),
+        "climate_router_reason": top_level_climate_router.get("reason"),
+        "climate_router_output_file": top_level_climate_router.get("output_file"),
+        "climate_router_output_csv": top_level_climate_router.get("output_csv"),
+        "climate_router_availability_db_path": top_level_climate_router.get("availability_db_path"),
+        "climate_ws_collect_status": top_level_climate_router.get("ws_collect_status"),
+        "climate_ws_events_logged": top_level_climate_router.get("ws_events_logged"),
+        "climate_ticker_events_processed": top_level_climate_router.get("ticker_events_processed"),
+        "climate_lifecycle_events_processed": top_level_climate_router.get("lifecycle_events_processed"),
+        "climate_wakeup_transitions_processed": top_level_climate_router.get("wakeup_transitions_processed"),
+        "climate_recent_market_discovery_status": top_level_climate_router.get("recent_market_discovery_status"),
+        "climate_recent_market_discovery_reason": top_level_climate_router.get("recent_market_discovery_reason"),
+        "climate_recent_market_discovery_tickers_count": top_level_climate_router.get(
+            "recent_market_discovery_tickers_count"
+        ),
+        "climate_rows_total": top_level_climate_router.get("climate_rows_total"),
+        "climate_family_counts": top_level_climate_router.get("climate_family_counts"),
+        "climate_availability_state_counts": top_level_climate_router.get("climate_availability_state_counts"),
+        "climate_opportunity_class_counts": top_level_climate_router.get("climate_opportunity_class_counts"),
+        "climate_theoretical_positive_rows": top_level_climate_router.get("climate_theoretical_positive_rows"),
+        "climate_priced_watch_only_rows": top_level_climate_router.get("climate_priced_watch_only_rows"),
+        "climate_unpriced_model_view_rows": top_level_climate_router.get("climate_unpriced_model_view_rows"),
+        "climate_tradable_rows": top_level_climate_router.get("climate_tradable_rows"),
+        "climate_hot_rows": top_level_climate_router.get("climate_hot_rows"),
+        "climate_dead_rows": top_level_climate_router.get("climate_dead_rows"),
+        "climate_tradable_positive_rows": top_level_climate_router.get("climate_tradable_positive_rows"),
+        "climate_hot_positive_rows": top_level_climate_router.get("climate_hot_positive_rows"),
+        "climate_negative_or_neutral_rows": top_level_climate_router.get("climate_negative_or_neutral_rows"),
+        "climate_top_theoretical_candidates": top_level_climate_router.get("top_theoretical_candidates"),
+        "climate_top_tradable_candidates": top_level_climate_router.get("top_tradable_candidates"),
+        "climate_top_watch_only_candidates": top_level_climate_router.get("top_watch_only_candidates"),
+        "climate_top_waking_strips": top_level_climate_router.get("top_waking_strips"),
+        "climate_strip_summaries_count": top_level_climate_router.get("strip_summaries_count"),
+        "climate_routing_allocator_eligible_rows": top_level_climate_router.get("routing_allocator_eligible_rows"),
+        "climate_routing_allocator_allocated_rows": top_level_climate_router.get("routing_allocator_allocated_rows"),
+        "climate_routing_allocator_total_risk_dollars": top_level_climate_router.get(
+            "routing_allocator_total_risk_dollars"
+        ),
+        "climate_routing_allocator_total_expected_value_dollars": top_level_climate_router.get(
+            "routing_allocator_total_expected_value_dollars"
+        ),
+        "family_routed_capital_budget": top_level_climate_router.get("family_routed_capital_budget"),
+        "climate_router_shadow_plan": climate_router_shadow_plan,
+        "climate_router_shadow_plan_status": climate_router_shadow_plan.get("status"),
+        "climate_router_shadow_plan_reason": climate_router_shadow_plan.get("reason"),
+        "climate_router_shadow_plan_eligible_rows": climate_router_shadow_plan.get("eligible_rows"),
+        "climate_router_shadow_plan_would_trade_rows": climate_router_shadow_plan.get("would_trade_rows"),
+        "climate_router_shadow_plan_total_risk_dollars": climate_router_shadow_plan.get("total_risk_dollars"),
+        "climate_router_shadow_plan_total_expected_value_dollars": climate_router_shadow_plan.get(
+            "total_expected_value_dollars"
+        ),
+        "climate_router_shadow_plan_top_allocations": climate_router_shadow_plan.get("top_shadow_allocations"),
+        "climate_router_shadow_plan_family_routed_capital_budget": climate_router_shadow_plan.get(
+            "family_routed_capital_budget"
+        ),
+        "climate_router_shadow_plan_strip_routed_capital_budget": climate_router_shadow_plan.get(
+            "strip_routed_capital_budget"
+        ),
+        "climate_router_pilot": climate_router_pilot,
+        "climate_router_pilot_status": climate_router_pilot.get("status"),
+        "climate_router_pilot_reason": climate_router_pilot.get("reason"),
+        "climate_router_pilot_selection_mode": climate_router_pilot.get("selection_mode"),
+        "climate_router_pilot_summary_status": climate_router_pilot.get("summary_status"),
+        "climate_router_pilot_considered_rows": climate_router_pilot.get("considered_rows"),
+        "climate_router_pilot_promoted_rows": climate_router_pilot.get("promoted_rows"),
+        "climate_router_pilot_submitted_rows": climate_router_pilot.get("submitted_rows"),
+        "climate_router_pilot_execute_considered_rows": climate_router_pilot.get("execute_considered_rows"),
+        "climate_router_pilot_expected_value_dollars": climate_router_pilot.get("expected_value_dollars"),
+        "climate_router_pilot_total_risk_dollars": climate_router_pilot.get("total_risk_dollars"),
+        "climate_router_pilot_policy_scope_override_enabled": climate_router_pilot.get(
+            "policy_scope_override_enabled"
+        ),
+        "climate_router_pilot_policy_scope_override_active": climate_router_pilot.get(
+            "policy_scope_override_active"
+        ),
+        "climate_router_pilot_policy_scope_override_attempts": climate_router_pilot.get(
+            "policy_scope_override_attempts"
+        ),
+        "climate_router_pilot_policy_scope_override_submissions": climate_router_pilot.get(
+            "policy_scope_override_submissions"
+        ),
+        "climate_router_pilot_policy_scope_override_blocked_reason_counts": climate_router_pilot.get(
+            "policy_scope_override_blocked_reason_counts"
+        ),
+        "climate_router_pilot_allowed_families_effective": climate_router_pilot.get("allowed_families_effective"),
+        "climate_router_pilot_excluded_families_effective": climate_router_pilot.get("excluded_families_effective"),
+        "climate_router_pilot_blocked_reason_counts": climate_router_pilot.get("blocked_reason_counts"),
+        "climate_router_pilot_selected_tickers": climate_router_pilot.get("selected_tickers"),
+        "climate_router_pilot_top_candidates": climate_router_pilot.get("top_candidates"),
+        "climate_router_pilot_promoted_from_router_count": climate_router_pilot.get(
+            "promoted_from_router_count"
+        ),
+        "climate_router_pilot_attempted_orders": climate_router_pilot.get("attempted_orders"),
+        "climate_router_pilot_acked_orders": climate_router_pilot.get("acked_orders"),
+        "climate_router_pilot_resting_orders": climate_router_pilot.get("resting_orders"),
+        "climate_router_pilot_filled_orders": climate_router_pilot.get("filled_orders"),
+        "climate_router_pilot_partial_fills": climate_router_pilot.get("partial_fills"),
+        "climate_router_pilot_blocked_post_promotion_reason_counts": climate_router_pilot.get(
+            "blocked_post_promotion_reason_counts"
+        ),
+        "climate_router_pilot_blocked_frontier_insufficient_data": climate_router_pilot.get(
+            "blocked_frontier_insufficient_data"
+        ),
+        "climate_router_pilot_blocked_balance": climate_router_pilot.get("blocked_balance"),
+        "climate_router_pilot_blocked_board_stale": climate_router_pilot.get("blocked_board_stale"),
+        "climate_router_pilot_blocked_weather_history": climate_router_pilot.get("blocked_weather_history"),
+        "climate_router_pilot_blocked_duplicate_ticker": climate_router_pilot.get("blocked_duplicate_ticker"),
+        "climate_router_pilot_blocked_no_orderable_side_on_recheck": climate_router_pilot.get(
+            "blocked_no_orderable_side_on_recheck"
+        ),
+        "climate_router_pilot_blocked_ev_below_threshold": climate_router_pilot.get("blocked_ev_below_threshold"),
+        "climate_router_pilot_blocked_policy_scope": climate_router_pilot.get("blocked_policy_scope"),
+        "climate_router_pilot_blocked_family_filter": climate_router_pilot.get("blocked_family_filter"),
+        "climate_router_pilot_blocked_contract_cap": climate_router_pilot.get("blocked_contract_cap"),
+        "climate_router_pilot_frontier_bootstrap_submitted_attempts": climate_router_pilot.get(
+            "frontier_bootstrap_submitted_attempts"
+        ),
+        "climate_router_pilot_frontier_bootstrap_blocked_attempts": climate_router_pilot.get(
+            "frontier_bootstrap_blocked_attempts"
+        ),
+        "climate_router_pilot_markout_10s_dollars": climate_router_pilot.get("markout_10s_dollars"),
+        "climate_router_pilot_markout_60s_dollars": climate_router_pilot.get("markout_60s_dollars"),
+        "climate_router_pilot_markout_300s_dollars": climate_router_pilot.get("markout_300s_dollars"),
+        "climate_router_pilot_realized_pnl_dollars": climate_router_pilot.get("realized_pnl_dollars"),
+        "climate_router_pilot_expected_vs_realized_delta": climate_router_pilot.get("expected_vs_realized_delta"),
+        "router_vs_planner_gap": router_vs_planner_gap,
+        "router_vs_planner_gap_status": router_vs_planner_gap.get("status"),
+        "router_vs_planner_gap_reason": router_vs_planner_gap.get("reason"),
+        "router_tradable_rows": router_vs_planner_gap.get("router_tradable_rows"),
+        "planner_planned_rows": router_vs_planner_gap.get("planner_planned_rows"),
+        "router_tradable_not_planned_count": router_vs_planner_gap.get("router_tradable_not_planned_count"),
+        "router_tradable_not_planned_tickers": router_vs_planner_gap.get("router_tradable_not_planned_tickers"),
+        "router_vs_planner_gap_reason_counts": router_vs_planner_gap.get("router_vs_planner_gap_reason_counts"),
+        "climate_router_pilot_gap_reason_counts": router_vs_planner_gap.get("router_vs_planner_gap_reason_counts"),
+        "router_vs_planner_gap_top_rows": router_vs_planner_gap.get("router_vs_planner_gap_top_rows"),
+        "router_vs_planner_skip_counts_nonzero": router_vs_planner_gap.get("planner_skip_counts_nonzero"),
+        "router_vs_planner_enforce_daily_weather_live_only": router_vs_planner_gap.get(
+            "enforce_daily_weather_live_only"
+        ),
+        "router_vs_planner_routine_max_hours_to_close": router_vs_planner_gap.get("routine_max_hours_to_close"),
         "decision_identity": decision_identity,
         "probe_policy": probe_policy,
         "no_candidates_diagnostics": no_candidates_diagnostics,
@@ -4355,6 +10495,55 @@ def main() -> int:
             weather_prior_step.get("forced_refresh_reason")
             if isinstance(weather_prior_step, dict)
             else None
+        ),
+        "weather_prior_mrms_snapshot_status": (
+            weather_prior_step.get("mrms_snapshot_status")
+            if isinstance(weather_prior_step, dict)
+            else None
+        ),
+        "weather_prior_mrms_snapshot_age_seconds": (
+            weather_prior_step.get("mrms_snapshot_age_seconds")
+            if isinstance(weather_prior_step, dict)
+            else None
+        ),
+        "weather_prior_nbm_snapshot_status": (
+            weather_prior_step.get("nbm_snapshot_status")
+            if isinstance(weather_prior_step, dict)
+            else None
+        ),
+        "weather_prior_nbm_snapshot_cycle_age_seconds": (
+            weather_prior_step.get("nbm_snapshot_cycle_age_seconds")
+            if isinstance(weather_prior_step, dict)
+            else None
+        ),
+        "weather_prior_station_normals_cache_entries": (
+            weather_prior_step.get("station_normals_cache_entries")
+            if isinstance(weather_prior_step, dict)
+            else None
+        ),
+        "weather_include_nws_gridpoint_data": _is_enabled(
+            os.environ.get("BETBOT_WEATHER_INCLUDE_NWS_GRIDPOINT_DATA"),
+            default=True,
+        ),
+        "weather_include_nws_observations": _is_enabled(
+            os.environ.get("BETBOT_WEATHER_INCLUDE_NWS_OBSERVATIONS"),
+            default=True,
+        ),
+        "weather_include_nws_alerts": _is_enabled(
+            os.environ.get("BETBOT_WEATHER_INCLUDE_NWS_ALERTS"),
+            default=True,
+        ),
+        "weather_include_ncei_normals": _is_enabled(
+            os.environ.get("BETBOT_WEATHER_INCLUDE_NCEI_NORMALS"),
+            default=True,
+        ),
+        "weather_include_mrms_qpe": _is_enabled(
+            os.environ.get("BETBOT_WEATHER_INCLUDE_MRMS_QPE"),
+            default=True,
+        ),
+        "weather_include_nbm_snapshot": _is_enabled(
+            os.environ.get("BETBOT_WEATHER_INCLUDE_NBM_SNAPSHOT"),
+            default=True,
         ),
         "daily_weather_stale_recovery_enabled": stale_recovery_enabled,
         "daily_weather_stale_recovery_max_retries": stale_recovery_max_retries,
@@ -4698,9 +10887,13 @@ def main() -> int:
             else None
         ),
         "balance_heartbeat_age_seconds": (
-            prior_trader_step.get("balance_heartbeat_age_seconds")
-            if isinstance(prior_trader_step, dict)
-            else None
+            top_level_balance.get("cache_age_seconds")
+            if isinstance(top_level_balance, dict)
+            else (
+                prior_trader_step.get("balance_heartbeat_age_seconds")
+                if isinstance(prior_trader_step, dict)
+                else None
+            )
         ),
         "freshness": {
             "history_csv": _file_meta(history_csv),

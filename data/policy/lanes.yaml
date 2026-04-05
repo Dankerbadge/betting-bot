@@ -1,0 +1,31 @@
+lanes:
+  observe:
+    market_data_read: true
+    news_read: true
+    local_state_write: false
+    ticket_build: false
+    live_submit: false
+  research:
+    market_data_read: true
+    news_read: true
+    local_state_write: true
+    ticket_build: false
+    live_submit: false
+  paper_live:
+    market_data_read: true
+    news_read: true
+    local_state_write: true
+    ticket_build: false
+    live_submit: false
+  ticket_build:
+    market_data_read: true
+    news_read: true
+    local_state_write: true
+    ticket_build: true
+    live_submit: false
+  live_execute:
+    market_data_read: true
+    news_read: false
+    local_state_write: true
+    ticket_build: false
+    live_submit: true

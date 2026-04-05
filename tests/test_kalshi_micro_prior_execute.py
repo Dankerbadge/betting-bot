@@ -1,6 +1,7 @@
 import tempfile
 from datetime import datetime, timezone
 import csv
+import json
 from pathlib import Path
 import unittest
 from unittest.mock import patch
@@ -1037,6 +1038,245 @@ class KalshiMicroPriorExecuteTests(unittest.TestCase):
             self.assertFalse(summary["prior_trade_gate_summary"]["gate_pass"])
             self.assertFalse(summary["allow_live_orders_effective"])
 
+    def test_run_kalshi_micro_prior_execute_blocks_live_when_probability_below_minimum(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            env_file = base / "env.txt"
+            priors_csv = base / "priors.csv"
+            history_csv = base / "history.csv"
+            env_file.write_text(
+                (
+                    "KALSHI_ENV=prod\n"
+                    "BETBOT_JURISDICTION=new_jersey\n"
+                    "BETBOT_ENABLE_LIVE_ORDERS=1\n"
+                    "KALSHI_ACCESS_KEY_ID=key123\n"
+                    "KALSHI_PRIVATE_KEY_PATH=/tmp/key.pem\n"
+                ),
+                encoding="utf-8",
+            )
+            with priors_csv.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(
+                    handle,
+                    fieldnames=["market_ticker", "fair_yes_probability", "confidence", "thesis", "source_note", "updated_at"],
+                )
+                writer.writeheader()
+                writer.writerow(
+                    {
+                        "market_ticker": "KXTEST-1",
+                        "fair_yes_probability": "0.55",
+                        "confidence": "0.8",
+                        "thesis": "Test",
+                        "source_note": "Note",
+                        "updated_at": "2026-03-27T21:00:00+00:00",
+                    }
+                )
+            with history_csv.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(
+                    handle,
+                    fieldnames=["captured_at", "category", "market_ticker", "market_title", "yes_bid_dollars", "yes_ask_dollars"],
+                )
+                writer.writeheader()
+                writer.writerow(
+                    {
+                        "captured_at": "2026-03-27T21:00:00+00:00",
+                        "category": "Politics",
+                        "market_ticker": "KXTEST-1",
+                        "market_title": "Test Market",
+                        "yes_bid_dollars": "0.50",
+                        "yes_ask_dollars": "0.51",
+                    }
+                )
+
+            plan_summary = {
+                "status": "ready",
+                "planned_orders": 1,
+                "positive_maker_entry_markets": 1,
+                "positive_maker_entry_markets_with_canonical_policy": 1,
+                "top_market_ticker": "KXTEST-1",
+                "top_market_title": "Test Market",
+                "top_market_side": "yes",
+                "top_market_canonical_ticker": "PX-TEST",
+                "top_market_canonical_niche": "weather_climate",
+                "top_market_canonical_policy_applied": True,
+                "top_market_maker_entry_price_dollars": 0.50,
+                "top_market_maker_entry_edge": 0.02,
+                "top_market_maker_entry_edge_net_fees": 0.02,
+                "top_market_estimated_entry_cost_dollars": 0.50,
+                "top_market_estimated_entry_fee_dollars": 0.0,
+                "top_market_expected_value_dollars": 0.02,
+                "top_market_expected_value_net_dollars": 0.02,
+                "top_market_expected_roi_on_cost": 0.04,
+                "top_market_expected_roi_on_cost_net": 0.04,
+                "top_market_expected_value_per_day_dollars": 0.04,
+                "top_market_expected_value_per_day_net_dollars": 0.04,
+                "top_market_expected_roi_per_day": 0.08,
+                "top_market_expected_roi_per_day_net": 0.08,
+                "top_market_estimated_max_profit_dollars": 0.5,
+                "top_market_estimated_max_loss_dollars": 0.5,
+                "top_market_max_profit_roi_on_cost": 1.0,
+                "top_market_fair_probability": 0.55,
+                "top_market_confidence": 0.8,
+                "top_market_thesis": "Test",
+                "actual_live_balance_dollars": 100.0,
+                "funding_gap_dollars": 0.0,
+                "output_file": str(base / "plan.json"),
+            }
+            execute_summary = {
+                "status": "dry_run",
+                "planned_orders": 1,
+                "total_planned_cost_dollars": 0.50,
+                "actual_live_balance_dollars": 100.0,
+                "actual_live_balance_source": "live",
+                "balance_live_verified": True,
+                "output_file": str(base / "execute.json"),
+                "output_csv": str(base / "execute.csv"),
+                "attempts": [],
+            }
+
+            with (
+                patch("betbot.kalshi_micro_prior_execute.run_kalshi_micro_prior_plan", return_value=plan_summary),
+                patch("betbot.kalshi_micro_prior_execute.run_kalshi_micro_execute", return_value=execute_summary),
+            ):
+                summary = run_kalshi_micro_prior_execute(
+                    env_file=str(env_file),
+                    priors_csv=str(priors_csv),
+                    history_csv=str(history_csv),
+                    output_dir=str(base),
+                    allow_live_orders=True,
+                    enforce_canonical_dataset=False,
+                    min_live_selected_fair_probability=0.60,
+                    now=datetime(2026, 3, 27, 21, 0, tzinfo=timezone.utc),
+                )
+
+            self.assertEqual(summary["status"], "blocked_prior_trade_gate")
+            self.assertFalse(summary["allow_live_orders_effective"])
+            self.assertEqual(summary["prior_trade_gate_summary"]["gate_status"], "probability_too_low")
+            self.assertIn(
+                "selected fair probability is below the live minimum",
+                " ".join(summary["prior_trade_gate_summary"]["gate_blockers"]).lower(),
+            )
+
+    def test_run_kalshi_micro_prior_execute_blocks_live_when_kelly_used_too_small(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            env_file = base / "env.txt"
+            priors_csv = base / "priors.csv"
+            history_csv = base / "history.csv"
+            env_file.write_text(
+                (
+                    "KALSHI_ENV=prod\n"
+                    "BETBOT_JURISDICTION=new_jersey\n"
+                    "BETBOT_ENABLE_LIVE_ORDERS=1\n"
+                    "KALSHI_ACCESS_KEY_ID=key123\n"
+                    "KALSHI_PRIVATE_KEY_PATH=/tmp/key.pem\n"
+                ),
+                encoding="utf-8",
+            )
+            with priors_csv.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(
+                    handle,
+                    fieldnames=["market_ticker", "fair_yes_probability", "confidence", "thesis", "source_note", "updated_at"],
+                )
+                writer.writeheader()
+                writer.writerow(
+                    {
+                        "market_ticker": "KXTEST-1",
+                        "fair_yes_probability": "0.55",
+                        "confidence": "0.8",
+                        "thesis": "Kelly lane test",
+                        "source_note": "Note",
+                        "updated_at": "2026-03-27T21:00:00+00:00",
+                    }
+                )
+            with history_csv.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(
+                    handle,
+                    fieldnames=["captured_at", "category", "market_ticker", "market_title", "yes_bid_dollars", "yes_ask_dollars"],
+                )
+                writer.writeheader()
+                writer.writerow(
+                    {
+                        "captured_at": "2026-03-27T21:00:00+00:00",
+                        "category": "Politics",
+                        "market_ticker": "KXTEST-1",
+                        "market_title": "Test Market",
+                        "yes_bid_dollars": "0.50",
+                        "yes_ask_dollars": "0.51",
+                    }
+                )
+
+            plan_summary = {
+                "status": "ready",
+                "planned_orders": 1,
+                "selection_lane": "kelly_unified",
+                "positive_maker_entry_markets": 1,
+                "positive_maker_entry_markets_with_canonical_policy": 1,
+                "top_market_ticker": "KXTEST-1",
+                "top_market_title": "Test Market",
+                "top_market_side": "yes",
+                "top_market_canonical_ticker": "PX-TEST",
+                "top_market_canonical_niche": "weather_climate",
+                "top_market_canonical_policy_applied": True,
+                "top_market_maker_entry_price_dollars": 0.50,
+                "top_market_maker_entry_edge": 0.02,
+                "top_market_maker_entry_edge_net_fees": 0.02,
+                "top_market_kelly_used": 0.001,
+                "top_market_kelly_reject_reason": "kelly_used_too_small (0.001000 < 0.002000)",
+                "top_market_estimated_entry_cost_dollars": 0.50,
+                "top_market_estimated_entry_fee_dollars": 0.0,
+                "top_market_expected_value_dollars": 0.02,
+                "top_market_expected_value_net_dollars": 0.02,
+                "top_market_expected_roi_on_cost": 0.04,
+                "top_market_expected_roi_on_cost_net": 0.04,
+                "top_market_expected_value_per_day_dollars": 0.04,
+                "top_market_expected_value_per_day_net_dollars": 0.04,
+                "top_market_expected_roi_per_day": 0.08,
+                "top_market_expected_roi_per_day_net": 0.08,
+                "top_market_estimated_max_profit_dollars": 0.5,
+                "top_market_estimated_max_loss_dollars": 0.5,
+                "top_market_max_profit_roi_on_cost": 1.0,
+                "top_market_fair_probability": 0.55,
+                "top_market_confidence": 0.8,
+                "top_market_thesis": "Kelly lane test",
+                "actual_live_balance_dollars": 100.0,
+                "funding_gap_dollars": 0.0,
+                "output_file": str(base / "plan.json"),
+            }
+            execute_summary = {
+                "status": "dry_run",
+                "planned_orders": 1,
+                "total_planned_cost_dollars": 0.50,
+                "actual_live_balance_dollars": 100.0,
+                "actual_live_balance_source": "live",
+                "balance_live_verified": True,
+                "output_file": str(base / "execute.json"),
+                "output_csv": str(base / "execute.csv"),
+                "attempts": [],
+            }
+
+            with (
+                patch("betbot.kalshi_micro_prior_execute.run_kalshi_micro_prior_plan", return_value=plan_summary),
+                patch("betbot.kalshi_micro_prior_execute.run_kalshi_micro_execute", return_value=execute_summary),
+            ):
+                summary = run_kalshi_micro_prior_execute(
+                    env_file=str(env_file),
+                    priors_csv=str(priors_csv),
+                    history_csv=str(history_csv),
+                    output_dir=str(base),
+                    allow_live_orders=True,
+                    enforce_canonical_dataset=False,
+                    selection_lane="kelly_unified",
+                    now=datetime(2026, 3, 27, 21, 0, tzinfo=timezone.utc),
+                )
+
+            self.assertEqual(summary["status"], "blocked_prior_trade_gate")
+            self.assertFalse(summary["allow_live_orders_effective"])
+            self.assertEqual(summary["prior_trade_gate_summary"]["gate_status"], "kelly_too_small")
+            self.assertIn(
+                "kelly used fraction is below the live minimum",
+                " ".join(summary["prior_trade_gate_summary"]["gate_blockers"]).lower(),
+            )
+
     def test_run_kalshi_micro_prior_execute_requires_canonical_mapping_for_live(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
@@ -1209,6 +1449,506 @@ class KalshiMicroPriorExecuteTests(unittest.TestCase):
                 "No prior-backed maker plans are available.",
                 summary["prior_trade_gate_summary"]["gate_blockers"],
             )
+
+    def test_run_kalshi_micro_prior_execute_promotes_climate_router_pilot_candidate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            env_file = base / "env.txt"
+            priors_csv = base / "priors.csv"
+            history_csv = base / "history.csv"
+            climate_router_summary_json = base / "climate_router_summary.json"
+            env_file.write_text(
+                (
+                    "KALSHI_ENV=prod\n"
+                    "BETBOT_JURISDICTION=new_jersey\n"
+                    "BETBOT_ENABLE_LIVE_ORDERS=0\n"
+                    "KALSHI_ACCESS_KEY_ID=key123\n"
+                    "KALSHI_PRIVATE_KEY_PATH=/tmp/key.pem\n"
+                ),
+                encoding="utf-8",
+            )
+            with priors_csv.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(
+                    handle,
+                    fieldnames=["market_ticker", "fair_yes_probability", "confidence", "thesis", "source_note", "updated_at"],
+                )
+                writer.writeheader()
+            with history_csv.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(
+                    handle,
+                    fieldnames=["captured_at", "category", "market_ticker", "market_title", "yes_bid_dollars", "yes_ask_dollars"],
+                )
+                writer.writeheader()
+                writer.writerow(
+                    {
+                        "captured_at": "2026-03-27T21:00:00+00:00",
+                        "category": "Weather",
+                        "market_ticker": "KXMONTHLY-TRADABLE",
+                        "market_title": "Monthly climate anomaly in 2026",
+                        "yes_bid_dollars": "0.41",
+                        "yes_ask_dollars": "0.43",
+                    }
+                )
+
+            climate_router_summary_json.write_text(
+                json.dumps(
+                    {
+                        "status": "ready",
+                        "top_tradable_candidates": [
+                            {
+                                "market_ticker": "KXMONTHLY-TRADABLE",
+                                "market_title": "Monthly climate anomaly in 2026",
+                                "contract_family": "monthly_climate_anomaly",
+                                "strip_key": "monthly_climate_anomaly|KXMONTHLY-TRADABLE|2026-03-27",
+                                "hours_to_close": 24.0,
+                                "fair_yes_probability": 0.61,
+                                "fair_no_probability": 0.39,
+                                "theoretical_side": "yes",
+                                "theoretical_reference_source": "displayed_yes_ask",
+                                "theoretical_reference_price": 0.43,
+                                "theoretical_edge_net": 0.08,
+                                "availability_state": "tradable",
+                                "opportunity_class": "tradable_positive",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            plan_summary = {
+                "status": "no_candidates",
+                "planned_orders": 0,
+                "orders": [],
+                "positive_maker_entry_markets": 0,
+                "positive_maker_entry_markets_with_canonical_policy": 0,
+                "actual_live_balance_dollars": 100.0,
+                "funding_gap_dollars": 0.0,
+                "output_file": str(base / "plan.json"),
+            }
+            captured_plan_orders: list[dict[str, object]] = []
+
+            def fake_execute_runner(**kwargs):
+                effective_plan = kwargs["plan_runner"]()
+                captured_plan_orders.extend(
+                    [row for row in effective_plan.get("orders", []) if isinstance(row, dict)]
+                )
+                return {
+                    "status": "dry_run",
+                    "planned_orders": len(captured_plan_orders),
+                    "total_planned_cost_dollars": sum(
+                        float(row.get("estimated_entry_cost_dollars") or 0.0) for row in captured_plan_orders
+                    ),
+                    "actual_live_balance_dollars": 100.0,
+                    "actual_live_balance_source": "live",
+                    "balance_live_verified": True,
+                    "attempts": [],
+                    "output_file": str(base / "execute.json"),
+                    "output_csv": str(base / "execute.csv"),
+                }
+
+            with (
+                patch("betbot.kalshi_micro_prior_execute.run_kalshi_micro_prior_plan", return_value=plan_summary),
+                patch("betbot.kalshi_micro_prior_execute.run_kalshi_micro_execute", side_effect=fake_execute_runner),
+            ):
+                summary = run_kalshi_micro_prior_execute(
+                    env_file=str(env_file),
+                    priors_csv=str(priors_csv),
+                    history_csv=str(history_csv),
+                    output_dir=str(base),
+                    allow_live_orders=False,
+                    enforce_canonical_dataset=False,
+                    climate_router_pilot_enabled=True,
+                    climate_router_summary_json=str(climate_router_summary_json),
+                    climate_router_pilot_max_orders_per_run=1,
+                    climate_router_pilot_contracts_cap=1,
+                    climate_router_pilot_required_ev_dollars=0.01,
+                    climate_router_pilot_allowed_classes=("tradable",),
+                    climate_router_pilot_allowed_families=("monthly_climate_anomaly",),
+                    climate_router_pilot_excluded_families=("daily_rain",),
+                    now=datetime(2026, 3, 27, 21, 0, tzinfo=timezone.utc),
+                )
+
+            self.assertEqual(summary["climate_router_pilot_status"], "ready")
+            self.assertEqual(summary["climate_router_pilot_submitted_rows"], 1)
+            self.assertEqual(summary["climate_router_pilot_considered_rows"], 1)
+            self.assertGreater(float(summary["climate_router_pilot_expected_value_dollars"]), 0.0)
+            self.assertEqual(summary["climate_router_pilot_allowed_families_effective"], ["monthly_climate_anomaly"])
+            self.assertEqual(summary["climate_router_pilot_excluded_families_effective"], ["daily_rain"])
+            self.assertEqual(len(captured_plan_orders), 1)
+            self.assertEqual(captured_plan_orders[0]["market_ticker"], "KXMONTHLY-TRADABLE")
+
+    def test_run_kalshi_micro_prior_execute_climate_router_pilot_blocks_non_daily_when_daily_weather_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            env_file = base / "env.txt"
+            priors_csv = base / "priors.csv"
+            history_csv = base / "history.csv"
+            climate_router_summary_json = base / "climate_router_summary.json"
+            env_file.write_text(
+                (
+                    "KALSHI_ENV=prod\n"
+                    "BETBOT_JURISDICTION=new_jersey\n"
+                    "BETBOT_ENABLE_LIVE_ORDERS=1\n"
+                    "KALSHI_ACCESS_KEY_ID=key123\n"
+                    "KALSHI_PRIVATE_KEY_PATH=/tmp/key.pem\n"
+                ),
+                encoding="utf-8",
+            )
+            with priors_csv.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(
+                    handle,
+                    fieldnames=["market_ticker", "fair_yes_probability", "confidence", "thesis", "source_note", "updated_at"],
+                )
+                writer.writeheader()
+            with history_csv.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(
+                    handle,
+                    fieldnames=["captured_at", "category", "market_ticker", "market_title", "yes_bid_dollars", "yes_ask_dollars"],
+                )
+                writer.writeheader()
+                writer.writerow(
+                    {
+                        "captured_at": "2026-03-27T21:00:00+00:00",
+                        "category": "Weather",
+                        "market_ticker": "KXRAIN-DUMMY",
+                        "market_title": "Will it rain in New York tomorrow?",
+                        "yes_bid_dollars": "0.41",
+                        "yes_ask_dollars": "0.42",
+                    }
+                )
+
+            climate_router_summary_json.write_text(
+                json.dumps(
+                    {
+                        "status": "ready",
+                        "top_tradable_candidates": [
+                            {
+                                "market_ticker": "KXMONTHLY-TRADABLE",
+                                "market_title": "Monthly climate anomaly in 2026",
+                                "contract_family": "monthly_climate_anomaly",
+                                "hours_to_close": 24.0,
+                                "fair_yes_probability": 0.61,
+                                "fair_no_probability": 0.39,
+                                "theoretical_side": "yes",
+                                "theoretical_reference_source": "displayed_yes_ask",
+                                "theoretical_reference_price": 0.43,
+                                "theoretical_edge_net": 0.08,
+                                "availability_state": "tradable",
+                                "opportunity_class": "tradable_positive",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            plan_summary = {
+                "status": "no_candidates",
+                "planned_orders": 0,
+                "orders": [],
+                "positive_maker_entry_markets": 0,
+                "positive_maker_entry_markets_with_canonical_policy": 0,
+                "actual_live_balance_dollars": 100.0,
+                "funding_gap_dollars": 0.0,
+                "output_file": str(base / "plan.json"),
+            }
+            captured_plan_orders: list[dict[str, object]] = []
+
+            def fake_execute_runner(**kwargs):
+                effective_plan = kwargs["plan_runner"]()
+                captured_plan_orders.extend(
+                    [row for row in effective_plan.get("orders", []) if isinstance(row, dict)]
+                )
+                return {
+                    "status": "dry_run",
+                    "planned_orders": len(captured_plan_orders),
+                    "total_planned_cost_dollars": 0.0,
+                    "actual_live_balance_dollars": 100.0,
+                    "actual_live_balance_source": "live",
+                    "balance_live_verified": True,
+                    "attempts": [],
+                    "output_file": str(base / "execute.json"),
+                    "output_csv": str(base / "execute.csv"),
+                }
+
+            with (
+                patch("betbot.kalshi_micro_prior_execute.run_kalshi_micro_prior_plan", return_value=plan_summary),
+                patch("betbot.kalshi_micro_prior_execute.run_kalshi_micro_execute", side_effect=fake_execute_runner),
+            ):
+                summary = run_kalshi_micro_prior_execute(
+                    env_file=str(env_file),
+                    priors_csv=str(priors_csv),
+                    history_csv=str(history_csv),
+                    output_dir=str(base),
+                    allow_live_orders=True,
+                    enforce_canonical_dataset=False,
+                    enforce_daily_weather_live_only=True,
+                    climate_router_pilot_enabled=True,
+                    climate_router_summary_json=str(climate_router_summary_json),
+                    climate_router_pilot_max_orders_per_run=1,
+                    climate_router_pilot_contracts_cap=1,
+                    climate_router_pilot_required_ev_dollars=0.01,
+                    climate_router_pilot_allowed_classes=("tradable",),
+                    now=datetime(2026, 3, 27, 21, 0, tzinfo=timezone.utc),
+                )
+
+            self.assertEqual(summary["climate_router_pilot_submitted_rows"], 0)
+            blocked_counts = summary.get("climate_router_pilot_blocked_reason_counts") or {}
+            self.assertEqual(blocked_counts.get("daily_weather_only_mode"), 1)
+            self.assertFalse(summary["climate_router_pilot_policy_scope_override_enabled"])
+            self.assertEqual(summary["climate_router_pilot_policy_scope_override_status"], "inactive_disabled")
+            self.assertEqual(summary["climate_router_pilot_policy_scope_override_attempts"], 1)
+            self.assertEqual(summary["climate_router_pilot_policy_scope_override_submissions"], 0)
+            self.assertEqual(captured_plan_orders, [])
+
+    def test_run_kalshi_micro_prior_execute_climate_router_pilot_scope_override_allows_non_daily(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            env_file = base / "env.txt"
+            priors_csv = base / "priors.csv"
+            history_csv = base / "history.csv"
+            climate_router_summary_json = base / "climate_router_summary.json"
+            env_file.write_text(
+                (
+                    "KALSHI_ENV=prod\n"
+                    "BETBOT_JURISDICTION=new_jersey\n"
+                    "BETBOT_ENABLE_LIVE_ORDERS=1\n"
+                    "KALSHI_ACCESS_KEY_ID=key123\n"
+                    "KALSHI_PRIVATE_KEY_PATH=/tmp/key.pem\n"
+                ),
+                encoding="utf-8",
+            )
+            with priors_csv.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(
+                    handle,
+                    fieldnames=["market_ticker", "fair_yes_probability", "confidence", "thesis", "source_note", "updated_at"],
+                )
+                writer.writeheader()
+            with history_csv.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(
+                    handle,
+                    fieldnames=["captured_at", "category", "market_ticker", "market_title", "yes_bid_dollars", "yes_ask_dollars"],
+                )
+                writer.writeheader()
+                writer.writerow(
+                    {
+                        "captured_at": "2026-03-27T21:00:00+00:00",
+                        "category": "Weather",
+                        "market_ticker": "KXRAIN-DUMMY",
+                        "market_title": "Will it rain in New York tomorrow?",
+                        "yes_bid_dollars": "0.41",
+                        "yes_ask_dollars": "0.42",
+                    }
+                )
+
+            climate_router_summary_json.write_text(
+                json.dumps(
+                    {
+                        "status": "ready",
+                        "top_tradable_candidates": [
+                            {
+                                "market_ticker": "KXMONTHLY-TRADABLE",
+                                "market_title": "Monthly climate anomaly in 2026",
+                                "contract_family": "monthly_climate_anomaly",
+                                "hours_to_close": 24.0,
+                                "fair_yes_probability": 0.61,
+                                "fair_no_probability": 0.39,
+                                "theoretical_side": "yes",
+                                "theoretical_reference_source": "displayed_yes_ask",
+                                "theoretical_reference_price": 0.43,
+                                "theoretical_edge_net": 0.08,
+                                "availability_state": "tradable",
+                                "opportunity_class": "tradable_positive",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            plan_summary = {
+                "status": "no_candidates",
+                "planned_orders": 0,
+                "orders": [],
+                "positive_maker_entry_markets": 0,
+                "positive_maker_entry_markets_with_canonical_policy": 0,
+                "actual_live_balance_dollars": 100.0,
+                "funding_gap_dollars": 0.0,
+                "output_file": str(base / "plan.json"),
+            }
+            captured_plan_orders: list[dict[str, object]] = []
+
+            def fake_execute_runner(**kwargs):
+                effective_plan = kwargs["plan_runner"]()
+                captured_plan_orders.extend(
+                    [row for row in effective_plan.get("orders", []) if isinstance(row, dict)]
+                )
+                return {
+                    "status": "dry_run",
+                    "planned_orders": len(captured_plan_orders),
+                    "total_planned_cost_dollars": 0.43,
+                    "actual_live_balance_dollars": 100.0,
+                    "actual_live_balance_source": "live",
+                    "balance_live_verified": True,
+                    "attempts": [],
+                    "output_file": str(base / "execute.json"),
+                    "output_csv": str(base / "execute.csv"),
+                }
+
+            with (
+                patch("betbot.kalshi_micro_prior_execute.run_kalshi_micro_prior_plan", return_value=plan_summary),
+                patch("betbot.kalshi_micro_prior_execute.run_kalshi_micro_execute", side_effect=fake_execute_runner),
+            ):
+                summary = run_kalshi_micro_prior_execute(
+                    env_file=str(env_file),
+                    priors_csv=str(priors_csv),
+                    history_csv=str(history_csv),
+                    output_dir=str(base),
+                    allow_live_orders=True,
+                    enforce_canonical_dataset=False,
+                    enforce_daily_weather_live_only=True,
+                    climate_router_pilot_enabled=True,
+                    climate_router_summary_json=str(climate_router_summary_json),
+                    climate_router_pilot_max_orders_per_run=1,
+                    climate_router_pilot_contracts_cap=1,
+                    climate_router_pilot_required_ev_dollars=0.01,
+                    climate_router_pilot_allowed_classes=("tradable",),
+                    climate_router_pilot_policy_scope_override_enabled=True,
+                    now=datetime(2026, 3, 27, 21, 0, tzinfo=timezone.utc),
+                )
+
+            self.assertEqual(summary["climate_router_pilot_submitted_rows"], 1)
+            self.assertTrue(summary["climate_router_pilot_policy_scope_override_enabled"])
+            self.assertTrue(summary["climate_router_pilot_policy_scope_override_active"])
+            self.assertEqual(summary["climate_router_pilot_policy_scope_override_status"], "active")
+            self.assertEqual(summary["climate_router_pilot_policy_scope_override_attempts"], 1)
+            self.assertEqual(summary["climate_router_pilot_policy_scope_override_submissions"], 1)
+            self.assertEqual(summary["prior_trade_gate_summary"]["gate_status"], "pass")
+            self.assertEqual(len(captured_plan_orders), 1)
+            self.assertTrue(captured_plan_orders[0]["pilot_policy_scope_override_used"])
+            self.assertEqual(
+                captured_plan_orders[0]["pilot_policy_scope_override_reason"],
+                "daily_weather_live_only_override_for_climate_router_pilot",
+            )
+            self.assertEqual(
+                captured_plan_orders[0]["pilot_policy_scope_override_family"],
+                "monthly_climate_anomaly",
+            )
+            self.assertEqual(
+                captured_plan_orders[0]["pilot_policy_scope_override_ticker"],
+                "KXMONTHLY-TRADABLE",
+            )
+
+    def test_run_kalshi_micro_prior_execute_marks_override_pending_when_live_mode_not_reached(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            env_file = base / "env.txt"
+            priors_csv = base / "priors.csv"
+            history_csv = base / "history.csv"
+            climate_router_summary_json = base / "climate_router_summary.json"
+            env_file.write_text(
+                (
+                    "KALSHI_ENV=prod\n"
+                    "BETBOT_JURISDICTION=new_jersey\n"
+                    "BETBOT_ENABLE_LIVE_ORDERS=1\n"
+                    "KALSHI_ACCESS_KEY_ID=key123\n"
+                    "KALSHI_PRIVATE_KEY_PATH=/tmp/key.pem\n"
+                ),
+                encoding="utf-8",
+            )
+            with priors_csv.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(
+                    handle,
+                    fieldnames=["market_ticker", "fair_yes_probability", "confidence", "thesis", "source_note", "updated_at"],
+                )
+                writer.writeheader()
+            with history_csv.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(
+                    handle,
+                    fieldnames=["captured_at", "category", "market_ticker", "market_title", "yes_bid_dollars", "yes_ask_dollars"],
+                )
+                writer.writeheader()
+
+            climate_router_summary_json.write_text(
+                json.dumps(
+                    {
+                        "status": "ready",
+                        "top_tradable_candidates": [
+                            {
+                                "market_ticker": "KXMONTHLY-TRADABLE",
+                                "market_title": "Monthly climate anomaly in 2026",
+                                "contract_family": "monthly_climate_anomaly",
+                                "hours_to_close": 24.0,
+                                "fair_yes_probability": 0.61,
+                                "fair_no_probability": 0.39,
+                                "theoretical_side": "yes",
+                                "theoretical_reference_source": "displayed_yes_ask",
+                                "theoretical_reference_price": 0.43,
+                                "theoretical_edge_net": 0.08,
+                                "availability_state": "tradable",
+                                "opportunity_class": "tradable_positive",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            plan_summary = {
+                "status": "no_candidates",
+                "planned_orders": 0,
+                "orders": [],
+                "positive_maker_entry_markets": 0,
+                "positive_maker_entry_markets_with_canonical_policy": 0,
+                "actual_live_balance_dollars": 100.0,
+                "funding_gap_dollars": 0.0,
+                "output_file": str(base / "plan.json"),
+            }
+            observed_allow_live_orders: list[bool] = []
+
+            def fake_execute_runner(**kwargs):
+                observed_allow_live_orders.append(bool(kwargs.get("allow_live_orders")))
+                return {
+                    "status": "dry_run",
+                    "planned_orders": 1,
+                    "total_planned_cost_dollars": 0.43,
+                    "actual_live_balance_dollars": 100.0,
+                    "actual_live_balance_source": "live",
+                    "balance_live_verified": True,
+                    "attempts": [],
+                    "output_file": str(base / "execute.json"),
+                    "output_csv": str(base / "execute.csv"),
+                }
+
+            with (
+                patch("betbot.kalshi_micro_prior_execute.run_kalshi_micro_prior_plan", return_value=plan_summary),
+                patch("betbot.kalshi_micro_prior_execute.run_kalshi_micro_execute", side_effect=fake_execute_runner),
+            ):
+                summary = run_kalshi_micro_prior_execute(
+                    env_file=str(env_file),
+                    priors_csv=str(priors_csv),
+                    history_csv=str(history_csv),
+                    output_dir=str(base),
+                    allow_live_orders=True,
+                    enforce_canonical_dataset=False,
+                    enforce_daily_weather_live_only=True,
+                    require_daily_weather_board_coverage_for_live=True,
+                    climate_router_pilot_enabled=True,
+                    climate_router_summary_json=str(climate_router_summary_json),
+                    climate_router_pilot_max_orders_per_run=1,
+                    climate_router_pilot_contracts_cap=1,
+                    climate_router_pilot_required_ev_dollars=0.01,
+                    climate_router_pilot_allowed_classes=("tradable",),
+                    climate_router_pilot_policy_scope_override_enabled=True,
+                    now=datetime(2026, 3, 27, 21, 0, tzinfo=timezone.utc),
+                )
+
+            self.assertEqual(observed_allow_live_orders, [False])
+            self.assertTrue(summary["climate_router_pilot_policy_scope_override_enabled"])
+            self.assertFalse(summary["climate_router_pilot_policy_scope_override_active"])
+            self.assertEqual(summary["climate_router_pilot_policy_scope_override_status"], "enabled_pending_live_mode")
+            self.assertEqual(summary["prior_trade_gate_summary"]["gate_status"], "daily_weather_board_missing")
 
 
 if __name__ == "__main__":

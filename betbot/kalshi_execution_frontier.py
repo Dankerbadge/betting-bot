@@ -260,6 +260,9 @@ def run_kalshi_execution_frontier(
                 "time_to_close_seconds": _parse_float(event.get("time_to_close_seconds")),
                 "quote_aggressiveness": _parse_float(payload.get("quote_aggressiveness")),
                 "forecast_edge_net_per_contract": _parse_float(payload.get("execution_forecast_edge_net_per_contract_dollars")),
+                "source_strategy": str(payload.get("source_strategy") or "").strip().lower(),
+                "router_family": str(payload.get("router_family") or "").strip().lower(),
+                "router_opportunity_class": str(payload.get("router_opportunity_class") or "").strip().lower(),
                 "cancel_confirmed_count": 0,
                 "markout_10s_weighted": 0.0,
                 "markout_60s_weighted": 0.0,
@@ -289,6 +292,15 @@ def run_kalshi_execution_frontier(
         forecast_edge = _parse_float(payload.get("execution_forecast_edge_net_per_contract_dollars"))
         if forecast_edge is not None:
             order["forecast_edge_net_per_contract"] = forecast_edge
+        source_strategy = str(payload.get("source_strategy") or "").strip().lower()
+        if source_strategy:
+            order["source_strategy"] = source_strategy
+        router_family = str(payload.get("router_family") or "").strip().lower()
+        if router_family:
+            order["router_family"] = router_family
+        router_opportunity_class = str(payload.get("router_opportunity_class") or "").strip().lower()
+        if router_opportunity_class:
+            order["router_opportunity_class"] = router_opportunity_class
 
         event_ts = _parse_ts(event.get("captured_at_utc"))
         if event_type == "order_submitted":
@@ -352,6 +364,9 @@ def run_kalshi_execution_frontier(
                             "markout_10s": markouts.get(10),
                             "markout_60s": markouts.get(60),
                             "markout_300s": markouts.get(300),
+                            "source_strategy": str(order.get("source_strategy") or "").strip().lower(),
+                            "router_family": str(order.get("router_family") or "").strip().lower(),
+                            "router_opportunity_class": str(order.get("router_opportunity_class") or "").strip().lower(),
                         }
                     )
         elif event_type == "cancel_confirmed":
@@ -367,6 +382,19 @@ def run_kalshi_execution_frontier(
     submitted_orders = [order for order in orders.values() if order["submitted_at"] is not None]
     filled_orders = [order for order in submitted_orders if order["filled_contracts"] > 1e-9]
     full_filled_orders = [order for order in submitted_orders if bool(order["has_full_fill"])]
+    source_strategy_counts: dict[str, int] = {}
+    for order in submitted_orders:
+        strategy = str(order.get("source_strategy") or "unknown").strip().lower() or "unknown"
+        source_strategy_counts[strategy] = source_strategy_counts.get(strategy, 0) + 1
+    pilot_submitted_orders = sum(
+        1 for order in submitted_orders if str(order.get("source_strategy") or "").strip().lower() == "climate_router_pilot"
+    )
+    pilot_filled_orders = sum(
+        1 for order in filled_orders if str(order.get("source_strategy") or "").strip().lower() == "climate_router_pilot"
+    )
+    pilot_fill_samples = sum(
+        1 for sample in fill_samples if str(sample.get("source_strategy") or "").strip().lower() == "climate_router_pilot"
+    )
 
     bucket_map: dict[str, dict[str, Any]] = {}
     for order in submitted_orders:
@@ -606,6 +634,10 @@ def run_kalshi_execution_frontier(
         "filled_orders": len(filled_orders),
         "full_filled_orders": len(full_filled_orders),
         "fill_samples_with_markout": len(fill_samples),
+        "source_strategy_counts": source_strategy_counts,
+        "climate_router_pilot_submitted_orders": pilot_submitted_orders,
+        "climate_router_pilot_filled_orders": pilot_filled_orders,
+        "climate_router_pilot_fill_samples_with_markout": pilot_fill_samples,
         "break_even_edge_by_bucket": break_even_edge_by_bucket,
         "trusted_break_even_edge_by_bucket": trusted_break_even_edge_by_bucket,
         "bucket_markout_sample_counts_by_horizon": bucket_markout_sample_counts_by_horizon,
