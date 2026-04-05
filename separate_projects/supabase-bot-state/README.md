@@ -69,6 +69,20 @@ Use two credential sets from the new Supabase project:
 
 Never expose the service-role key to Vercel.
 
+Automation keys required for `scripts/paper_live_db_sync.sh`:
+
+- `OPSBOT_SUPABASE_URL`
+- `OPSBOT_SUPABASE_SERVICE_ROLE_KEY`
+- `OPSBOT_SUPABASE_PROJECT_REF`
+
+Template file:
+
+- `scripts/paper_live_supabase_keys.env.example`
+
+Expected automation secret file path (default):
+
+- `~/.codex/secrets/betting-bot-supabase.env`
+
 ## Acceptance Gate
 
 Run the full acceptance checks after migration and before trusting the stack:

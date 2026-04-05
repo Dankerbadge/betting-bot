@@ -15,6 +15,7 @@ import os
 from pathlib import Path
 import sqlite3
 import sys
+import time
 from typing import Any
 import urllib.error
 import urllib.parse
@@ -99,7 +100,17 @@ def _assert_non_zenith(*, supabase_url: str, project_ref: str, forbidden_hint: s
 
 
 class SupabaseRestClient:
-    def __init__(self, *, base_url: str, api_key: str, schema: str = "bot_ops", timeout_seconds: float = 20.0) -> None:
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        api_key: str,
+        schema: str = "bot_ops",
+        timeout_seconds: float = 20.0,
+        network_retries: int = 5,
+        retry_backoff_seconds: float = 2.0,
+        max_retry_backoff_seconds: float = 30.0,
+    ) -> None:
         cleaned = base_url.strip().rstrip("/")
         if not cleaned:
             raise ValueError("Missing Supabase URL")
@@ -107,40 +118,78 @@ class SupabaseRestClient:
         self.api_key = api_key.strip()
         self.schema = schema
         self.timeout_seconds = timeout_seconds
+        self.network_retries = max(0, int(network_retries))
+        self.retry_backoff_seconds = max(0.0, float(retry_backoff_seconds))
+        self.max_retry_backoff_seconds = max(0.0, float(max_retry_backoff_seconds))
         if not self.api_key:
             raise ValueError("Missing Supabase service role key")
+
+    @staticmethod
+    def _is_retryable_http_error(exc: urllib.error.HTTPError) -> bool:
+        return int(exc.code) in {408, 425, 429, 500, 502, 503, 504}
+
+    def _retry_sleep_seconds(self, attempt: int) -> float:
+        # attempt is 1-indexed.
+        raw = self.retry_backoff_seconds * (2 ** max(0, attempt - 1))
+        if self.max_retry_backoff_seconds > 0:
+            return min(raw, self.max_retry_backoff_seconds)
+        return raw
 
     def upsert_rows(self, *, table: str, rows: list[dict[str, Any]], on_conflict: str) -> None:
         if not rows:
             return
         query = urllib.parse.urlencode({"on_conflict": on_conflict})
         endpoint = f"{self.base_url}/rest/v1/{table}?{query}"
-        request = urllib.request.Request(
-            endpoint,
-            method="POST",
-            data=json.dumps(rows, separators=(",", ":")).encode("utf-8"),
-            headers={
-                "apikey": self.api_key,
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-                "Accept-Profile": self.schema,
-                "Content-Profile": self.schema,
-                "Prefer": "resolution=merge-duplicates,return=minimal",
-            },
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
-                if response.status not in {200, 201, 204}:
-                    body = response.read().decode("utf-8", errors="replace")
+        payload = json.dumps(rows, separators=(",", ":")).encode("utf-8")
+        total_attempts = 1 + self.network_retries
+        for attempt in range(1, total_attempts + 1):
+            request = urllib.request.Request(
+                endpoint,
+                method="POST",
+                data=payload,
+                headers={
+                    "apikey": self.api_key,
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                    "Accept-Profile": self.schema,
+                    "Content-Profile": self.schema,
+                    "Prefer": "resolution=merge-duplicates,return=minimal",
+                },
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
+                    if response.status not in {200, 201, 204}:
+                        body = response.read().decode("utf-8", errors="replace")
+                        raise RuntimeError(
+                            f"Unexpected Supabase response for table '{table}': "
+                            f"status={response.status} body={body}"
+                        )
+                return
+            except urllib.error.HTTPError as exc:
+                body = exc.read().decode("utf-8", errors="replace")
+                should_retry = self._is_retryable_http_error(exc) and attempt < total_attempts
+                if not should_retry:
                     raise RuntimeError(
-                        f"Unexpected Supabase response for table '{table}': status={response.status} body={body}"
-                    )
-        except urllib.error.HTTPError as exc:
-            body = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(
-                f"Supabase HTTP error for table '{table}': status={exc.code} body={body}"
-            ) from exc
+                        f"Supabase HTTP error for table '{table}': status={exc.code} body={body}"
+                    ) from exc
+                wait_seconds = self._retry_sleep_seconds(attempt)
+                print(
+                    f"[retry] {table}: transient HTTP {exc.code} on attempt {attempt}/{total_attempts}; "
+                    f"sleeping {wait_seconds:.1f}s"
+                )
+                time.sleep(wait_seconds)
+            except urllib.error.URLError as exc:
+                if attempt >= total_attempts:
+                    raise RuntimeError(
+                        f"Supabase network error for table '{table}': {exc}"
+                    ) from exc
+                wait_seconds = self._retry_sleep_seconds(attempt)
+                print(
+                    f"[retry] {table}: transient network error on attempt {attempt}/{total_attempts}: {exc}; "
+                    f"sleeping {wait_seconds:.1f}s"
+                )
+                time.sleep(wait_seconds)
 
 
 def _extract_execution_journal_rows(*, outputs_dir: Path, limit: int) -> list[dict[str, Any]]:
@@ -643,6 +692,31 @@ def _extract_pilot_scorecard_rows(*, outputs_dir: Path, limit: int) -> list[dict
     return rows
 
 
+def _extract_db_sync_scorecard_row(*, summary_path: Path) -> list[dict[str, Any]]:
+    payload = _read_json_file(summary_path)
+    if payload is None:
+        return []
+    run_ts = str(payload.get("run_ts_utc") or "").strip()
+    if not run_ts:
+        return []
+    replication_state = str(payload.get("replication_state") or "unknown").strip() or "unknown"
+    run_dir = str(payload.get("run_dir") or "").strip()
+    row_key_seed = run_ts.replace(":", "_")
+    return [
+        {
+            "scorecard_key": f"paper_live_db_sync::{row_key_seed}",
+            "captured_at": run_ts,
+            "scorecard_type": "paper_live_db_sync",
+            "status": replication_state,
+            "headline_metric_name": "hourly_rc",
+            "headline_metric_value": _to_float(payload.get("hourly_rc")),
+            "headline_metric_unit": "rc",
+            "payload_json": payload,
+            "source_file": run_dir or str(summary_path),
+        }
+    ]
+
+
 def _upsert_table(
     *,
     table: str,
@@ -677,10 +751,33 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--dry-run", action="store_true", help="Print counts without network writes")
     parser.add_argument("--batch-size", type=int, default=200, help="Rows per upsert request")
     parser.add_argument("--timeout-seconds", type=float, default=20.0, help="HTTP timeout per request")
+    parser.add_argument(
+        "--network-retries",
+        type=int,
+        default=int(os.getenv("OPSBOT_SUPABASE_NETWORK_RETRIES", "5")),
+        help="Retries per upsert on transient HTTP/network errors",
+    )
+    parser.add_argument(
+        "--retry-backoff-seconds",
+        type=float,
+        default=float(os.getenv("OPSBOT_SUPABASE_RETRY_BACKOFF_SECONDS", "2.0")),
+        help="Base exponential backoff seconds for transient retries",
+    )
+    parser.add_argument(
+        "--max-retry-backoff-seconds",
+        type=float,
+        default=float(os.getenv("OPSBOT_SUPABASE_MAX_RETRY_BACKOFF_SECONDS", "30.0")),
+        help="Upper bound for retry backoff sleep seconds",
+    )
     parser.add_argument("--max-execution-events", type=int, default=5000)
     parser.add_argument("--max-frontier-reports", type=int, default=200)
     parser.add_argument("--max-climate-events", type=int, default=5000)
     parser.add_argument("--max-scorecards", type=int, default=200)
+    parser.add_argument(
+        "--db-sync-summary-json",
+        default=os.getenv("PAPER_LIVE_SYNC_LATEST_SUMMARY_PATH", "/tmp/paper_live_chain_db_sync_latest.json"),
+        help="Path to paper-live DB sync summary JSON to ingest as a scorecard row when present",
+    )
     parser.add_argument("--supabase-url", default=os.getenv("OPSBOT_SUPABASE_URL", ""))
     parser.add_argument(
         "--service-role-key",
@@ -727,6 +824,9 @@ def main(argv: Iterable[str] | None = None) -> int:
             base_url=args.supabase_url,
             api_key=args.service_role_key,
             timeout_seconds=args.timeout_seconds,
+            network_retries=args.network_retries,
+            retry_backoff_seconds=args.retry_backoff_seconds,
+            max_retry_backoff_seconds=args.max_retry_backoff_seconds,
         )
 
     execution_rows = _extract_execution_journal_rows(
@@ -740,6 +840,9 @@ def main(argv: Iterable[str] | None = None) -> int:
     climate_rows = _extract_climate_rows(outputs_dir=outputs_dir, limit=args.max_climate_events)
     overnight_rows = _extract_overnight_run_row(outputs_dir=outputs_dir)
     scorecard_rows = _extract_pilot_scorecard_rows(outputs_dir=outputs_dir, limit=args.max_scorecards)
+    db_sync_scorecard_rows = _extract_db_sync_scorecard_row(summary_path=Path(args.db_sync_summary_json))
+    if db_sync_scorecard_rows:
+        scorecard_rows.extend(db_sync_scorecard_rows)
 
     totals: dict[str, int] = {}
 
