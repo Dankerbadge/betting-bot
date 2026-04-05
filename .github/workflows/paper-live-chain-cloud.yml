@@ -1,0 +1,304 @@
+name: Paper-Live Chain Cloud
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 * * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: paper-live-chain-cloud
+  cancel-in-progress: false
+
+jobs:
+  run-paper-live-chain:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      OPSBOT_SUPABASE_URL: ${{ secrets.OPSBOT_SUPABASE_URL }}
+      OPSBOT_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.OPSBOT_SUPABASE_SERVICE_ROLE_KEY }}
+      OPSBOT_SUPABASE_PROJECT_REF: ${{ secrets.OPSBOT_SUPABASE_PROJECT_REF }}
+      BETBOT_MIN_SECONDS_BETWEEN_RUNS: "0"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: |
+            requirements.txt
+            requirements.lock.txt
+
+      - name: Upgrade pip
+        run: python -m pip install --upgrade pip
+
+      - name: Install runtime dependencies
+        run: make install
+
+      - name: Validate required Supabase secrets
+        run: |
+          python - <<'PY'
+          import os
+          import sys
+
+          required = [
+              "OPSBOT_SUPABASE_URL",
+              "OPSBOT_SUPABASE_SERVICE_ROLE_KEY",
+              "OPSBOT_SUPABASE_PROJECT_REF",
+          ]
+          missing = [name for name in required if not os.getenv(name)]
+          if missing:
+              print(f"Missing required GitHub repository secrets: {', '.join(missing)}", file=sys.stderr)
+              sys.exit(2)
+          PY
+
+      - name: Run hourly alpha overnight (forced)
+        run: |
+          set -euo pipefail
+          mkdir -p outputs/paper_live_chain_logs
+          bash scripts/hourly_alpha_overnight.sh --force 2>&1 | tee outputs/paper_live_chain_logs/hourly.log
+
+      - name: Ingest with retry and verify idempotency deltas
+        run: |
+          python - <<'PY'
+          from __future__ import annotations
+
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import subprocess
+          import sys
+          import time
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+          from datetime import UTC, datetime
+
+          root = Path('.')
+          outputs_dir = root / 'outputs'
+          logs_dir = outputs_dir / 'paper_live_chain_logs' / 'ingest'
+          logs_dir.mkdir(parents=True, exist_ok=True)
+
+          ingest_script = root / 'separate_projects' / 'supabase-bot-state' / 'scripts' / 'ingest_outputs_to_supabase.py'
+          snapshot_path = outputs_dir / 'overnight_alpha_latest.json'
+          summary_path = outputs_dir / 'paper_live_chain_cloud_summary.json'
+
+          transient_re = re.compile(
+              r"(nodename nor servname|name or service not known|temporary failure|timed out|timeout|connection reset|connection aborted|network is unreachable|remote end closed|5\\d\\d|ssl|tls|gaierror)",
+              re.IGNORECASE,
+          )
+
+          def run_cmd(cmd: list[str], log_path: Path) -> tuple[int, str]:
+              completed = subprocess.run(cmd, cwd=str(root), capture_output=True, text=True)
+              output = (completed.stdout or '') + (completed.stderr or '')
+              log_path.write_text(output, encoding='utf-8')
+              return completed.returncode, output
+
+          def first_error_line(text: str) -> str:
+              lines = [line.strip() for line in text.splitlines() if line.strip()]
+              if not lines:
+                  return 'no error output captured'
+              for line in lines:
+                  low = line.lower()
+                  if any(key in low for key in ['traceback', 'urlerror', 'httperror', 'gaierror', 'error', 'failed']):
+                      return line
+              return lines[-1]
+
+          def parse_content_range_total(value: str | None) -> int:
+              if not value:
+                  raise RuntimeError('missing Content-Range')
+              slash = value.rfind('/')
+              if slash < 0:
+                  raise RuntimeError(f'invalid Content-Range: {value}')
+              tail = value[slash + 1 :].strip()
+              if not tail.isdigit():
+                  raise RuntimeError(f'invalid Content-Range total: {value}')
+              return int(tail)
+
+          def get_table_counts() -> dict[str, int]:
+              tables = [
+                  'execution_journal',
+                  'execution_frontier_reports',
+                  'execution_frontier_report_buckets',
+                  'climate_availability_events',
+                  'overnight_runs',
+                  'pilot_scorecards',
+              ]
+              base_url = os.environ['OPSBOT_SUPABASE_URL'].rstrip('/')
+              api_key = os.environ['OPSBOT_SUPABASE_SERVICE_ROLE_KEY']
+              out: dict[str, int] = {}
+              for table in tables:
+                  query = urllib.parse.urlencode({'select': 'id', 'limit': '1'})
+                  url = f"{base_url}/rest/v1/{table}?{query}"
+                  req = urllib.request.Request(
+                      url,
+                      method='GET',
+                      headers={
+                          'apikey': api_key,
+                          'Authorization': f'Bearer {api_key}',
+                          'Accept': 'application/json',
+                          'Accept-Profile': 'bot_ops',
+                          'Prefer': 'count=exact',
+                      },
+                  )
+                  try:
+                      with urllib.request.urlopen(req, timeout=20.0) as response:
+                          if response.status not in {200, 206}:
+                              body = response.read().decode('utf-8', errors='replace')
+                              raise RuntimeError(f"count query failed for {table}: status={response.status} body={body[:300]}")
+                          out[table] = parse_content_range_total(response.headers.get('Content-Range'))
+                  except urllib.error.HTTPError as exc:
+                      body = exc.read().decode('utf-8', errors='replace')
+                      raise RuntimeError(f"count query failed for {table}: status={exc.code} body={body[:300]}") from exc
+              return out
+
+          def parse_snapshot() -> dict:
+              if not snapshot_path.exists():
+                  return {'error': f'missing {snapshot_path}'}
+              try:
+                  payload = json.loads(snapshot_path.read_text(encoding='utf-8'))
+              except Exception as exc:
+                  return {'error': f'failed to parse snapshot: {exc}'}
+              if not isinstance(payload, dict):
+                  return {'error': 'snapshot is not an object'}
+              normalized = {
+                  key: payload.get(key)
+                  for key in sorted(payload)
+                  if 'markout' in key.lower() and ('per_contract' in key.lower() or 'per_risk' in key.lower() or 'normalized' in key.lower())
+              }
+              return {
+                  'run_id': payload.get('run_id'),
+                  'paper_live_status': payload.get('paper_live_status'),
+                  'paper_live_attempts': payload.get('paper_live_order_attempts'),
+                  'paper_live_fills': payload.get('paper_live_orders_filled'),
+                  'paper_live_cancels': payload.get('paper_live_orders_canceled'),
+                  'paper_live_resting': payload.get('paper_live_orders_resting'),
+                  'paper_live_open_risk_dollars': payload.get('paper_live_open_risk_dollars'),
+                  'paper_live_open_risk_cap_dollars': payload.get('paper_live_open_risk_cap_dollars'),
+                  'paper_live_execution_state': payload.get('paper_live_execution_state'),
+                  'paper_live_family_execution_state': payload.get('paper_live_family_execution_state'),
+                  'paper_live_ticker_execution_state': payload.get('paper_live_ticker_execution_state'),
+                  'normalized_markout_fields': normalized,
+              }
+
+          ingest_cmd = [
+              sys.executable,
+              str(ingest_script),
+              '--outputs-dir',
+              'outputs',
+              '--supabase-url',
+              os.environ['OPSBOT_SUPABASE_URL'],
+              '--service-role-key',
+              os.environ['OPSBOT_SUPABASE_SERVICE_ROLE_KEY'],
+              '--project-ref',
+              os.environ['OPSBOT_SUPABASE_PROJECT_REF'],
+          ]
+
+          run1_attempts: list[dict] = []
+          run1_success = False
+          run1_success_attempt: int | None = None
+          run1_first_error: str | None = None
+
+          for attempt in range(1, 4):
+              log_path = logs_dir / f'run1_attempt{attempt}.log'
+              rc, output = run_cmd(ingest_cmd, log_path)
+              is_transient = bool(transient_re.search(output))
+              run1_attempts.append({'attempt': attempt, 'rc': rc, 'transient': is_transient, 'log': str(log_path)})
+              if rc == 0:
+                  run1_success = True
+                  run1_success_attempt = attempt
+                  break
+              if run1_first_error is None:
+                  run1_first_error = first_error_line(output)
+              if not is_transient:
+                  break
+              if attempt < 3:
+                  # short backoff with jitter to ride out transient resolver spikes
+                  time.sleep((2 * attempt) + 1)
+
+          run2 = {'attempt': 1, 'rc': None, 'log': None}
+          run2_counts_before = None
+          run2_counts_after = None
+          run2_deltas = None
+          run2_delta_all_zero = None
+          run2_error = None
+
+          if run1_success:
+              try:
+                  run2_counts_before = get_table_counts()
+              except Exception as exc:
+                  run2_error = f'pre-run2 count query failed: {exc}'
+
+              run2_log = logs_dir / 'run2_attempt1.log'
+              run2_rc, run2_output = run_cmd(ingest_cmd, run2_log)
+              run2 = {'attempt': 1, 'rc': run2_rc, 'log': str(run2_log)}
+
+              if run2_rc != 0 and run2_error is None:
+                  run2_error = first_error_line(run2_output)
+
+              if run2_rc == 0 and run2_error is None:
+                  try:
+                      run2_counts_after = get_table_counts()
+                      run2_deltas = {
+                          key: run2_counts_after.get(key, 0) - run2_counts_before.get(key, 0)
+                          for key in run2_counts_before
+                      }
+                      run2_delta_all_zero = all(value == 0 for value in run2_deltas.values())
+                  except Exception as exc:
+                      run2_error = f'post-run2 count query failed: {exc}'
+
+          replication_state = 'healthy' if run1_success else 'degraded'
+
+          if not run1_success:
+              first_actionable_blocker = run1_first_error or 'ingest run-1 failed'
+          elif run2_error:
+              first_actionable_blocker = run2_error
+          elif run2_delta_all_zero is False and run2_deltas:
+              offenders = [f"{name}={delta}" for name, delta in run2_deltas.items() if delta != 0]
+              first_actionable_blocker = 'run-2 idempotency delta non-zero: ' + ', '.join(offenders[:3])
+          else:
+              first_actionable_blocker = None
+
+          summary = {
+              'run_time_utc': datetime.now(UTC).isoformat(),
+              'snapshot': parse_snapshot(),
+              'ingest_run1': {
+                  'attempts': run1_attempts,
+                  'succeeded': run1_success,
+                  'success_attempt': run1_success_attempt,
+              },
+              'ingest_run2': run2,
+              'run2_counts_before': run2_counts_before,
+              'run2_counts_after': run2_counts_after,
+              'run2_deltas': run2_deltas,
+              'run2_delta_all_zero': run2_delta_all_zero,
+              'replication_state': replication_state,
+              'first_actionable_blocker': first_actionable_blocker,
+          }
+
+          summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True), encoding='utf-8')
+          print(json.dumps(summary, indent=2, sort_keys=True))
+
+          if replication_state != 'healthy':
+              raise SystemExit(1)
+          if run2_delta_all_zero is False:
+              raise SystemExit(1)
+          PY
+
+      - name: Upload paper-live chain artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: paper-live-chain-${{ github.run_id }}
+          path: |
+            outputs/overnight_alpha_latest.json
+            outputs/paper_live_chain_cloud_summary.json
+            outputs/paper_live_chain_logs
+          if-no-files-found: warn
