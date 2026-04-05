@@ -7,7 +7,12 @@ from pathlib import Path
 import uuid
 
 from betbot.adapters.base import Adapter, AdapterContext, run_adapter
-from betbot.execution.live_executor import LiveExecutionResult, LiveExecutor, LiveVenueAdapter
+from betbot.execution.live_executor import (
+    LiveExecutionResult,
+    LiveExecutor,
+    LiveVenueAdapter,
+    LocalLiveVenueAdapter,
+)
 from betbot.execution.ticket import TicketProposal, create_ticket_proposal
 from betbot.policy.approvals import ApprovalRecord
 from betbot.policy.degraded_mode import DegradedSummary, summarize_source_results
@@ -32,6 +37,7 @@ class CycleRunnerConfig:
     request_live_submit: bool = False
     live_env_file: str | None = None
     live_timeout_seconds: float = 10.0
+    allow_simulated_live_adapter: bool = False
     hard_required_sources: tuple[str, ...] | None = None
     approval_json_path: str | None = None
     ticket_market: str = "SIM-MARKET"
@@ -311,6 +317,7 @@ class CycleRunner:
         execution_reason = "not_requested"
         execution_ack_status = "not_submitted"
         execution_external_order_id: str | None = None
+        live_adapter_mode = "none"
         reconciliation_status = "not_requested"
         reconciliation_reason = "not_requested"
         reconciliation_mismatches = 0
@@ -391,6 +398,8 @@ class CycleRunner:
                 execution_result: LiveExecutionResult
                 try:
                     venue_adapter = self._live_venue_adapter
+                    if venue_adapter is not None:
+                        live_adapter_mode = "injected"
                     if venue_adapter is None and config.live_env_file:
                         from betbot.execution.kalshi_live_venue_adapter import KalshiLiveVenueAdapter
 
@@ -398,16 +407,45 @@ class CycleRunner:
                             env_file=config.live_env_file,
                             timeout_seconds=config.live_timeout_seconds,
                         )
-                    executor = LiveExecutor(
-                        lane_policy_set,
-                        venue_adapter=venue_adapter,
-                    )
-                    execution_result = executor.submit(
-                        lane=config.lane,
-                        ticket=ticket,
-                        approval=approval,
-                        approval_required=approval_required,
-                    )
+                        live_adapter_mode = "kalshi_env"
+                    if venue_adapter is None:
+                        execution_result = LiveExecutionResult(
+                            status="blocked",
+                            reason="live_adapter_required_for_live_execute",
+                            submitted_at=datetime.now(timezone.utc).isoformat(),
+                            market=ticket.market,
+                            side=ticket.side,
+                            ack_status="not_submitted",
+                            external_order_id=None,
+                        )
+                    elif (
+                        config.lane == "live_execute"
+                        and isinstance(venue_adapter, LocalLiveVenueAdapter)
+                        and not config.allow_simulated_live_adapter
+                    ):
+                        live_adapter_mode = "simulated_blocked"
+                        execution_result = LiveExecutionResult(
+                            status="blocked",
+                            reason="simulated_live_adapter_not_allowed",
+                            submitted_at=datetime.now(timezone.utc).isoformat(),
+                            market=ticket.market,
+                            side=ticket.side,
+                            ack_status="not_submitted",
+                            external_order_id=None,
+                        )
+                    else:
+                        if isinstance(venue_adapter, LocalLiveVenueAdapter):
+                            live_adapter_mode = "simulated_allowed"
+                        executor = LiveExecutor(
+                            lane_policy_set,
+                            venue_adapter=venue_adapter,
+                        )
+                        execution_result = executor.submit(
+                            lane=config.lane,
+                            ticket=ticket,
+                            approval=approval,
+                            approval_required=approval_required,
+                        )
                 except Exception as exc:
                     execution_result = LiveExecutionResult(
                         status="blocked",
@@ -715,6 +753,8 @@ class CycleRunner:
             "execution_reason": execution_reason,
             "execution_ack_status": execution_ack_status,
             "execution_external_order_id": execution_external_order_id,
+            "live_adapter_mode": live_adapter_mode,
+            "allow_simulated_live_adapter": bool(config.allow_simulated_live_adapter),
             "reconciliation_status": reconciliation_status,
             "reconciliation_reason": reconciliation_reason,
             "reconciliation_mismatches": reconciliation_mismatches,

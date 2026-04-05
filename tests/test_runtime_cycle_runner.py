@@ -177,6 +177,7 @@ class CycleRunnerTests(unittest.TestCase):
             runner = CycleRunner(
                 adapters=[_StaticAdapter("kalshi_market_data", "ok")],
                 hard_required_sources=("kalshi_market_data",),
+                live_venue_adapter=LocalLiveVenueAdapter(),
             )
             report = runner.run(
                 CycleRunnerConfig(
@@ -184,6 +185,7 @@ class CycleRunnerTests(unittest.TestCase):
                     output_dir=str(output_dir),
                     repo_root=str(Path.cwd()),
                     request_live_submit=True,
+                    allow_simulated_live_adapter=True,
                     approval_json_path=str(approval_path),
                     ticket_market="MKT-1",
                     ticket_side="yes",
@@ -197,6 +199,7 @@ class CycleRunnerTests(unittest.TestCase):
             self.assertEqual(report["execution_reason"], "live_submit_allowed")
             self.assertEqual(report["execution_ack_status"], "accepted")
             self.assertIsNotNone(report["execution_external_order_id"])
+            self.assertEqual(report["live_adapter_mode"], "simulated_allowed")
             self.assertEqual(report["reconciliation_status"], "resting")
             self.assertEqual(report["reconciliation_reason"], "reconciled_resting")
             self.assertEqual(report["reconciliation_mismatches"], 0)
@@ -212,6 +215,7 @@ class CycleRunnerTests(unittest.TestCase):
             runner = CycleRunner(
                 adapters=[_StaticAdapter("kalshi_market_data", "ok")],
                 hard_required_sources=("kalshi_market_data",),
+                live_venue_adapter=LocalLiveVenueAdapter(),
             )
             report = runner.run(
                 CycleRunnerConfig(
@@ -219,6 +223,7 @@ class CycleRunnerTests(unittest.TestCase):
                     output_dir=str(output_dir),
                     repo_root=str(Path.cwd()),
                     request_live_submit=True,
+                    allow_simulated_live_adapter=True,
                     ticket_market="MKT-2",
                     ticket_side="no",
                     ticket_max_cost=2.0,
@@ -249,13 +254,17 @@ class CycleRunnerTests(unittest.TestCase):
             )
 
             output_dir = repo_root / "outputs"
-            runner = CycleRunner(adapters=[_StaticAdapter("kalshi_market_data", "ok")])
+            runner = CycleRunner(
+                adapters=[_StaticAdapter("kalshi_market_data", "ok")],
+                live_venue_adapter=LocalLiveVenueAdapter(),
+            )
             report = runner.run(
                 CycleRunnerConfig(
                     lane="live_execute",
                     output_dir=str(output_dir),
                     repo_root=str(repo_root),
                     request_live_submit=True,
+                    allow_simulated_live_adapter=True,
                     ticket_market="MKT-3",
                     ticket_side="yes",
                     ticket_max_cost=1.0,
@@ -303,6 +312,7 @@ class CycleRunnerTests(unittest.TestCase):
                     output_dir=str(output_dir),
                     repo_root=str(Path.cwd()),
                     request_live_submit=True,
+                    allow_simulated_live_adapter=True,
                     approval_json_path=str(approval_path),
                     ticket_market="MKT-REJECT",
                     ticket_side="yes",
@@ -354,6 +364,7 @@ class CycleRunnerTests(unittest.TestCase):
                     output_dir=str(output_dir),
                     repo_root=str(Path.cwd()),
                     request_live_submit=True,
+                    allow_simulated_live_adapter=True,
                     approval_json_path=str(approval_path),
                     ticket_market="MKT-TIMEOUT",
                     ticket_side="yes",
@@ -405,6 +416,7 @@ class CycleRunnerTests(unittest.TestCase):
                     output_dir=str(output_dir),
                     repo_root=str(Path.cwd()),
                     request_live_submit=True,
+                    allow_simulated_live_adapter=True,
                     approval_json_path=str(approval_path),
                     ticket_market="MKT-MISMATCH",
                     ticket_side="yes",
@@ -460,6 +472,7 @@ class CycleRunnerTests(unittest.TestCase):
                     output_dir=str(output_dir),
                     repo_root=str(Path.cwd()),
                     request_live_submit=True,
+                    allow_simulated_live_adapter=True,
                     approval_json_path=str(approval_path),
                     ticket_market="MKT-FILLED",
                     ticket_side="yes",
@@ -517,6 +530,7 @@ class CycleRunnerTests(unittest.TestCase):
                     output_dir=str(output_dir),
                     repo_root=str(Path.cwd()),
                     request_live_submit=True,
+                    allow_simulated_live_adapter=True,
                     approval_json_path=str(approval_path),
                     ticket_market="MKT-PARTIAL",
                     ticket_side="yes",
@@ -574,6 +588,7 @@ class CycleRunnerTests(unittest.TestCase):
                     output_dir=str(output_dir),
                     repo_root=str(Path.cwd()),
                     request_live_submit=True,
+                    allow_simulated_live_adapter=True,
                     approval_json_path=str(approval_path),
                     ticket_market="MKT-CANCELED",
                     ticket_side="yes",
@@ -615,6 +630,57 @@ class CycleRunnerTests(unittest.TestCase):
             self.assertEqual(report["order_status"], "blocked")
             self.assertEqual(report["execution_ack_status"], "not_submitted")
             self.assertTrue(str(report["execution_reason"]).startswith("live_adapter_init_failed:"))
+
+    def test_live_execute_simulated_adapter_blocked_without_override(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            expires_at = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()
+            reference_ticket = create_ticket_proposal(
+                market="MKT-SIM-BLOCK",
+                side="yes",
+                max_cost=1.0,
+                lane="live_execute",
+                source_run_id="ref-sim-block",
+                expires_at=expires_at,
+            )
+            approval_path = output_dir / "approval_sim_block.json"
+            approval_path.write_text(
+                json.dumps(
+                    {
+                        "ticket_hash": reference_ticket.ticket_hash,
+                        "market": "MKT-SIM-BLOCK",
+                        "side": "yes",
+                        "max_cost": 1.0,
+                        "issued_at": datetime.now(timezone.utc).isoformat(),
+                        "expires_at": expires_at,
+                        "approved_by": "tester",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            runner = CycleRunner(
+                adapters=[_StaticAdapter("kalshi_market_data", "ok")],
+                hard_required_sources=("kalshi_market_data",),
+                live_venue_adapter=LocalLiveVenueAdapter(),
+            )
+            report = runner.run(
+                CycleRunnerConfig(
+                    lane="live_execute",
+                    output_dir=str(output_dir),
+                    repo_root=str(Path.cwd()),
+                    request_live_submit=True,
+                    approval_json_path=str(approval_path),
+                    ticket_market="MKT-SIM-BLOCK",
+                    ticket_side="yes",
+                    ticket_max_cost=1.0,
+                    ticket_expires_at=expires_at,
+                )
+            )
+            self.assertEqual(report["overall_status"], "blocked")
+            self.assertEqual(report["order_status"], "blocked")
+            self.assertEqual(report["execution_ack_status"], "not_submitted")
+            self.assertEqual(report["execution_reason"], "simulated_live_adapter_not_allowed")
+            self.assertEqual(report["live_adapter_mode"], "simulated_blocked")
 
 
 if __name__ == "__main__":
