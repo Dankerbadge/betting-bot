@@ -1,5 +1,12 @@
 {
   "policy": {
+    "approval_required_by_lane": {
+      "observe": false,
+      "research": false,
+      "paper_live": false,
+      "ticket_build": true,
+      "live_execute": true
+    },
     "hard_required_sources_by_lane": {
       "observe": [
         "kalshi_market_data"

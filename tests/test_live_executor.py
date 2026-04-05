@@ -23,6 +23,8 @@ class LiveExecutorTests(unittest.TestCase):
         result = executor.submit(lane="research", ticket=ticket, approval=None)
         self.assertEqual(result.status, "blocked")
         self.assertEqual(result.reason, "policy_block")
+        self.assertEqual(result.ack_status, "not_submitted")
+        self.assertIsNone(result.external_order_id)
 
     def test_submit_blocked_without_valid_approval(self) -> None:
         lane_policy_set = load_lane_policy_set()
@@ -37,6 +39,8 @@ class LiveExecutorTests(unittest.TestCase):
         result = executor.submit(lane="live_execute", ticket=ticket, approval=None)
         self.assertEqual(result.status, "blocked")
         self.assertEqual(result.reason, "approval_missing")
+        self.assertEqual(result.ack_status, "not_submitted")
+        self.assertIsNone(result.external_order_id)
 
     def test_submit_allowed_with_valid_approval(self) -> None:
         lane_policy_set = load_lane_policy_set()
@@ -62,6 +66,28 @@ class LiveExecutorTests(unittest.TestCase):
         result = executor.submit(lane="live_execute", ticket=ticket, approval=approval)
         self.assertEqual(result.status, "submitted")
         self.assertEqual(result.reason, "live_submit_allowed")
+        self.assertEqual(result.ack_status, "accepted")
+        self.assertIsNotNone(result.external_order_id)
+
+    def test_submit_allowed_when_approval_optional(self) -> None:
+        lane_policy_set = load_lane_policy_set()
+        executor = LiveExecutor(lane_policy_set)
+        ticket = create_ticket_proposal(
+            market="MKT",
+            side="yes",
+            max_cost=4.0,
+            lane="live_execute",
+            source_run_id="run-opt",
+        )
+        result = executor.submit(
+            lane="live_execute",
+            ticket=ticket,
+            approval=None,
+            approval_required=False,
+        )
+        self.assertEqual(result.status, "submitted")
+        self.assertEqual(result.reason, "live_submit_allowed")
+        self.assertEqual(result.ack_status, "accepted")
 
 
 if __name__ == "__main__":

@@ -194,6 +194,8 @@ class CycleRunnerTests(unittest.TestCase):
             self.assertEqual(report["approval_status"], "approved")
             self.assertEqual(report["order_status"], "submitted")
             self.assertEqual(report["execution_reason"], "live_submit_allowed")
+            self.assertEqual(report["execution_ack_status"], "accepted")
+            self.assertIsNotNone(report["execution_external_order_id"])
 
     def test_live_execute_missing_approval_blocks_order(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -216,6 +218,43 @@ class CycleRunnerTests(unittest.TestCase):
             self.assertEqual(report["overall_status"], "blocked")
             self.assertEqual(report["order_status"], "blocked")
             self.assertIn(report["approval_status"], {"required", "approval_missing"})
+
+    def test_live_execute_optional_approval_submits_when_policy_disables_approval(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            (repo_root / ".betbot").mkdir(parents=True, exist_ok=True)
+            (repo_root / ".betbot.json").write_text(
+                json.dumps({"policy": {"approval_required": True}}),
+                encoding="utf-8",
+            )
+            (repo_root / ".betbot" / "settings.json").write_text(
+                json.dumps(
+                    {
+                        "policy": {
+                            "approval_required_by_lane": {"live_execute": False},
+                            "hard_required_sources_by_lane": {"live_execute": ["kalshi_market_data"]},
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            output_dir = repo_root / "outputs"
+            runner = CycleRunner(adapters=[_StaticAdapter("kalshi_market_data", "ok")])
+            report = runner.run(
+                CycleRunnerConfig(
+                    lane="live_execute",
+                    output_dir=str(output_dir),
+                    repo_root=str(repo_root),
+                    request_live_submit=True,
+                    ticket_market="MKT-3",
+                    ticket_side="yes",
+                    ticket_max_cost=1.0,
+                )
+            )
+            self.assertEqual(report["overall_status"], "ok")
+            self.assertEqual(report["approval_status"], "not_required")
+            self.assertEqual(report["order_status"], "submitted")
 
 
 if __name__ == "__main__":

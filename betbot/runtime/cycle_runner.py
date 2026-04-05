@@ -102,6 +102,30 @@ class CycleRunner:
         return global_required
 
     @staticmethod
+    def _coerce_bool(value: object, default: bool) -> bool:
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return default
+        text = str(value).strip().lower()
+        if text in {"1", "true", "yes", "on"}:
+            return True
+        if text in {"0", "false", "no", "off"}:
+            return False
+        return default
+
+    def _resolve_approval_required(
+        self,
+        *,
+        policy_payload: dict[str, object],
+        lane: str,
+    ) -> bool:
+        by_lane = policy_payload.get("approval_required_by_lane")
+        if isinstance(by_lane, dict) and lane in by_lane:
+            return self._coerce_bool(by_lane.get(lane), default=True)
+        return self._coerce_bool(policy_payload.get("approval_required", True), default=True)
+
+    @staticmethod
     def _resolve_ticket_expires_at(ticket_expires_at: str | None) -> str:
         if ticket_expires_at:
             return str(ticket_expires_at)
@@ -273,11 +297,16 @@ class CycleRunner:
             )
         )
 
-        approval_required = bool(policy_payload.get("approval_required", True))
+        approval_required = self._resolve_approval_required(
+            policy_payload=policy_payload,
+            lane=config.lane,
+        )
         ticket_status = "not_built"
         approval_status = "not_requested"
         order_status = "not_submitted"
         execution_reason = "not_requested"
+        execution_ack_status = "not_submitted"
+        execution_external_order_id: str | None = None
         ticket: TicketProposal | None = None
 
         if policy_decision.status == "blocked":
@@ -353,8 +382,11 @@ class CycleRunner:
                     lane=config.lane,
                     ticket=ticket,
                     approval=approval,
+                    approval_required=approval_required,
                 )
                 execution_reason = execution_result.reason
+                execution_ack_status = execution_result.ack_status
+                execution_external_order_id = execution_result.external_order_id
                 if execution_result.status == "submitted":
                     state.transition("order.submitted")
                     order_status = "submitted"
@@ -371,6 +403,8 @@ class CycleRunner:
                                 "market": execution_result.market,
                                 "side": execution_result.side,
                                 "submitted_at": execution_result.submitted_at,
+                                "ack_status": execution_result.ack_status,
+                                "external_order_id": execution_result.external_order_id,
                             },
                         )
                     )
@@ -392,6 +426,8 @@ class CycleRunner:
                                 "reason": execution_result.reason,
                                 "market": execution_result.market,
                                 "side": execution_result.side,
+                                "ack_status": execution_result.ack_status,
+                                "external_order_id": execution_result.external_order_id,
                             },
                         )
                     )
@@ -442,6 +478,8 @@ class CycleRunner:
             "approval_status": approval_status,
             "order_status": order_status,
             "execution_reason": execution_reason,
+            "execution_ack_status": execution_ack_status,
+            "execution_external_order_id": execution_external_order_id,
             "ticket_proposal": (None if ticket is None else ticket.to_dict()),
             "recovery_recommendation": degraded_summary.recovery_recommendation,
             "citations": [],
