@@ -7,7 +7,7 @@ from pathlib import Path
 import uuid
 
 from betbot.adapters.base import Adapter, AdapterContext, run_adapter
-from betbot.execution.live_executor import LiveExecutor
+from betbot.execution.live_executor import LiveExecutor, LiveVenueAdapter
 from betbot.execution.ticket import TicketProposal, create_ticket_proposal
 from betbot.policy.approvals import ApprovalRecord
 from betbot.policy.degraded_mode import DegradedSummary, summarize_source_results
@@ -45,10 +45,12 @@ class CycleRunner:
         adapters: list[Adapter],
         lane_policy_set: LanePolicySet | None = None,
         hard_required_sources: tuple[str, ...] = (),
+        live_venue_adapter: LiveVenueAdapter | None = None,
     ) -> None:
         self.adapters = adapters
         self._injected_lane_policy_set = lane_policy_set
         self.hard_required_sources = tuple(hard_required_sources)
+        self._live_venue_adapter = live_venue_adapter
 
     @staticmethod
     def _source_severity(status: str) -> str:
@@ -307,6 +309,12 @@ class CycleRunner:
         execution_reason = "not_requested"
         execution_ack_status = "not_submitted"
         execution_external_order_id: str | None = None
+        reconciliation_status = "not_requested"
+        reconciliation_reason = "not_requested"
+        reconciliation_mismatches = 0
+        reconciliation_filled_quantity = 0.0
+        reconciliation_remaining_quantity = 0.0
+        position_status = "none"
         ticket: TicketProposal | None = None
 
         if policy_decision.status == "blocked":
@@ -377,7 +385,10 @@ class CycleRunner:
                         },
                     )
                 )
-                executor = LiveExecutor(lane_policy_set)
+                executor = LiveExecutor(
+                    lane_policy_set,
+                    venue_adapter=self._live_venue_adapter,
+                )
                 execution_result = executor.submit(
                     lane=config.lane,
                     ticket=ticket,
@@ -408,8 +419,198 @@ class CycleRunner:
                             },
                         )
                     )
-                    state.transition("cycle.finished")
-                    final_overall_status = "degraded" if policy_decision.status == "degraded" else "ok"
+                    reconciliation = executor.reconcile(
+                        lane=config.lane,
+                        ticket=ticket,
+                        external_order_id=execution_result.external_order_id,
+                    )
+                    reconciliation_status = reconciliation.status
+                    reconciliation_reason = reconciliation.reason
+                    reconciliation_mismatches = int(reconciliation.mismatches)
+                    reconciliation_filled_quantity = float(reconciliation.filled_quantity)
+                    reconciliation_remaining_quantity = float(reconciliation.remaining_quantity)
+                    position_status = str(reconciliation.position_status or "none")
+
+                    if reconciliation.status == "resting":
+                        state.transition("order.resting")
+                        events.append(
+                            new_event(
+                                run_id=run_id,
+                                cycle_id=cycle_id,
+                                event_type="order_resting",
+                                phase=state.current_phase,
+                                lane=config.lane,
+                                severity="info",
+                                data={
+                                    "market": execution_result.market,
+                                    "side": execution_result.side,
+                                    "external_order_id": reconciliation.external_order_id,
+                                    "filled_quantity": reconciliation.filled_quantity,
+                                    "remaining_quantity": reconciliation.remaining_quantity,
+                                    "reason": reconciliation.reason,
+                                },
+                            )
+                        )
+                        state.transition("cycle.finished")
+                        final_overall_status = "degraded" if policy_decision.status == "degraded" else "ok"
+                    elif reconciliation.status == "partially_filled":
+                        state.transition("order.partially_filled")
+                        events.append(
+                            new_event(
+                                run_id=run_id,
+                                cycle_id=cycle_id,
+                                event_type="order_partially_filled",
+                                phase=state.current_phase,
+                                lane=config.lane,
+                                severity="info",
+                                data={
+                                    "market": execution_result.market,
+                                    "side": execution_result.side,
+                                    "external_order_id": reconciliation.external_order_id,
+                                    "filled_quantity": reconciliation.filled_quantity,
+                                    "remaining_quantity": reconciliation.remaining_quantity,
+                                    "reason": reconciliation.reason,
+                                },
+                            )
+                        )
+                        if position_status == "open":
+                            state.transition("position.open")
+                            events.append(
+                                new_event(
+                                    run_id=run_id,
+                                    cycle_id=cycle_id,
+                                    event_type="position_opened",
+                                    phase=state.current_phase,
+                                    lane=config.lane,
+                                    severity="info",
+                                    data={
+                                        "market": execution_result.market,
+                                        "side": execution_result.side,
+                                        "external_order_id": reconciliation.external_order_id,
+                                        "filled_quantity": reconciliation.filled_quantity,
+                                    },
+                                )
+                            )
+                        state.transition("cycle.finished")
+                        final_overall_status = "degraded" if policy_decision.status == "degraded" else "ok"
+                    elif reconciliation.status == "filled":
+                        state.transition("order.filled")
+                        events.append(
+                            new_event(
+                                run_id=run_id,
+                                cycle_id=cycle_id,
+                                event_type="order_filled",
+                                phase=state.current_phase,
+                                lane=config.lane,
+                                severity="info",
+                                data={
+                                    "market": execution_result.market,
+                                    "side": execution_result.side,
+                                    "external_order_id": reconciliation.external_order_id,
+                                    "filled_quantity": reconciliation.filled_quantity,
+                                    "reason": reconciliation.reason,
+                                },
+                            )
+                        )
+                        if position_status == "settled":
+                            state.transition("position.settled")
+                            events.append(
+                                new_event(
+                                    run_id=run_id,
+                                    cycle_id=cycle_id,
+                                    event_type="position_settled",
+                                    phase=state.current_phase,
+                                    lane=config.lane,
+                                    severity="info",
+                                    data={
+                                        "market": execution_result.market,
+                                        "side": execution_result.side,
+                                        "external_order_id": reconciliation.external_order_id,
+                                    },
+                                )
+                            )
+                        else:
+                            state.transition("position.open")
+                            events.append(
+                                new_event(
+                                    run_id=run_id,
+                                    cycle_id=cycle_id,
+                                    event_type="position_opened",
+                                    phase=state.current_phase,
+                                    lane=config.lane,
+                                    severity="info",
+                                    data={
+                                        "market": execution_result.market,
+                                        "side": execution_result.side,
+                                        "external_order_id": reconciliation.external_order_id,
+                                        "filled_quantity": reconciliation.filled_quantity,
+                                    },
+                                )
+                            )
+                        state.transition("cycle.finished")
+                        final_overall_status = "degraded" if policy_decision.status == "degraded" else "ok"
+                    elif reconciliation.status == "canceled":
+                        state.transition("order.canceled")
+                        events.append(
+                            new_event(
+                                run_id=run_id,
+                                cycle_id=cycle_id,
+                                event_type="order_canceled",
+                                phase=state.current_phase,
+                                lane=config.lane,
+                                severity="warn",
+                                data={
+                                    "market": execution_result.market,
+                                    "side": execution_result.side,
+                                    "external_order_id": reconciliation.external_order_id,
+                                    "filled_quantity": reconciliation.filled_quantity,
+                                    "reason": reconciliation.reason,
+                                },
+                            )
+                        )
+                        state.transition("cycle.finished")
+                        final_overall_status = "degraded" if policy_decision.status == "degraded" else "ok"
+                    elif reconciliation.status == "mismatch":
+                        events.append(
+                            new_event(
+                                run_id=run_id,
+                                cycle_id=cycle_id,
+                                event_type="order_reconcile_mismatch",
+                                phase=state.current_phase,
+                                lane=config.lane,
+                                severity="error",
+                                data={
+                                    "market": execution_result.market,
+                                    "side": execution_result.side,
+                                    "external_order_id": reconciliation.external_order_id,
+                                    "mismatches": reconciliation.mismatches,
+                                    "reason": reconciliation.reason,
+                                },
+                            )
+                        )
+                        order_status = "reconcile_mismatch"
+                        execution_reason = "reconcile_mismatch"
+                        state.transition("cycle.failed")
+                        final_overall_status = "failed"
+                    else:
+                        events.append(
+                            new_event(
+                                run_id=run_id,
+                                cycle_id=cycle_id,
+                                event_type="order_reconcile_unknown",
+                                phase=state.current_phase,
+                                lane=config.lane,
+                                severity="warn",
+                                data={
+                                    "market": execution_result.market,
+                                    "side": execution_result.side,
+                                    "external_order_id": reconciliation.external_order_id,
+                                    "reason": reconciliation.reason,
+                                },
+                            )
+                        )
+                        state.transition("cycle.finished")
+                        final_overall_status = "degraded" if policy_decision.status == "degraded" else "ok"
                 else:
                     order_status = "blocked"
                     if execution_result.reason.startswith("approval_"):
@@ -438,14 +639,23 @@ class CycleRunner:
                 state.transition("cycle.finished")
                 final_overall_status = "degraded" if policy_decision.status == "degraded" else "ok"
 
+        final_event_type = "cycle_failed" if state.current_phase == "cycle.failed" else "cycle_finished"
         events.append(
             new_event(
                 run_id=run_id,
                 cycle_id=cycle_id,
-                event_type="cycle_finished",
+                event_type=final_event_type,
                 phase=state.current_phase,
                 lane=config.lane,
-                severity=("block" if final_overall_status == "blocked" else "warn" if final_overall_status == "degraded" else "info"),
+                severity=(
+                    "error"
+                    if final_overall_status == "failed"
+                    else "block"
+                    if final_overall_status == "blocked"
+                    else "warn"
+                    if final_overall_status == "degraded"
+                    else "info"
+                ),
                 data={
                     "overall_status": final_overall_status,
                     "policy_status": policy_decision.status,
@@ -480,6 +690,12 @@ class CycleRunner:
             "execution_reason": execution_reason,
             "execution_ack_status": execution_ack_status,
             "execution_external_order_id": execution_external_order_id,
+            "reconciliation_status": reconciliation_status,
+            "reconciliation_reason": reconciliation_reason,
+            "reconciliation_mismatches": reconciliation_mismatches,
+            "reconciliation_filled_quantity": reconciliation_filled_quantity,
+            "reconciliation_remaining_quantity": reconciliation_remaining_quantity,
+            "position_status": position_status,
             "ticket_proposal": (None if ticket is None else ticket.to_dict()),
             "recovery_recommendation": degraded_summary.recovery_recommendation,
             "citations": [],

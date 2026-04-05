@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 import unittest
 
-from betbot.execution.live_executor import LiveExecutor
+from betbot.execution.live_executor import LiveExecutor, LocalLiveVenueAdapter
 from betbot.execution.ticket import create_ticket_proposal
 from betbot.policy.approvals import ApprovalRecord
 from betbot.policy.lanes import load_lane_policy_set
@@ -88,6 +88,110 @@ class LiveExecutorTests(unittest.TestCase):
         self.assertEqual(result.status, "submitted")
         self.assertEqual(result.reason, "live_submit_allowed")
         self.assertEqual(result.ack_status, "accepted")
+
+    def test_submit_rejected_ack_surfaces_reject_reason(self) -> None:
+        lane_policy_set = load_lane_policy_set()
+        executor = LiveExecutor(
+            lane_policy_set,
+            venue_adapter=LocalLiveVenueAdapter(submit_outcome="rejected"),
+        )
+        ticket = create_ticket_proposal(
+            market="MKT",
+            side="yes",
+            max_cost=4.0,
+            lane="live_execute",
+            source_run_id="run-reject",
+        )
+        result = executor.submit(
+            lane="live_execute",
+            ticket=ticket,
+            approval=None,
+            approval_required=False,
+        )
+        self.assertEqual(result.status, "blocked")
+        self.assertEqual(result.reason, "submission_rejected")
+        self.assertEqual(result.ack_status, "rejected")
+        self.assertIsNone(result.external_order_id)
+
+    def test_submit_timeout_ack_surfaces_timeout_reason(self) -> None:
+        lane_policy_set = load_lane_policy_set()
+        executor = LiveExecutor(
+            lane_policy_set,
+            venue_adapter=LocalLiveVenueAdapter(submit_outcome="timeout"),
+        )
+        ticket = create_ticket_proposal(
+            market="MKT",
+            side="yes",
+            max_cost=4.0,
+            lane="live_execute",
+            source_run_id="run-timeout",
+        )
+        result = executor.submit(
+            lane="live_execute",
+            ticket=ticket,
+            approval=None,
+            approval_required=False,
+        )
+        self.assertEqual(result.status, "blocked")
+        self.assertEqual(result.reason, "submission_timeout")
+        self.assertEqual(result.ack_status, "timeout")
+        self.assertIsNone(result.external_order_id)
+
+    def test_reconcile_default_resting_lifecycle(self) -> None:
+        lane_policy_set = load_lane_policy_set()
+        executor = LiveExecutor(lane_policy_set)
+        ticket = create_ticket_proposal(
+            market="MKT",
+            side="yes",
+            max_cost=1.0,
+            lane="live_execute",
+            source_run_id="run-reconcile",
+        )
+        submission = executor.submit(
+            lane="live_execute",
+            ticket=ticket,
+            approval=None,
+            approval_required=False,
+        )
+        self.assertEqual(submission.status, "submitted")
+        reconciliation = executor.reconcile(
+            lane="live_execute",
+            ticket=ticket,
+            external_order_id=submission.external_order_id,
+        )
+        self.assertEqual(reconciliation.status, "resting")
+        self.assertEqual(reconciliation.reason, "reconciled_resting")
+        self.assertEqual(reconciliation.remaining_quantity, 1.0)
+        self.assertEqual(reconciliation.filled_quantity, 0.0)
+
+    def test_reconcile_mismatch_outcome(self) -> None:
+        lane_policy_set = load_lane_policy_set()
+        executor = LiveExecutor(
+            lane_policy_set,
+            venue_adapter=LocalLiveVenueAdapter(reconcile_outcome="mismatch"),
+        )
+        ticket = create_ticket_proposal(
+            market="MKT",
+            side="yes",
+            max_cost=1.0,
+            lane="live_execute",
+            source_run_id="run-reconcile-mismatch",
+        )
+        submission = executor.submit(
+            lane="live_execute",
+            ticket=ticket,
+            approval=None,
+            approval_required=False,
+        )
+        self.assertEqual(submission.status, "submitted")
+        reconciliation = executor.reconcile(
+            lane="live_execute",
+            ticket=ticket,
+            external_order_id=submission.external_order_id,
+        )
+        self.assertEqual(reconciliation.status, "mismatch")
+        self.assertEqual(reconciliation.reason, "reconcile_mismatch")
+        self.assertEqual(reconciliation.mismatches, 1)
 
 
 if __name__ == "__main__":

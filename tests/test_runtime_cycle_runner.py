@@ -7,6 +7,7 @@ import tempfile
 import unittest
 
 from betbot.adapters.base import AdapterContext
+from betbot.execution.live_executor import LocalLiveVenueAdapter
 from betbot.execution.ticket import create_ticket_proposal
 from betbot.runtime.cycle_runner import CycleRunner, CycleRunnerConfig
 from betbot.runtime.source_result import SourceResult
@@ -196,6 +197,14 @@ class CycleRunnerTests(unittest.TestCase):
             self.assertEqual(report["execution_reason"], "live_submit_allowed")
             self.assertEqual(report["execution_ack_status"], "accepted")
             self.assertIsNotNone(report["execution_external_order_id"])
+            self.assertEqual(report["reconciliation_status"], "resting")
+            self.assertEqual(report["reconciliation_reason"], "reconciled_resting")
+            self.assertEqual(report["reconciliation_mismatches"], 0)
+            self.assertEqual(report["position_status"], "none")
+
+            event_lines = (output_dir / "runtime_events_latest.jsonl").read_text(encoding="utf-8").splitlines()
+            event_types = [json.loads(line).get("event_type") for line in event_lines]
+            self.assertIn("order_resting", event_types)
 
     def test_live_execute_missing_approval_blocks_order(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -255,6 +264,163 @@ class CycleRunnerTests(unittest.TestCase):
             self.assertEqual(report["overall_status"], "ok")
             self.assertEqual(report["approval_status"], "not_required")
             self.assertEqual(report["order_status"], "submitted")
+
+    def test_live_execute_rejected_submit_ack_blocks_cycle(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            expires_at = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()
+            reference_ticket = create_ticket_proposal(
+                market="MKT-REJECT",
+                side="yes",
+                max_cost=1.0,
+                lane="live_execute",
+                source_run_id="ref-reject",
+                expires_at=expires_at,
+            )
+            approval_path = output_dir / "approval_reject.json"
+            approval_path.write_text(
+                json.dumps(
+                    {
+                        "ticket_hash": reference_ticket.ticket_hash,
+                        "market": "MKT-REJECT",
+                        "side": "yes",
+                        "max_cost": 1.0,
+                        "issued_at": datetime.now(timezone.utc).isoformat(),
+                        "expires_at": expires_at,
+                        "approved_by": "tester",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            runner = CycleRunner(
+                adapters=[_StaticAdapter("kalshi_market_data", "ok")],
+                hard_required_sources=("kalshi_market_data",),
+                live_venue_adapter=LocalLiveVenueAdapter(submit_outcome="rejected"),
+            )
+            report = runner.run(
+                CycleRunnerConfig(
+                    lane="live_execute",
+                    output_dir=str(output_dir),
+                    repo_root=str(Path.cwd()),
+                    request_live_submit=True,
+                    approval_json_path=str(approval_path),
+                    ticket_market="MKT-REJECT",
+                    ticket_side="yes",
+                    ticket_max_cost=1.0,
+                    ticket_expires_at=expires_at,
+                )
+            )
+            self.assertEqual(report["overall_status"], "blocked")
+            self.assertEqual(report["order_status"], "blocked")
+            self.assertEqual(report["execution_ack_status"], "rejected")
+            self.assertEqual(report["execution_reason"], "submission_rejected")
+            self.assertEqual(report["reconciliation_status"], "not_requested")
+
+    def test_live_execute_timeout_submit_ack_blocks_cycle(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            expires_at = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()
+            reference_ticket = create_ticket_proposal(
+                market="MKT-TIMEOUT",
+                side="yes",
+                max_cost=1.0,
+                lane="live_execute",
+                source_run_id="ref-timeout",
+                expires_at=expires_at,
+            )
+            approval_path = output_dir / "approval_timeout.json"
+            approval_path.write_text(
+                json.dumps(
+                    {
+                        "ticket_hash": reference_ticket.ticket_hash,
+                        "market": "MKT-TIMEOUT",
+                        "side": "yes",
+                        "max_cost": 1.0,
+                        "issued_at": datetime.now(timezone.utc).isoformat(),
+                        "expires_at": expires_at,
+                        "approved_by": "tester",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            runner = CycleRunner(
+                adapters=[_StaticAdapter("kalshi_market_data", "ok")],
+                hard_required_sources=("kalshi_market_data",),
+                live_venue_adapter=LocalLiveVenueAdapter(submit_outcome="timeout"),
+            )
+            report = runner.run(
+                CycleRunnerConfig(
+                    lane="live_execute",
+                    output_dir=str(output_dir),
+                    repo_root=str(Path.cwd()),
+                    request_live_submit=True,
+                    approval_json_path=str(approval_path),
+                    ticket_market="MKT-TIMEOUT",
+                    ticket_side="yes",
+                    ticket_max_cost=1.0,
+                    ticket_expires_at=expires_at,
+                )
+            )
+            self.assertEqual(report["overall_status"], "blocked")
+            self.assertEqual(report["order_status"], "blocked")
+            self.assertEqual(report["execution_ack_status"], "timeout")
+            self.assertEqual(report["execution_reason"], "submission_timeout")
+            self.assertEqual(report["reconciliation_status"], "not_requested")
+
+    def test_live_execute_reconcile_mismatch_fails_cycle(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            expires_at = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()
+            reference_ticket = create_ticket_proposal(
+                market="MKT-MISMATCH",
+                side="yes",
+                max_cost=1.0,
+                lane="live_execute",
+                source_run_id="ref-mismatch",
+                expires_at=expires_at,
+            )
+            approval_path = output_dir / "approval_mismatch.json"
+            approval_path.write_text(
+                json.dumps(
+                    {
+                        "ticket_hash": reference_ticket.ticket_hash,
+                        "market": "MKT-MISMATCH",
+                        "side": "yes",
+                        "max_cost": 1.0,
+                        "issued_at": datetime.now(timezone.utc).isoformat(),
+                        "expires_at": expires_at,
+                        "approved_by": "tester",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            runner = CycleRunner(
+                adapters=[_StaticAdapter("kalshi_market_data", "ok")],
+                hard_required_sources=("kalshi_market_data",),
+                live_venue_adapter=LocalLiveVenueAdapter(reconcile_outcome="mismatch"),
+            )
+            report = runner.run(
+                CycleRunnerConfig(
+                    lane="live_execute",
+                    output_dir=str(output_dir),
+                    repo_root=str(Path.cwd()),
+                    request_live_submit=True,
+                    approval_json_path=str(approval_path),
+                    ticket_market="MKT-MISMATCH",
+                    ticket_side="yes",
+                    ticket_max_cost=1.0,
+                    ticket_expires_at=expires_at,
+                )
+            )
+            self.assertEqual(report["overall_status"], "failed")
+            self.assertEqual(report["order_status"], "reconcile_mismatch")
+            self.assertEqual(report["execution_reason"], "reconcile_mismatch")
+            self.assertEqual(report["reconciliation_status"], "mismatch")
+            self.assertEqual(report["reconciliation_mismatches"], 1)
+
+            event_lines = (output_dir / "runtime_events_latest.jsonl").read_text(encoding="utf-8").splitlines()
+            event_types = [json.loads(line).get("event_type") for line in event_lines]
+            self.assertIn("order_reconcile_mismatch", event_types)
 
 
 if __name__ == "__main__":

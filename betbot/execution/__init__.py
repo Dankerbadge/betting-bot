@@ -1,6 +1,7 @@
 from betbot.execution.live_executor import (
     LiveExecutionResult,
     LiveExecutor,
+    LiveReconciliationResult,
     LiveVenueAck,
     LiveVenueAdapter,
     LocalLiveVenueAdapter,
@@ -11,6 +12,7 @@ from betbot.execution.ticket import TicketProposal, create_ticket_proposal
 __all__ = [
     "LiveExecutionResult",
     "LiveExecutor",
+    "LiveReconciliationResult",
     "LiveVenueAck",
     "LiveVenueAdapter",
     "LocalLiveVenueAdapter",
