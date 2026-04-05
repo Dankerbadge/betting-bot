@@ -7,7 +7,7 @@ from pathlib import Path
 import uuid
 
 from betbot.adapters.base import Adapter, AdapterContext, run_adapter
-from betbot.execution.live_executor import LiveExecutor, LiveVenueAdapter
+from betbot.execution.live_executor import LiveExecutionResult, LiveExecutor, LiveVenueAdapter
 from betbot.execution.ticket import TicketProposal, create_ticket_proposal
 from betbot.policy.approvals import ApprovalRecord
 from betbot.policy.degraded_mode import DegradedSummary, summarize_source_results
@@ -30,6 +30,8 @@ class CycleRunnerConfig:
     repo_root: str | None = None
     lane_policy_path: str | None = None
     request_live_submit: bool = False
+    live_env_file: str | None = None
+    live_timeout_seconds: float = 10.0
     hard_required_sources: tuple[str, ...] | None = None
     approval_json_path: str | None = None
     ticket_market: str = "SIM-MARKET"
@@ -385,20 +387,43 @@ class CycleRunner:
                         },
                     )
                 )
-                executor = LiveExecutor(
-                    lane_policy_set,
-                    venue_adapter=self._live_venue_adapter,
-                )
-                execution_result = executor.submit(
-                    lane=config.lane,
-                    ticket=ticket,
-                    approval=approval,
-                    approval_required=approval_required,
-                )
+                executor: LiveExecutor | None = None
+                execution_result: LiveExecutionResult
+                try:
+                    venue_adapter = self._live_venue_adapter
+                    if venue_adapter is None and config.live_env_file:
+                        from betbot.execution.kalshi_live_venue_adapter import KalshiLiveVenueAdapter
+
+                        venue_adapter = KalshiLiveVenueAdapter.from_env_file(
+                            env_file=config.live_env_file,
+                            timeout_seconds=config.live_timeout_seconds,
+                        )
+                    executor = LiveExecutor(
+                        lane_policy_set,
+                        venue_adapter=venue_adapter,
+                    )
+                    execution_result = executor.submit(
+                        lane=config.lane,
+                        ticket=ticket,
+                        approval=approval,
+                        approval_required=approval_required,
+                    )
+                except Exception as exc:
+                    execution_result = LiveExecutionResult(
+                        status="blocked",
+                        reason=f"live_adapter_init_failed:{str(exc) or 'unknown'}",
+                        submitted_at=datetime.now(timezone.utc).isoformat(),
+                        market=ticket.market,
+                        side=ticket.side,
+                        ack_status="not_submitted",
+                        external_order_id=None,
+                    )
                 execution_reason = execution_result.reason
                 execution_ack_status = execution_result.ack_status
                 execution_external_order_id = execution_result.external_order_id
                 if execution_result.status == "submitted":
+                    if executor is None:
+                        raise RuntimeError("live executor unavailable after successful submit status")
                     state.transition("order.submitted")
                     order_status = "submitted"
                     approval_status = "approved" if approval_required else approval_status

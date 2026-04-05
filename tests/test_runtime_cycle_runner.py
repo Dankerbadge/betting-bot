@@ -592,6 +592,30 @@ class CycleRunnerTests(unittest.TestCase):
             event_types = [json.loads(line).get("event_type") for line in event_lines]
             self.assertIn("order_canceled", event_types)
 
+    def test_live_execute_missing_env_for_real_adapter_blocks_cleanly(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            runner = CycleRunner(
+                adapters=[_StaticAdapter("kalshi_market_data", "ok")],
+                hard_required_sources=("kalshi_market_data",),
+            )
+            report = runner.run(
+                CycleRunnerConfig(
+                    lane="live_execute",
+                    output_dir=str(output_dir),
+                    repo_root=str(Path.cwd()),
+                    request_live_submit=True,
+                    live_env_file=str(output_dir / "missing-live.env"),
+                    ticket_market="MKT-ENV-MISS",
+                    ticket_side="yes",
+                    ticket_max_cost=1.0,
+                )
+            )
+            self.assertEqual(report["overall_status"], "blocked")
+            self.assertEqual(report["order_status"], "blocked")
+            self.assertEqual(report["execution_ack_status"], "not_submitted")
+            self.assertTrue(str(report["execution_reason"]).startswith("live_adapter_init_failed:"))
+
 
 if __name__ == "__main__":
     unittest.main()
