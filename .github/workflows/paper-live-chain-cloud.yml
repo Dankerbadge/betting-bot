@@ -59,12 +59,20 @@ jobs:
           PY
 
       - name: Run hourly alpha overnight (forced)
+        id: hourly
         run: |
           set -euo pipefail
           mkdir -p outputs/paper_live_chain_logs
+          set +e
           bash scripts/hourly_alpha_overnight.sh --force 2>&1 | tee outputs/paper_live_chain_logs/hourly.log
+          hourly_rc=${PIPESTATUS[0]}
+          set -e
+          echo "${hourly_rc}" > outputs/paper_live_chain_logs/hourly_rc.txt
+          echo "hourly_rc=${hourly_rc}" >> "$GITHUB_OUTPUT"
 
       - name: Ingest with retry and verify idempotency deltas
+        env:
+          HOURLY_RC: ${{ steps.hourly.outputs.hourly_rc }}
         run: |
           python - <<'PY'
           from __future__ import annotations
@@ -89,6 +97,12 @@ jobs:
           ingest_script = root / 'separate_projects' / 'supabase-bot-state' / 'scripts' / 'ingest_outputs_to_supabase.py'
           snapshot_path = outputs_dir / 'overnight_alpha_latest.json'
           summary_path = outputs_dir / 'paper_live_chain_cloud_summary.json'
+          hourly_log_path = outputs_dir / 'paper_live_chain_logs' / 'hourly.log'
+          hourly_rc_raw = os.getenv('HOURLY_RC', '').strip()
+          try:
+              hourly_rc = int(hourly_rc_raw) if hourly_rc_raw else None
+          except ValueError:
+              hourly_rc = None
 
           transient_re = re.compile(
               r"(nodename nor servname|name or service not known|temporary failure|timed out|timeout|connection reset|connection aborted|network is unreachable|remote end closed|5\\d\\d|ssl|tls|gaierror)",
@@ -263,11 +277,17 @@ jobs:
           elif run2_delta_all_zero is False and run2_deltas:
               offenders = [f"{name}={delta}" for name, delta in run2_deltas.items() if delta != 0]
               first_actionable_blocker = 'run-2 idempotency delta non-zero: ' + ', '.join(offenders[:3])
+          elif hourly_rc not in {None, 0}:
+              first_actionable_blocker = f'hourly_alpha_overnight.sh returned rc={hourly_rc}'
           else:
               first_actionable_blocker = None
 
           summary = {
               'run_time_utc': datetime.now(UTC).isoformat(),
+              'hourly': {
+                  'rc': hourly_rc,
+                  'log': str(hourly_log_path),
+              },
               'snapshot': parse_snapshot(),
               'ingest_run1': {
                   'attempts': run1_attempts,
