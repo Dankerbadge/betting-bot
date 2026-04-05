@@ -20,6 +20,9 @@ jobs:
       OPSBOT_SUPABASE_URL: ${{ secrets.OPSBOT_SUPABASE_URL }}
       OPSBOT_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.OPSBOT_SUPABASE_SERVICE_ROLE_KEY }}
       OPSBOT_SUPABASE_PROJECT_REF: ${{ secrets.OPSBOT_SUPABASE_PROJECT_REF }}
+      KALSHI_ACCESS_KEY_ID: ${{ secrets.KALSHI_ACCESS_KEY_ID }}
+      KALSHI_PRIVATE_KEY_PEM: ${{ secrets.KALSHI_PRIVATE_KEY_PEM }}
+      KALSHI_ENV: ${{ secrets.KALSHI_ENV }}
       BETBOT_MIN_SECONDS_BETWEEN_RUNS: "0"
 
     steps:
@@ -51,12 +54,30 @@ jobs:
               "OPSBOT_SUPABASE_URL",
               "OPSBOT_SUPABASE_SERVICE_ROLE_KEY",
               "OPSBOT_SUPABASE_PROJECT_REF",
+              "KALSHI_ACCESS_KEY_ID",
+              "KALSHI_PRIVATE_KEY_PEM",
+              "KALSHI_ENV",
           ]
           missing = [name for name in required if not os.getenv(name)]
           if missing:
               print(f"Missing required GitHub repository secrets: {', '.join(missing)}", file=sys.stderr)
               sys.exit(2)
           PY
+
+      - name: Build runtime Kalshi env file
+        run: |
+          set -euo pipefail
+          key_path="${RUNNER_TEMP}/kalshi_private_key.pem"
+          env_path="${RUNNER_TEMP}/betbot_cloud_account.env"
+          printf '%s\n' "${KALSHI_PRIVATE_KEY_PEM}" > "${key_path}"
+          chmod 600 "${key_path}"
+          cat > "${env_path}" <<EOF
+          KALSHI_ACCESS_KEY_ID=${KALSHI_ACCESS_KEY_ID}
+          KALSHI_PRIVATE_KEY_PATH=${key_path}
+          KALSHI_ENV=${KALSHI_ENV}
+          EOF
+          chmod 600 "${env_path}"
+          echo "BETBOT_ENV_FILE=${env_path}" >> "${GITHUB_ENV}"
 
       - name: Run hourly alpha overnight (forced)
         id: hourly
