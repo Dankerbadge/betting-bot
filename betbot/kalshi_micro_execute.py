@@ -9,7 +9,7 @@ import socket
 import time
 from typing import Any, Callable
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlparse
+from urllib.parse import urlencode, urlparse
 from urllib.request import Request, urlopen
 
 from betbot.dns_guard import urlopen_with_dns_recovery
@@ -142,6 +142,10 @@ def _coerce_bool(value: Any) -> bool:
     if isinstance(value, (int, float)):
         return value != 0
     return str(value or "").strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _normalize_text(value: Any) -> str:
+    return str(value or "").strip()
 
 
 def _is_transient_orderbook_unavailable_attempt(attempt: dict[str, Any]) -> bool:
@@ -1584,6 +1588,163 @@ def _cancel_order(
     )
 
 
+def _extract_order_from_submission_payload(payload: Any) -> dict[str, Any] | None:
+    if not isinstance(payload, dict):
+        return None
+    nested = payload.get("order")
+    if isinstance(nested, dict):
+        return nested
+    if _normalize_text(payload.get("order_id")):
+        return payload
+    return None
+
+
+def _historical_order_by_client_order_id(
+    *,
+    env_data: dict[str, str],
+    client_order_id: str,
+    timeout_seconds: float,
+    max_pages: int,
+    http_request_json: AuthenticatedRequester,
+    sign_request: KalshiSigner,
+) -> tuple[dict[str, Any] | None, int]:
+    cursor: str | None = None
+    pages_scanned = 0
+    normalized_client_order_id = _normalize_text(client_order_id)
+    if not normalized_client_order_id:
+        return None, pages_scanned
+    for _ in range(max(1, int(max_pages))):
+        query: dict[str, str] = {"limit": "200"}
+        if cursor:
+            query["cursor"] = cursor
+        status_code, payload = _signed_kalshi_request(
+            env_data=env_data,
+            method="GET",
+            path_with_query=f"/historical/orders?{urlencode(query)}",
+            body=None,
+            timeout_seconds=timeout_seconds,
+            http_request_json=http_request_json,
+            sign_request=sign_request,
+        )
+        pages_scanned += 1
+        if status_code != 200 or not isinstance(payload, dict):
+            return None, pages_scanned
+        orders = payload.get("orders")
+        if isinstance(orders, list):
+            for order in orders:
+                if not isinstance(order, dict):
+                    continue
+                if _normalize_text(order.get("client_order_id")) == normalized_client_order_id:
+                    return order, pages_scanned
+        next_cursor = _normalize_text(payload.get("cursor"))
+        if not next_cursor:
+            break
+        cursor = next_cursor
+    return None, pages_scanned
+
+
+def _recover_order_from_submit_conflict(
+    *,
+    env_data: dict[str, str],
+    submission_payload: Any,
+    client_order_id: str,
+    timeout_seconds: float,
+    http_request_json: AuthenticatedRequester,
+    sign_request: KalshiSigner,
+) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    lookup_meta: dict[str, Any] = {
+        "lookup_status": "not_attempted",
+        "historical_pages_scanned": 0,
+    }
+    order_from_payload = _extract_order_from_submission_payload(submission_payload)
+    if isinstance(order_from_payload, dict) and _normalize_text(order_from_payload.get("order_id")):
+        payload_client_order_id = _normalize_text(order_from_payload.get("client_order_id"))
+        if not payload_client_order_id or payload_client_order_id == _normalize_text(client_order_id):
+            lookup_meta["lookup_status"] = "conflict_payload_order"
+            return order_from_payload, lookup_meta
+
+    order, pages_scanned = _historical_order_by_client_order_id(
+        env_data=env_data,
+        client_order_id=client_order_id,
+        timeout_seconds=timeout_seconds,
+        max_pages=6,
+        http_request_json=http_request_json,
+        sign_request=sign_request,
+    )
+    lookup_meta["historical_pages_scanned"] = pages_scanned
+    if isinstance(order, dict):
+        lookup_meta["lookup_status"] = "historical_client_order_id"
+        return order, lookup_meta
+
+    lookup_meta["lookup_status"] = "not_found"
+    return None, lookup_meta
+
+
+def _read_account_api_limits(
+    *,
+    env_data: dict[str, str],
+    timeout_seconds: float,
+    http_request_json: AuthenticatedRequester,
+    sign_request: KalshiSigner,
+) -> dict[str, Any]:
+    status_code, payload = _signed_kalshi_request(
+        env_data=env_data,
+        method="GET",
+        path_with_query="/account/limits",
+        body=None,
+        timeout_seconds=timeout_seconds,
+        http_request_json=http_request_json,
+        sign_request=sign_request,
+    )
+    result: dict[str, Any] = {
+        "checked": True,
+        "http_status": status_code,
+        "status_ok": status_code == 200,
+        "usage_tier": "",
+        "read_limit": "",
+        "write_limit": "",
+        "error": "",
+        "api_root_used": "",
+    }
+    if not isinstance(payload, dict):
+        result["error"] = f"account_limits_http_{status_code}"
+        return result
+    result["api_root_used"] = _normalize_text(payload.get("api_root_used"))
+    candidates: list[dict[str, Any]] = [payload]
+    for key in ("limits", "account_limits", "api_limits", "data"):
+        nested = payload.get(key)
+        if isinstance(nested, dict):
+            candidates.append(nested)
+
+    usage_tier = ""
+    read_limit: float | None = None
+    write_limit: float | None = None
+    for candidate in candidates:
+        if not usage_tier:
+            usage_tier = _normalize_text(candidate.get("usage_tier") or candidate.get("tier"))
+        if read_limit is None:
+            read_limit = _parse_float(
+                candidate.get("read_limit")
+                or candidate.get("read_limit_rps")
+                or candidate.get("read_rps")
+            )
+        if write_limit is None:
+            write_limit = _parse_float(
+                candidate.get("write_limit")
+                or candidate.get("write_limit_rps")
+                or candidate.get("write_rps")
+            )
+
+    result["usage_tier"] = usage_tier
+    result["read_limit"] = round(read_limit, 6) if isinstance(read_limit, float) else ""
+    result["write_limit"] = round(write_limit, 6) if isinstance(write_limit, float) else ""
+    if status_code != 200:
+        result["error"] = f"account_limits_http_{status_code}"
+    elif read_limit is None and write_limit is None:
+        result["error"] = "account_limits_missing_fields"
+    return result
+
+
 def _read_exchange_status(
     *,
     env_data: dict[str, str],
@@ -1782,7 +1943,12 @@ def _write_attempts_csv(path: Path, attempts: list[dict[str, Any]]) -> None:
         "estimated_entry_cost_dollars",
         "estimated_entry_fee_dollars",
         "client_order_id",
+        "order_group_id",
         "api_latency_ms",
+        "account_limit_throttle_sleep_seconds",
+        "submission_conflict_recovered",
+        "submission_conflict_lookup_status",
+        "submission_conflict_historical_pages_scanned",
         "resting_hold_seconds",
         "order_payload_preview",
     ]
@@ -1883,6 +2049,9 @@ def run_kalshi_micro_execute(
     enforce_ws_state_authority: bool = False,
     ws_state_json: str | None = None,
     ws_state_max_age_seconds: float = 30.0,
+    account_limits_auto_throttle: bool = True,
+    account_limits_throttle_safety_factor: float = 1.1,
+    account_limits_min_submit_interval_seconds: float | None = None,
     http_request_json: AuthenticatedRequester = _http_request_json,
     http_get_json: HttpGetter = _http_get_json,
     sign_request: KalshiSigner = _kalshi_sign_request,
@@ -1977,6 +2146,42 @@ def run_kalshi_micro_execute(
         and live_submission_budget_remaining > 0
         and live_cost_remaining > 0
     )
+    account_api_limits = {
+        "checked": False,
+        "http_status": None,
+        "status_ok": False,
+        "usage_tier": "",
+        "read_limit": "",
+        "write_limit": "",
+        "error": "",
+        "api_root_used": "",
+    }
+    account_write_min_submit_interval_seconds = 0.0
+    account_write_limit_submission_cap_per_15s: int | None = None
+    if allow_live_orders and account_limits_auto_throttle:
+        account_api_limits = _read_account_api_limits(
+            env_data=env_data,
+            timeout_seconds=timeout_seconds,
+            http_request_json=http_request_json,
+            sign_request=sign_request,
+        )
+        write_limit = _parse_float(account_api_limits.get("write_limit"))
+        if isinstance(write_limit, float) and write_limit > 0.0:
+            safe_write_limit = max(0.01, float(write_limit))
+            account_write_limit_submission_cap_per_15s = max(1, int(safe_write_limit * 15.0))
+            live_submission_budget_remaining = min(
+                live_submission_budget_remaining,
+                account_write_limit_submission_cap_per_15s,
+            )
+            safety_factor = max(1.0, float(account_limits_throttle_safety_factor))
+            min_interval = (1.0 / safe_write_limit) * safety_factor
+            if account_limits_min_submit_interval_seconds is not None:
+                min_interval = max(min_interval, max(0.0, float(account_limits_min_submit_interval_seconds)))
+            account_write_min_submit_interval_seconds = round(max(0.0, min_interval), 6)
+    live_submission_budget_remaining_before = live_submission_budget_remaining
+    account_limit_throttle_sleeps = 0
+    account_limit_throttle_sleep_seconds_total = 0.0
+    last_live_submit_monotonic: float | None = None
     safe_untrusted_bucket_probe_max_orders_per_run = max(0, int(untrusted_bucket_probe_max_orders_per_run))
     safe_untrusted_bucket_probe_required_edge_buffer_dollars = max(
         0.0, float(untrusted_bucket_probe_required_edge_buffer_dollars)
@@ -2834,6 +3039,24 @@ def run_kalshi_micro_execute(
                     f"betbot-{captured_at.strftime('%Y%m%d%H%M%S%f')[:-3]}-{plan_rank:02d}-{safe_ticker}"
                 )
             attempt["client_order_id"] = payload["client_order_id"]
+            attempt["order_group_id"] = str(payload.get("order_group_id") or "")
+            if account_write_min_submit_interval_seconds > 0.0 and last_live_submit_monotonic is not None:
+                elapsed_since_submit = time.monotonic() - last_live_submit_monotonic
+                if elapsed_since_submit + 1e-9 < account_write_min_submit_interval_seconds:
+                    throttle_sleep_seconds = round(
+                        max(0.0, account_write_min_submit_interval_seconds - elapsed_since_submit),
+                        6,
+                    )
+                    if throttle_sleep_seconds > 0.0:
+                        sleep_fn(throttle_sleep_seconds)
+                        account_limit_throttle_sleeps += 1
+                        account_limit_throttle_sleep_seconds_total = round(
+                            account_limit_throttle_sleep_seconds_total + throttle_sleep_seconds,
+                            6,
+                        )
+                        attempt["account_limit_throttle_sleep_seconds"] = throttle_sleep_seconds
+            if "account_limit_throttle_sleep_seconds" not in attempt:
+                attempt["account_limit_throttle_sleep_seconds"] = 0.0
             _append_journal_event("order_submitted", attempt, status="request_sent")
             submit_started = time.monotonic()
             submission_status, submission_payload = _create_order(
@@ -2843,10 +3066,31 @@ def run_kalshi_micro_execute(
                 http_request_json=http_request_json,
                 sign_request=sign_request,
             )
+            last_live_submit_monotonic = time.monotonic()
             attempt["api_latency_ms"] = round((time.monotonic() - submit_started) * 1000.0, 3)
             attempt["submission_http_status"] = submission_status
-            order = submission_payload.get("order") if isinstance(submission_payload, dict) else None
-            if submission_status != 201 or not isinstance(order, dict):
+            order = _extract_order_from_submission_payload(submission_payload)
+            conflict_recovered = False
+            conflict_lookup_status = ""
+            conflict_historical_pages_scanned = 0
+            if submission_status == 409:
+                recovered_order, conflict_meta = _recover_order_from_submit_conflict(
+                    env_data=env_data,
+                    submission_payload=submission_payload,
+                    client_order_id=payload["client_order_id"],
+                    timeout_seconds=timeout_seconds,
+                    http_request_json=http_request_json,
+                    sign_request=sign_request,
+                )
+                conflict_lookup_status = _normalize_text(conflict_meta.get("lookup_status"))
+                conflict_historical_pages_scanned = int(conflict_meta.get("historical_pages_scanned") or 0)
+                if isinstance(recovered_order, dict):
+                    order = recovered_order
+                    conflict_recovered = True
+            attempt["submission_conflict_recovered"] = conflict_recovered
+            attempt["submission_conflict_lookup_status"] = conflict_lookup_status
+            attempt["submission_conflict_historical_pages_scanned"] = conflict_historical_pages_scanned
+            if submission_status not in {201, 409} or not isinstance(order, dict):
                 attempt["result"] = "submit_failed"
                 _append_journal_event(
                     "order_terminal",
@@ -2861,16 +3105,20 @@ def run_kalshi_micro_execute(
             order_status = str(order.get("status") or "")
             attempt["order_id"] = order_id
             attempt["order_status"] = order_status
-            attempt["result"] = "submitted"
+            if conflict_recovered:
+                attempt["result"] = "submitted_existing_client_order_id"
+            else:
+                attempt["result"] = "submitted"
             _append_journal_event("order_acknowledged", attempt, status=order_status)
             _append_book_snapshot_event(
                 attempt,
                 snapshot_phase="at_ack",
                 snapshot=orderbook,
             )
-            live_submission_budget_remaining = max(0, live_submission_budget_remaining - 1)
-            if isinstance(estimated_entry_cost, float):
-                live_cost_remaining = round(max(0.0, live_cost_remaining - estimated_entry_cost), 4)
+            if not conflict_recovered:
+                live_submission_budget_remaining = max(0, live_submission_budget_remaining - 1)
+                if isinstance(estimated_entry_cost, float):
+                    live_cost_remaining = round(max(0.0, live_cost_remaining - estimated_entry_cost), 4)
 
             if order_id and order_status == "resting":
                 queue_snapshot = _fetch_queue_position(
@@ -3037,7 +3285,11 @@ def run_kalshi_micro_execute(
         duplicate_block_attempts = sum(1 for attempt in attempts if attempt["result"] == "blocked_duplicate_open_order")
         if attempts and all(attempt["result"] == "submitted_then_canceled" for attempt in attempts):
             status = "live_submitted_and_canceled"
+        elif attempts and all(attempt["result"] == "submitted_existing_client_order_id" for attempt in attempts):
+            status = "live_recovered_existing_orders"
         elif any(attempt["result"] == "submitted" for attempt in attempts):
+            status = "live_submitted"
+        elif any(attempt["result"] == "submitted_existing_client_order_id" for attempt in attempts):
             status = "live_submitted"
         elif any(attempt["result"] == "submit_failed" for attempt in attempts):
             status = "live_submit_failed"
@@ -3178,6 +3430,12 @@ def run_kalshi_micro_execute(
         "enforce_trade_gate": enforce_trade_gate,
         "enforce_ws_state_authority": enforce_ws_state_authority,
         "ws_state_authority": ws_state_authority,
+        "account_limits_auto_throttle": bool(account_limits_auto_throttle),
+        "account_api_limits": account_api_limits,
+        "account_write_min_submit_interval_seconds": account_write_min_submit_interval_seconds,
+        "account_write_limit_submission_cap_per_15s": account_write_limit_submission_cap_per_15s,
+        "account_limit_throttle_sleeps": account_limit_throttle_sleeps,
+        "account_limit_throttle_sleep_seconds_total": account_limit_throttle_sleep_seconds_total,
         "exchange_status": exchange_status,
         "status": status,
         "plan_status": plan_summary.get("status"),
@@ -3219,6 +3477,9 @@ def run_kalshi_micro_execute(
         "blocked_submission_budget_attempts": blocked_submission_budget_attempts,
         "blocked_live_cost_cap_attempts": blocked_live_cost_cap_attempts,
         "blocked_execution_policy_attempts": blocked_execution_policy_attempts,
+        "submission_conflict_recovered_attempts": sum(
+            1 for attempt in attempts if bool(attempt.get("submission_conflict_recovered"))
+        ),
         "execution_policy_active_attempts": sum(1 for attempt in attempts if bool(attempt.get("execution_policy_active"))),
         "execution_policy_submit_attempts": sum(
             1 for attempt in attempts if str(attempt.get("execution_policy_decision") or "") == "submit"

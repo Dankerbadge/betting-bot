@@ -4,6 +4,7 @@ import csv
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import sqlite3
 import tempfile
 import unittest
 
@@ -139,6 +140,67 @@ class KalshiTemperatureTraderTests(unittest.TestCase):
         self.assertFalse(decisions[0].approved)
         self.assertEqual(decisions[0].decision_reason, "metar_observation_stale")
         self.assertIn("metar_observation_stale", decisions[0].decision_notes)
+
+    def test_policy_gate_blocks_settlement_review_hold(self) -> None:
+        now = datetime(2026, 4, 8, 12, 0, tzinfo=timezone.utc)
+        intents = build_temperature_trade_intents(
+            constraint_rows=[
+                {
+                    "series_ticker": "KXHIGHNY",
+                    "event_ticker": "KXHIGHNY-26APR08",
+                    "market_ticker": "KXHIGHNY-26APR08-B72",
+                    "market_title": "72F or above",
+                    "settlement_station": "KNYC",
+                    "settlement_timezone": "America/New_York",
+                    "target_date_local": "2026-04-08",
+                    "constraint_status": "yes_impossible",
+                    "constraint_reason": "Observed max already above threshold",
+                    "observed_max_settlement_quantized": "74",
+                    "settlement_confidence_score": "0.92",
+                }
+            ],
+            specs_by_ticker={
+                "KXHIGHNY-26APR08-B72": {
+                    "market_ticker": "KXHIGHNY-26APR08-B72",
+                    "close_time": "2026-04-09T00:00:00Z",
+                    "settlement_station": "KNYC",
+                    "settlement_timezone": "America/New_York",
+                    "target_date_local": "2026-04-08",
+                    "rules_primary": "Highest temperature in local day at KNYC.",
+                }
+            },
+            metar_context={
+                "raw_sha256": "sha1",
+                "latest_by_station": {"KNYC": {"observation_time_utc": "2026-04-08T11:50:00Z", "temp_c": 24.2}},
+            },
+            market_sequences={"KXHIGHNY-26APR08-B72": 10},
+            policy_version="temperature_policy_v1",
+            contracts_per_order=1,
+            yes_max_entry_price_dollars=0.95,
+            no_max_entry_price_dollars=0.95,
+            now=now,
+        )
+        intent = intents[0]
+        decisions = TemperaturePolicyGate(
+            min_settlement_confidence=0.5,
+            max_metar_age_minutes=20.0,
+            require_market_snapshot_seq=True,
+            require_metar_snapshot_sha=True,
+        ).evaluate(
+            intents=intents,
+            settlement_state_by_underlying={
+                intent.underlying_key: {
+                    "state": "review_hold",
+                    "finalization_status": "pending_review",
+                    "allow_new_orders": False,
+                    "reason": "Waiting for settlement-source final report.",
+                }
+            },
+        )
+        self.assertEqual(len(decisions), 1)
+        self.assertFalse(decisions[0].approved)
+        self.assertEqual(decisions[0].decision_reason, "settlement_review_hold")
+        self.assertIn("settlement_review_hold", decisions[0].decision_notes)
 
     def test_run_kalshi_temperature_trader_builds_plan_and_calls_execute(self) -> None:
         now = datetime(2026, 4, 8, 12, 0, tzinfo=timezone.utc)
@@ -331,6 +393,202 @@ class KalshiTemperatureTraderTests(unittest.TestCase):
             self.assertEqual(payload["side"], "no")
             self.assertIn("order_group_id", payload)
             self.assertTrue(str(payload.get("client_order_id", "")).startswith("temp-"))
+
+    def test_run_kalshi_temperature_trader_blocks_existing_underlying_inventory(self) -> None:
+        now = datetime(2026, 4, 8, 12, 0, tzinfo=timezone.utc)
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            env_file = base / "env.txt"
+            env_file.write_text("KALSHI_ENV=prod\n", encoding="utf-8")
+
+            specs_csv = base / "specs.csv"
+            with specs_csv.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(
+                    handle,
+                    fieldnames=[
+                        "series_ticker",
+                        "event_ticker",
+                        "market_ticker",
+                        "market_title",
+                        "close_time",
+                        "settlement_station",
+                        "settlement_timezone",
+                        "target_date_local",
+                        "rules_primary",
+                        "rules_secondary",
+                        "local_day_boundary",
+                        "observation_window_local_start",
+                        "observation_window_local_end",
+                        "threshold_expression",
+                        "contract_terms_url",
+                        "settlement_confidence_score",
+                    ],
+                )
+                writer.writeheader()
+                writer.writerow(
+                    {
+                        "series_ticker": "KXHIGHNY",
+                        "event_ticker": "KXHIGHNY-26APR08",
+                        "market_ticker": "KXHIGHNY-26APR08-B72",
+                        "market_title": "72F or above",
+                        "close_time": "2026-04-09T00:00:00Z",
+                        "settlement_station": "KNYC",
+                        "settlement_timezone": "America/New_York",
+                        "target_date_local": "2026-04-08",
+                        "rules_primary": "Highest temperature in local day at KNYC.",
+                        "rules_secondary": "",
+                        "local_day_boundary": "local_day",
+                        "observation_window_local_start": "00:00",
+                        "observation_window_local_end": "23:59",
+                        "threshold_expression": "at_most:72",
+                        "contract_terms_url": "https://example.test/terms",
+                        "settlement_confidence_score": "0.92",
+                    }
+                )
+
+            constraint_csv = base / "constraints.csv"
+            with constraint_csv.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(
+                    handle,
+                    fieldnames=[
+                        "scanned_at",
+                        "source_specs_csv",
+                        "series_ticker",
+                        "event_ticker",
+                        "market_ticker",
+                        "market_title",
+                        "settlement_station",
+                        "settlement_timezone",
+                        "target_date_local",
+                        "settlement_unit",
+                        "settlement_precision",
+                        "threshold_expression",
+                        "constraint_status",
+                        "constraint_reason",
+                        "observed_max_settlement_raw",
+                        "observed_max_settlement_quantized",
+                        "observations_for_date",
+                        "snapshot_status",
+                        "settlement_confidence_score",
+                    ],
+                )
+                writer.writeheader()
+                writer.writerow(
+                    {
+                        "scanned_at": now.isoformat(),
+                        "source_specs_csv": str(specs_csv),
+                        "series_ticker": "KXHIGHNY",
+                        "event_ticker": "KXHIGHNY-26APR08",
+                        "market_ticker": "KXHIGHNY-26APR08-B72",
+                        "market_title": "72F or above",
+                        "settlement_station": "KNYC",
+                        "settlement_timezone": "America/New_York",
+                        "target_date_local": "2026-04-08",
+                        "settlement_unit": "fahrenheit",
+                        "settlement_precision": "whole_degree",
+                        "threshold_expression": "at_most:72",
+                        "constraint_status": "yes_impossible",
+                        "constraint_reason": "Observed max 74 exceeds at_most threshold 72.",
+                        "observed_max_settlement_raw": "74",
+                        "observed_max_settlement_quantized": "74",
+                        "observations_for_date": "12",
+                        "snapshot_status": "ready",
+                        "settlement_confidence_score": "0.92",
+                    }
+                )
+
+            metar_state = base / "metar_state.json"
+            metar_state.write_text(
+                json.dumps(
+                    {
+                        "latest_observation_by_station": {
+                            "KNYC": {
+                                "observation_time_utc": "2026-04-08T11:55:00Z",
+                                "temp_c": 24.5,
+                            }
+                        },
+                        "max_temp_c_by_station_local_day": {},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            metar_summary = base / "metar_summary.json"
+            metar_summary.write_text(
+                json.dumps(
+                    {
+                        "status": "ready",
+                        "captured_at": now.isoformat(),
+                        "raw_sha256": "feedbead1234",
+                        "state_file": str(metar_state),
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            ws_state = base / "ws_state.json"
+            ws_state.write_text(
+                json.dumps(
+                    {
+                        "summary": {
+                            "status": "ready",
+                            "market_count": 1,
+                            "desynced_market_count": 0,
+                            "last_event_at": now.isoformat(),
+                        },
+                        "markets": {
+                            "KXHIGHNY-26APR08-B72": {
+                                "sequence": 22,
+                                "updated_at_utc": now.isoformat(),
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            book_db = base / "kalshi_portfolio_book.sqlite3"
+            connection = sqlite3.connect(book_db)
+            try:
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS positions (
+                        ticker TEXT PRIMARY KEY,
+                        position_fp REAL,
+                        market_exposure_dollars REAL
+                    )
+                    """
+                )
+                connection.execute(
+                    """
+                    INSERT OR REPLACE INTO positions (ticker, position_fp, market_exposure_dollars)
+                    VALUES (?, ?, ?)
+                    """,
+                    ("KXHIGHNY-26APR08-B72", 1.0, 0.56),
+                )
+                connection.commit()
+            finally:
+                connection.close()
+
+            summary = run_kalshi_temperature_trader(
+                env_file=str(env_file),
+                output_dir=str(base),
+                specs_csv=str(specs_csv),
+                constraint_csv=str(constraint_csv),
+                metar_summary_json=str(metar_summary),
+                ws_state_json=str(ws_state),
+                intents_only=True,
+                now=now,
+            )
+
+            self.assertEqual(summary["status"], "intents_only")
+            self.assertEqual(summary["intent_summary"]["intents_total"], 1)
+            self.assertEqual(summary["intent_summary"]["intents_approved"], 0)
+            self.assertEqual(
+                summary["intent_summary"]["policy_reason_counts"].get("underlying_exposure_cap_reached"),
+                1,
+            )
+            self.assertTrue(summary["intent_summary"]["underlying_netting_loaded"])
+            self.assertEqual(summary["intent_summary"]["existing_underlying_slots_count"], 1)
 
     def test_revalidate_temperature_trade_intents_detects_sequence_and_metar_changes(self) -> None:
         now = datetime(2026, 4, 8, 12, 0, tzinfo=timezone.utc)

@@ -1493,6 +1493,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional explicit websocket state JSON; defaults to kalshi_ws_state_latest.json in output-dir",
     )
     kalshi_temperature_trader.add_argument(
+        "--settlement-state-json",
+        default=None,
+        help="Optional settlement-finalization state JSON keyed by underlying (series|station|date)",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--book-db-path",
+        default=None,
+        help="Optional explicit portfolio book SQLite path for underlying-family netting",
+    )
+    kalshi_temperature_trader.add_argument(
         "--policy-version",
         default="temperature_policy_v1",
         help="Policy version tag attached to intents",
@@ -1572,6 +1582,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--require-metar-snapshot-sha",
         action="store_true",
         help="Require METAR raw snapshot SHA in intent evidence",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--disable-underlying-netting",
+        action="store_true",
+        help="Disable family-level netting against existing book positions/open orders",
     )
     kalshi_temperature_trader.add_argument(
         "--allow-live-orders",
@@ -1657,6 +1672,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--ws-state-json",
         default=None,
         help="Optional explicit websocket state JSON",
+    )
+    kalshi_temperature_shadow_watch.add_argument(
+        "--settlement-state-json",
+        default=None,
+        help="Optional settlement-finalization state JSON keyed by underlying",
+    )
+    kalshi_temperature_shadow_watch.add_argument(
+        "--book-db-path",
+        default=None,
+        help="Optional explicit portfolio book SQLite path for family-level netting",
     )
     kalshi_temperature_shadow_watch.add_argument(
         "--loops",
@@ -1750,6 +1775,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--require-metar-snapshot-sha",
         action="store_true",
         help="Require METAR snapshot SHA for approval",
+    )
+    kalshi_temperature_shadow_watch.add_argument(
+        "--disable-underlying-netting",
+        action="store_true",
+        help="Disable family-level netting against existing inventory",
     )
     kalshi_temperature_shadow_watch.add_argument(
         "--allow-live-orders",
@@ -5203,6 +5233,8 @@ def main() -> None:
             metar_summary_json=args.metar_summary_json,
             metar_state_json=args.metar_state_json,
             ws_state_json=args.ws_state_json,
+            settlement_state_json=args.settlement_state_json,
+            book_db_path=args.book_db_path,
             policy_version=args.policy_version,
             contracts_per_order=args.contracts_per_order,
             max_orders=args.max_orders,
@@ -5219,6 +5251,7 @@ def main() -> None:
             no_max_entry_price_dollars=args.no_max_entry_price,
             require_market_snapshot_seq=not args.disable_require_market_snapshot_seq,
             require_metar_snapshot_sha=args.require_metar_snapshot_sha,
+            enforce_underlying_netting=not args.disable_underlying_netting,
             planning_bankroll_dollars=args.planning_bankroll,
             daily_risk_cap_dollars=args.daily_risk_cap,
             cancel_resting_immediately=args.cancel_resting_immediately,
@@ -5241,6 +5274,8 @@ def main() -> None:
             metar_summary_json=args.metar_summary_json,
             metar_state_json=args.metar_state_json,
             ws_state_json=args.ws_state_json,
+            settlement_state_json=args.settlement_state_json,
+            book_db_path=args.book_db_path,
             policy_version=args.policy_version,
             contracts_per_order=args.contracts_per_order,
             max_orders=args.max_orders,
@@ -5255,6 +5290,7 @@ def main() -> None:
             no_max_entry_price_dollars=args.no_max_entry_price,
             require_market_snapshot_seq=not args.disable_require_market_snapshot_seq,
             require_metar_snapshot_sha=args.require_metar_snapshot_sha,
+            enforce_underlying_netting=not args.disable_underlying_netting,
             planning_bankroll_dollars=args.planning_bankroll,
             daily_risk_cap_dollars=args.daily_risk_cap,
             cancel_resting_immediately=args.cancel_resting_immediately,

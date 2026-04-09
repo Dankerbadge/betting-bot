@@ -5,10 +5,13 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 import hashlib
 import json
+import math
 from pathlib import Path
+import sqlite3
 import time
 from typing import Any, Callable
 
+from betbot.kalshi_book import default_book_db_path
 from betbot.kalshi_micro_execute import run_kalshi_micro_execute
 from betbot.kalshi_temperature_constraints import run_kalshi_temperature_constraint_scan
 from betbot.kalshi_ws_state import default_ws_state_path
@@ -95,6 +98,21 @@ def _build_spec_hash(spec_row: dict[str, Any]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _build_underlying_key(
+    *,
+    series_ticker: Any,
+    settlement_station: Any,
+    target_date_local: Any,
+) -> str:
+    return "|".join(
+        (
+            _normalize_text(series_ticker) or "series_unknown",
+            _normalize_text(settlement_station) or "station_unknown",
+            _normalize_text(target_date_local) or "date_unknown",
+        )
+    )
+
+
 def _resolve_specs_csv(
     *,
     explicit_specs_csv: str | None,
@@ -116,6 +134,135 @@ def _build_specs_by_ticker(rows: list[dict[str, str]]) -> dict[str, dict[str, st
         for row in rows
         if _normalize_text(row.get("market_ticker"))
     }
+
+
+def _ticker_underlying_keys(specs_by_ticker: dict[str, dict[str, str]]) -> dict[str, str]:
+    underlying_by_ticker: dict[str, str] = {}
+    for ticker, row in specs_by_ticker.items():
+        normalized_ticker = _normalize_text(ticker)
+        if not normalized_ticker:
+            continue
+        underlying_by_ticker[normalized_ticker] = _build_underlying_key(
+            series_ticker=row.get("series_ticker"),
+            settlement_station=row.get("settlement_station"),
+            target_date_local=row.get("target_date_local"),
+        )
+    return underlying_by_ticker
+
+
+def _load_existing_underlying_netting_snapshot(
+    *,
+    output_dir: str,
+    book_db_path: str | None,
+    specs_by_ticker: dict[str, dict[str, str]],
+    contracts_per_order: int,
+) -> dict[str, Any]:
+    resolved_book_path = Path(_normalize_text(book_db_path)) if _normalize_text(book_db_path) else default_book_db_path(output_dir)
+    snapshot: dict[str, Any] = {
+        "book_db_path": str(resolved_book_path),
+        "loaded": False,
+        "error": "",
+        "position_rows": 0,
+        "open_order_rows": 0,
+        "unknown_ticker_rows": 0,
+        "underlying_slots": {},
+        "underlying_position_abs_contracts": {},
+        "underlying_open_order_slots": {},
+        "underlying_exposure_abs_dollars": {},
+    }
+    if not resolved_book_path.exists():
+        return snapshot
+
+    ticker_to_underlying = _ticker_underlying_keys(specs_by_ticker)
+    if not ticker_to_underlying:
+        snapshot["loaded"] = True
+        return snapshot
+
+    safe_contracts_per_order = max(1, int(contracts_per_order))
+    underlying_slots: dict[str, int] = {}
+    underlying_position_abs_contracts: dict[str, float] = {}
+    underlying_open_order_slots: dict[str, int] = {}
+    underlying_exposure_abs_dollars: dict[str, float] = {}
+
+    try:
+        connection = sqlite3.connect(str(resolved_book_path))
+        connection.row_factory = sqlite3.Row
+    except sqlite3.Error as exc:
+        snapshot["error"] = f"book_connect_failed:{exc}"
+        return snapshot
+
+    try:
+        try:
+            position_rows = connection.execute(
+                """
+                SELECT ticker, COALESCE(position_fp, 0.0) AS position_fp, COALESCE(market_exposure_dollars, 0.0) AS market_exposure_dollars
+                FROM positions
+                WHERE ABS(COALESCE(position_fp, 0.0)) > 1e-9
+                   OR ABS(COALESCE(market_exposure_dollars, 0.0)) > 1e-9
+                """
+            ).fetchall()
+        except sqlite3.Error:
+            position_rows = []
+        snapshot["position_rows"] = len(position_rows)
+        for row in position_rows:
+            ticker = _normalize_text(row["ticker"])
+            underlying_key = ticker_to_underlying.get(ticker)
+            if not underlying_key:
+                snapshot["unknown_ticker_rows"] = int(snapshot.get("unknown_ticker_rows") or 0) + 1
+                continue
+            position_abs = abs(float(row["position_fp"] or 0.0))
+            exposure_abs = abs(float(row["market_exposure_dollars"] or 0.0))
+            slots = 0
+            if position_abs > 1e-9:
+                slots = max(1, int(math.ceil(position_abs / float(safe_contracts_per_order))))
+            elif exposure_abs > 1e-9:
+                slots = 1
+            if slots > 0:
+                underlying_slots[underlying_key] = underlying_slots.get(underlying_key, 0) + slots
+            if position_abs > 1e-9:
+                underlying_position_abs_contracts[underlying_key] = round(
+                    underlying_position_abs_contracts.get(underlying_key, 0.0) + position_abs,
+                    6,
+                )
+            if exposure_abs > 1e-9:
+                underlying_exposure_abs_dollars[underlying_key] = round(
+                    underlying_exposure_abs_dollars.get(underlying_key, 0.0) + exposure_abs,
+                    6,
+                )
+
+        try:
+            open_order_rows = connection.execute(
+                """
+                SELECT ticker, COUNT(*) AS open_count
+                FROM orders
+                WHERE LOWER(COALESCE(status, '')) IN ('resting', 'open', 'pending')
+                GROUP BY ticker
+                """
+            ).fetchall()
+        except sqlite3.Error:
+            open_order_rows = []
+        snapshot["open_order_rows"] = len(open_order_rows)
+        for row in open_order_rows:
+            ticker = _normalize_text(row["ticker"])
+            underlying_key = ticker_to_underlying.get(ticker)
+            if not underlying_key:
+                snapshot["unknown_ticker_rows"] = int(snapshot.get("unknown_ticker_rows") or 0) + 1
+                continue
+            open_count = max(0, int(row["open_count"] or 0))
+            if open_count <= 0:
+                continue
+            underlying_slots[underlying_key] = underlying_slots.get(underlying_key, 0) + open_count
+            underlying_open_order_slots[underlying_key] = underlying_open_order_slots.get(underlying_key, 0) + open_count
+    finally:
+        connection.close()
+
+    snapshot["loaded"] = True
+    snapshot["underlying_slots"] = dict(sorted(underlying_slots.items()))
+    snapshot["underlying_position_abs_contracts"] = dict(sorted(underlying_position_abs_contracts.items()))
+    snapshot["underlying_open_order_slots"] = dict(sorted(underlying_open_order_slots.items()))
+    snapshot["underlying_exposure_abs_dollars"] = dict(sorted(underlying_exposure_abs_dollars.items()))
+    snapshot["underlying_count"] = len(underlying_slots)
+    return snapshot
 
 
 def _load_market_sequences(
@@ -192,6 +339,103 @@ def _side_from_constraint(constraint_status: str) -> str:
     if status == "yes_impossible":
         return "no"
     return "yes"
+
+
+def _find_latest_settlement_state_json(output_dir: str) -> str:
+    directory = Path(output_dir)
+    candidates = sorted(directory.glob("kalshi_temperature_settlement_state_*.json"))
+    if not candidates:
+        return ""
+    return str(candidates[-1])
+
+
+def _derive_settlement_allow_new_orders(*, state: str, finalization_status: str, allow_new_orders: Any) -> bool:
+    if isinstance(allow_new_orders, bool):
+        return allow_new_orders
+    state_text = _normalize_text(state).lower()
+    finalization_text = _normalize_text(finalization_status).lower()
+    if "review" in state_text or "review" in finalization_text:
+        return False
+    if state_text in {"final", "final_locked", "settled", "closed_final"}:
+        return False
+    if finalization_text in {"final", "final_locked", "settled"}:
+        return False
+    return True
+
+
+def _load_settlement_state_by_underlying(
+    *,
+    output_dir: str,
+    settlement_state_json: str | None,
+) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
+    resolved_path = _normalize_text(settlement_state_json)
+    if not resolved_path:
+        resolved_path = _find_latest_settlement_state_json(output_dir)
+    meta: dict[str, Any] = {
+        "settlement_state_json_used": resolved_path,
+        "loaded": False,
+        "entry_count": 0,
+        "error": "",
+    }
+    if not resolved_path:
+        return {}, meta
+    payload = _read_json(Path(resolved_path))
+    if not payload:
+        meta["error"] = "settlement_state_json_unreadable"
+        return {}, meta
+
+    raw_underlyings: dict[str, Any] = {}
+    for key in ("underlyings", "state_by_underlying", "underlying_states"):
+        candidate = payload.get(key)
+        if isinstance(candidate, dict):
+            raw_underlyings = candidate
+            break
+    if not raw_underlyings and all(isinstance(key, str) for key in payload.keys()):
+        raw_underlyings = payload
+
+    normalized: dict[str, dict[str, Any]] = {}
+    for underlying_key, entry in raw_underlyings.items():
+        if not isinstance(entry, dict):
+            continue
+        key = _normalize_text(underlying_key)
+        if not key:
+            continue
+        state = _normalize_text(entry.get("state") or entry.get("finalization_status"))
+        finalization_status = _normalize_text(entry.get("finalization_status") or state)
+        allow_new_orders = _derive_settlement_allow_new_orders(
+            state=state,
+            finalization_status=finalization_status,
+            allow_new_orders=entry.get("allow_new_orders"),
+        )
+        normalized[key] = {
+            "state": state,
+            "finalization_status": finalization_status,
+            "allow_new_orders": allow_new_orders,
+            "reason": _normalize_text(entry.get("reason")),
+            "review_flag": bool(entry.get("review_flag")),
+            "updated_at": _normalize_text(entry.get("updated_at")),
+            "final_truth_value": entry.get("final_truth_value"),
+            "fast_truth_value": entry.get("fast_truth_value"),
+            "revision_id": _normalize_text(entry.get("revision_id")),
+            "source": _normalize_text(entry.get("source")),
+        }
+
+    meta["loaded"] = True
+    meta["entry_count"] = len(normalized)
+    return normalized, meta
+
+
+def _settlement_block_reason(entry: dict[str, Any] | None) -> str | None:
+    if not isinstance(entry, dict):
+        return None
+    if bool(entry.get("allow_new_orders", True)):
+        return None
+    state = _normalize_text(entry.get("state") or entry.get("finalization_status")).lower()
+    if "review" in state:
+        return "settlement_review_hold"
+    if state in {"final", "final_locked", "settled", "closed_final"}:
+        return "settlement_final_locked"
+    return "settlement_finalization_blocked"
 
 
 def _build_intent_id(
@@ -273,9 +517,17 @@ class TemperaturePolicyGate:
         self,
         *,
         intents: list[TemperatureTradeIntent],
+        existing_underlying_slots: dict[str, int] | None = None,
+        settlement_state_by_underlying: dict[str, dict[str, Any]] | None = None,
     ) -> list[TemperaturePolicyDecision]:
         decisions: list[TemperaturePolicyDecision] = []
         approved_by_underlying: dict[str, int] = {}
+        if isinstance(existing_underlying_slots, dict):
+            for underlying_key, slots in existing_underlying_slots.items():
+                key = _normalize_text(underlying_key)
+                if not key:
+                    continue
+                approved_by_underlying[key] = max(0, int(slots))
 
         for intent in intents:
             blocked: list[str] = []
@@ -303,6 +555,12 @@ class TemperaturePolicyGate:
             if self.max_hours_to_close is not None and intent.hours_to_close is not None:
                 if float(intent.hours_to_close) > float(self.max_hours_to_close):
                     blocked.append("outside_active_horizon")
+
+            if isinstance(settlement_state_by_underlying, dict):
+                settlement_entry = settlement_state_by_underlying.get(intent.underlying_key)
+                settlement_block_reason = _settlement_block_reason(settlement_entry)
+                if settlement_block_reason:
+                    blocked.append(settlement_block_reason)
 
             current_underlying = approved_by_underlying.get(intent.underlying_key, 0)
             if current_underlying >= max(1, int(self.max_intents_per_underlying)):
@@ -453,12 +711,10 @@ def build_temperature_trade_intents(
         )
         series_ticker = _normalize_text(row.get("series_ticker")) or _normalize_text(spec_row.get("series_ticker"))
         event_ticker = _normalize_text(row.get("event_ticker")) or _normalize_text(spec_row.get("event_ticker"))
-        underlying_key = "|".join(
-            (
-                series_ticker or "series_unknown",
-                settlement_station or "station_unknown",
-                target_date_local or "date_unknown",
-            )
+        underlying_key = _build_underlying_key(
+            series_ticker=series_ticker,
+            settlement_station=settlement_station,
+            target_date_local=target_date_local,
         )
         side = _side_from_constraint(constraint_status)
         max_entry_price = float(yes_max_entry_price_dollars) if side == "yes" else float(no_max_entry_price_dollars)
@@ -766,6 +1022,79 @@ def _write_plan_csv(path: Path, plans: list[dict[str, Any]]) -> None:
             writer.writerow(row)
 
 
+def _build_settlement_finalization_snapshot(
+    *,
+    intents: list[TemperatureTradeIntent],
+    settlement_state_by_underlying: dict[str, dict[str, Any]],
+    captured_at: datetime,
+) -> dict[str, Any]:
+    by_underlying: dict[str, dict[str, Any]] = {}
+    for intent in intents:
+        row = by_underlying.setdefault(
+            intent.underlying_key,
+            {
+                "underlying_key": intent.underlying_key,
+                "series_ticker": intent.series_ticker,
+                "settlement_station": intent.settlement_station,
+                "target_date_local": intent.target_date_local,
+                "intent_count": 0,
+                "market_tickers": [],
+                "fast_truth_max_settlement_quantized": None,
+                "state": "fast_truth_only",
+                "finalization_status": "fast_truth_only",
+                "allow_new_orders": True,
+                "reason": "",
+                "final_truth_value": "",
+                "revision_id": "",
+                "source": "",
+                "updated_at": "",
+            },
+        )
+        row["intent_count"] = int(row.get("intent_count") or 0) + 1
+        market_tickers = row.get("market_tickers")
+        if isinstance(market_tickers, list) and intent.market_ticker not in market_tickers:
+            market_tickers.append(intent.market_ticker)
+        observed = intent.observed_max_settlement_quantized
+        current_max = _parse_float(row.get("fast_truth_max_settlement_quantized"))
+        observed_val = _parse_float(observed)
+        if isinstance(observed_val, float) and (current_max is None or observed_val > current_max):
+            row["fast_truth_max_settlement_quantized"] = observed_val
+
+    for underlying_key, row in by_underlying.items():
+        settlement_entry = settlement_state_by_underlying.get(underlying_key, {})
+        if not isinstance(settlement_entry, dict):
+            settlement_entry = {}
+        if settlement_entry:
+            row["state"] = _normalize_text(settlement_entry.get("state")) or "fast_truth_only"
+            row["finalization_status"] = _normalize_text(settlement_entry.get("finalization_status")) or row["state"]
+            row["allow_new_orders"] = bool(settlement_entry.get("allow_new_orders", True))
+            row["reason"] = _normalize_text(settlement_entry.get("reason"))
+            final_truth_value = settlement_entry.get("final_truth_value")
+            row["final_truth_value"] = final_truth_value if final_truth_value not in (None, "") else ""
+            row["revision_id"] = _normalize_text(settlement_entry.get("revision_id"))
+            row["source"] = _normalize_text(settlement_entry.get("source"))
+            row["updated_at"] = _normalize_text(settlement_entry.get("updated_at"))
+        elif isinstance(_parse_float(row.get("fast_truth_max_settlement_quantized")), float):
+            row["state"] = "fast_truth_only"
+            row["finalization_status"] = "intraday_unfinalized"
+
+    state_counts: dict[str, int] = {}
+    blocked_underlyings = 0
+    for row in by_underlying.values():
+        state = _normalize_text(row.get("state")) or "unknown"
+        state_counts[state] = state_counts.get(state, 0) + 1
+        if not bool(row.get("allow_new_orders", True)):
+            blocked_underlyings += 1
+
+    return {
+        "captured_at": captured_at.isoformat(),
+        "underlying_count": len(by_underlying),
+        "blocked_underlyings": blocked_underlyings,
+        "state_counts": dict(sorted(state_counts.items(), key=lambda item: (-item[1], item[0]))),
+        "underlyings": list(by_underlying.values()),
+    }
+
+
 def run_kalshi_temperature_trader(
     *,
     env_file: str,
@@ -775,6 +1104,8 @@ def run_kalshi_temperature_trader(
     metar_summary_json: str | None = None,
     metar_state_json: str | None = None,
     ws_state_json: str | None = None,
+    settlement_state_json: str | None = None,
+    book_db_path: str | None = None,
     policy_version: str = "temperature_policy_v1",
     contracts_per_order: int = 1,
     max_orders: int = 3,
@@ -791,6 +1122,7 @@ def run_kalshi_temperature_trader(
     no_max_entry_price_dollars: float = 0.95,
     require_market_snapshot_seq: bool = True,
     require_metar_snapshot_sha: bool = False,
+    enforce_underlying_netting: bool = True,
     planning_bankroll_dollars: float = 40.0,
     daily_risk_cap_dollars: float = 3.0,
     cancel_resting_immediately: bool = False,
@@ -846,6 +1178,21 @@ def run_kalshi_temperature_trader(
     specs_path = Path(resolved_specs_csv) if resolved_specs_csv else None
     specs_rows = _read_csv_rows(specs_path) if specs_path is not None else []
     specs_by_ticker = _build_specs_by_ticker(specs_rows)
+    netting_snapshot = _load_existing_underlying_netting_snapshot(
+        output_dir=output_dir,
+        book_db_path=book_db_path,
+        specs_by_ticker=specs_by_ticker,
+        contracts_per_order=max(1, int(contracts_per_order)),
+    )
+    existing_underlying_slots = (
+        netting_snapshot.get("underlying_slots")
+        if enforce_underlying_netting and isinstance(netting_snapshot.get("underlying_slots"), dict)
+        else {}
+    )
+    settlement_state_by_underlying, settlement_state_meta = _load_settlement_state_by_underlying(
+        output_dir=output_dir,
+        settlement_state_json=settlement_state_json,
+    )
 
     metar_context = _load_metar_context(
         output_dir=output_dir,
@@ -878,7 +1225,11 @@ def run_kalshi_temperature_trader(
         require_market_snapshot_seq=bool(require_market_snapshot_seq),
         require_metar_snapshot_sha=bool(require_metar_snapshot_sha),
     )
-    decisions = gate.evaluate(intents=intents)
+    decisions = gate.evaluate(
+        intents=intents,
+        existing_underlying_slots=existing_underlying_slots,
+        settlement_state_by_underlying=settlement_state_by_underlying,
+    )
     decisions_by_id = {decision.intent_id: decision for decision in decisions}
     approved_intents = [
         intent for intent in intents if decisions_by_id.get(intent.intent_id, None) and decisions_by_id[intent.intent_id].approved
@@ -922,6 +1273,13 @@ def run_kalshi_temperature_trader(
 
     plan_csv_path = out_dir / f"kalshi_temperature_trade_plan_{stamp}.csv"
     _write_plan_csv(plan_csv_path, plans)
+    finalization_snapshot = _build_settlement_finalization_snapshot(
+        intents=intents,
+        settlement_state_by_underlying=settlement_state_by_underlying,
+        captured_at=captured_at,
+    )
+    finalization_snapshot_path = out_dir / f"kalshi_temperature_finalization_snapshot_{stamp}.json"
+    finalization_snapshot_path.write_text(json.dumps(finalization_snapshot, indent=2), encoding="utf-8")
 
     policy_reason_counts: dict[str, int] = {}
     for decision in decisions:
@@ -937,6 +1295,18 @@ def run_kalshi_temperature_trader(
         "metar_summary_json": _normalize_text(metar_context.get("summary_path")),
         "metar_state_json": _normalize_text(metar_context.get("state_path")),
         "ws_state_json": ws_path,
+        "settlement_state_json": _normalize_text(settlement_state_meta.get("settlement_state_json_used")),
+        "settlement_state_loaded": bool(settlement_state_meta.get("loaded")),
+        "settlement_state_entries": int(settlement_state_meta.get("entry_count") or 0),
+        "enforce_underlying_netting": bool(enforce_underlying_netting),
+        "underlying_netting_book_db_path": _normalize_text(netting_snapshot.get("book_db_path")),
+        "underlying_netting_loaded": bool(netting_snapshot.get("loaded")),
+        "underlying_netting_error": _normalize_text(netting_snapshot.get("error")),
+        "existing_underlying_slots_count": len(existing_underlying_slots) if isinstance(existing_underlying_slots, dict) else 0,
+        "existing_underlying_slots": existing_underlying_slots if isinstance(existing_underlying_slots, dict) else {},
+        "finalization_snapshot_file": str(finalization_snapshot_path),
+        "finalization_state_counts": finalization_snapshot.get("state_counts"),
+        "finalization_blocked_underlyings": finalization_snapshot.get("blocked_underlyings"),
         "order_group_id": order_group_id,
         "intents_total": len(intents),
         "intents_approved": len(approved_intents),
@@ -967,6 +1337,15 @@ def run_kalshi_temperature_trader(
         "metar_state_json": _normalize_text(metar_context.get("state_path")),
         "metar_snapshot_sha": _normalize_text(metar_context.get("raw_sha256")),
         "ws_state_json": ws_path,
+        "settlement_state_json": _normalize_text(settlement_state_meta.get("settlement_state_json_used")),
+        "settlement_state_loaded": bool(settlement_state_meta.get("loaded")),
+        "settlement_state_entries": int(settlement_state_meta.get("entry_count") or 0),
+        "enforce_underlying_netting": bool(enforce_underlying_netting),
+        "underlying_netting_book_db_path": _normalize_text(netting_snapshot.get("book_db_path")),
+        "underlying_netting_loaded": bool(netting_snapshot.get("loaded")),
+        "underlying_netting_error": _normalize_text(netting_snapshot.get("error")),
+        "existing_underlying_slots_count": len(existing_underlying_slots) if isinstance(existing_underlying_slots, dict) else 0,
+        "existing_underlying_slots": existing_underlying_slots if isinstance(existing_underlying_slots, dict) else {},
         "ws_market_count": len(market_sequences),
         "intents_total": len(intents),
         "intents_approved": len(approved_intents),
@@ -977,6 +1356,9 @@ def run_kalshi_temperature_trader(
         "revalidation_meta": revalidation_meta,
         "revalidation_invalidations": revalidation_invalidations[:100],
         "output_csv": str(intents_csv_path),
+        "finalization_snapshot_file": str(finalization_snapshot_path),
+        "finalization_state_counts": finalization_snapshot.get("state_counts"),
+        "finalization_blocked_underlyings": finalization_snapshot.get("blocked_underlyings"),
         "top_approved": [intent.to_row() for intent in revalidated_intents[:20]],
     }
     intents_summary_path = out_dir / f"kalshi_temperature_trade_intents_summary_{stamp}.json"
@@ -1052,6 +1434,8 @@ def run_kalshi_temperature_shadow_watch(
     metar_summary_json: str | None = None,
     metar_state_json: str | None = None,
     ws_state_json: str | None = None,
+    settlement_state_json: str | None = None,
+    book_db_path: str | None = None,
     policy_version: str = "temperature_policy_v1",
     contracts_per_order: int = 1,
     max_orders: int = 3,
@@ -1066,6 +1450,7 @@ def run_kalshi_temperature_shadow_watch(
     no_max_entry_price_dollars: float = 0.95,
     require_market_snapshot_seq: bool = True,
     require_metar_snapshot_sha: bool = False,
+    enforce_underlying_netting: bool = True,
     planning_bankroll_dollars: float = 40.0,
     daily_risk_cap_dollars: float = 3.0,
     cancel_resting_immediately: bool = False,
@@ -1102,6 +1487,8 @@ def run_kalshi_temperature_shadow_watch(
             metar_summary_json=metar_summary_json,
             metar_state_json=metar_state_json,
             ws_state_json=ws_state_json,
+            settlement_state_json=settlement_state_json,
+            book_db_path=book_db_path,
             policy_version=policy_version,
             contracts_per_order=contracts_per_order,
             max_orders=max_orders,
@@ -1118,6 +1505,7 @@ def run_kalshi_temperature_shadow_watch(
             no_max_entry_price_dollars=no_max_entry_price_dollars,
             require_market_snapshot_seq=require_market_snapshot_seq,
             require_metar_snapshot_sha=require_metar_snapshot_sha,
+            enforce_underlying_netting=enforce_underlying_netting,
             planning_bankroll_dollars=planning_bankroll_dollars,
             daily_risk_cap_dollars=daily_risk_cap_dollars,
             cancel_resting_immediately=cancel_resting_immediately,
