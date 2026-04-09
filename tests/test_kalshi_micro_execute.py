@@ -241,6 +241,99 @@ class KalshiMicroExecuteTests(unittest.TestCase):
             self.assertTrue(Path(summary["output_csv"]).exists())
             self.assertTrue(Path(summary["output_file"]).exists())
 
+    def test_run_kalshi_micro_execute_preserves_explicit_client_order_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            env_file = base / "env.txt"
+            env_file.write_text(
+                (
+                    "KALSHI_ENV=prod\n"
+                    "BETBOT_JURISDICTION=new_jersey\n"
+                    "BETBOT_ENABLE_LIVE_ORDERS=1\n"
+                    "KALSHI_ACCESS_KEY_ID=key123\n"
+                    "KALSHI_PRIVATE_KEY_PATH=/tmp/key.pem\n"
+                ),
+                encoding="utf-8",
+            )
+
+            submitted_payloads: list[dict[str, object]] = []
+
+            def fake_http_request_json(
+                url: str,
+                method: str,
+                headers: dict[str, str],
+                body: object | None,
+                timeout_seconds: float,
+            ) -> tuple[int, object]:
+                _ = headers
+                _ = timeout_seconds
+                if method == "GET" and url.endswith("/orderbook?depth=1"):
+                    return 200, {
+                        "orderbook_fp": {
+                            "yes_dollars": [["0.4200", "120.00"]],
+                            "no_dollars": [["0.5600", "120.00"]],
+                        }
+                    }
+                if method == "POST" and url.endswith("/portfolio/orders"):
+                    if isinstance(body, dict):
+                        submitted_payloads.append(dict(body))
+                    return 201, {"order": {"order_id": "order-temp-1", "status": "executed"}}
+                return 404, {"error": "not found"}
+
+            summary = run_kalshi_micro_execute(
+                env_file=str(env_file),
+                output_dir=str(base),
+                allow_live_orders=True,
+                http_request_json=fake_http_request_json,
+                plan_runner=lambda **kwargs: {
+                    "status": "ready",
+                    "planned_orders": 1,
+                    "total_planned_cost_dollars": 0.42,
+                    "actual_live_balance_dollars": 40.0,
+                    "actual_live_balance_source": "live",
+                    "balance_live_verified": True,
+                    "funding_gap_dollars": 0.0,
+                    "board_warning": None,
+                    "output_file": str(base / "plan.json"),
+                    "output_csv": str(base / "plan.csv"),
+                    "orders": [
+                        {
+                            "plan_rank": 1,
+                            "category": "Climate",
+                            "market_ticker": "KXTEST-EDGE",
+                            "side": "yes",
+                            "contracts_per_order": 1,
+                            "hours_to_close": 12.0,
+                            "confidence": 0.72,
+                            "maker_entry_price_dollars": 0.42,
+                            "maker_yes_price_dollars": 0.42,
+                            "yes_ask_dollars": 0.43,
+                            "maker_entry_edge_conservative_net_total": 0.03,
+                            "estimated_entry_cost_dollars": 0.42,
+                            "order_payload_preview": {
+                                "ticker": "KXTEST-EDGE",
+                                "side": "yes",
+                                "action": "buy",
+                                "count": 1,
+                                "yes_price_dollars": "0.4200",
+                                "client_order_id": "temp-fixed-client-id",
+                                "time_in_force": "good_till_canceled",
+                                "post_only": True,
+                                "cancel_order_on_pause": True,
+                                "self_trade_prevention_type": "maker",
+                            },
+                        }
+                    ],
+                },
+                sign_request=lambda *_: "signed",
+                now=datetime(2026, 3, 27, 21, 0, tzinfo=timezone.utc),
+            )
+
+            self.assertIn(summary["status"], {"live_submitted", "live_submitted_and_canceled"})
+            self.assertEqual(len(submitted_payloads), 1)
+            self.assertEqual(submitted_payloads[0].get("client_order_id"), "temp-fixed-client-id")
+            self.assertEqual(summary["attempts"][0]["client_order_id"], "temp-fixed-client-id")
+
     def test_run_kalshi_micro_execute_writes_execution_frontier_outputs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)

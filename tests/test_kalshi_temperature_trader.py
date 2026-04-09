@@ -10,7 +10,9 @@ import unittest
 from betbot.kalshi_temperature_trader import (
     TemperaturePolicyGate,
     build_temperature_trade_intents,
+    revalidate_temperature_trade_intents,
     run_kalshi_temperature_trader,
+    run_kalshi_temperature_shadow_watch,
 )
 
 
@@ -328,8 +330,162 @@ class KalshiTemperatureTraderTests(unittest.TestCase):
             payload = order["order_payload_preview"]
             self.assertEqual(payload["side"], "no")
             self.assertIn("order_group_id", payload)
+            self.assertTrue(str(payload.get("client_order_id", "")).startswith("temp-"))
+
+    def test_revalidate_temperature_trade_intents_detects_sequence_and_metar_changes(self) -> None:
+        now = datetime(2026, 4, 8, 12, 0, tzinfo=timezone.utc)
+        constraint_rows = [
+            {
+                "series_ticker": "KXHIGHNY",
+                "event_ticker": "KXHIGHNY-26APR08",
+                "market_ticker": "KXHIGHNY-26APR08-B72",
+                "market_title": "72F or above",
+                "settlement_station": "KNYC",
+                "settlement_timezone": "America/New_York",
+                "target_date_local": "2026-04-08",
+                "constraint_status": "yes_impossible",
+                "constraint_reason": "Observed max already above threshold",
+                "observed_max_settlement_quantized": "74",
+                "settlement_confidence_score": "0.92",
+            }
+        ]
+        specs_by_ticker = {
+            "KXHIGHNY-26APR08-B72": {
+                "market_ticker": "KXHIGHNY-26APR08-B72",
+                "close_time": "2026-04-09T00:00:00Z",
+                "settlement_station": "KNYC",
+                "settlement_timezone": "America/New_York",
+                "target_date_local": "2026-04-08",
+                "rules_primary": "Highest temperature in local day at KNYC.",
+            }
+        }
+        intents = build_temperature_trade_intents(
+            constraint_rows=constraint_rows,
+            specs_by_ticker=specs_by_ticker,
+            metar_context={
+                "raw_sha256": "sha-old",
+                "latest_by_station": {"KNYC": {"observation_time_utc": "2026-04-08T11:50:00Z", "temp_c": 24.2}},
+            },
+            market_sequences={"KXHIGHNY-26APR08-B72": 10},
+            policy_version="temperature_policy_v1",
+            contracts_per_order=1,
+            yes_max_entry_price_dollars=0.95,
+            no_max_entry_price_dollars=0.95,
+            now=now,
+        )
+        self.assertEqual(len(intents), 1)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            specs_csv = base / "specs.csv"
+            with specs_csv.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(
+                    handle,
+                    fieldnames=[
+                        "market_ticker",
+                        "rules_primary",
+                        "rules_secondary",
+                        "settlement_station",
+                        "settlement_timezone",
+                        "local_day_boundary",
+                        "observation_window_local_start",
+                        "observation_window_local_end",
+                        "threshold_expression",
+                        "contract_terms_url",
+                    ],
+                )
+                writer.writeheader()
+                writer.writerow(
+                    {
+                        "market_ticker": "KXHIGHNY-26APR08-B72",
+                        "rules_primary": "Updated rule text",
+                        "rules_secondary": "",
+                        "settlement_station": "KNYC",
+                        "settlement_timezone": "America/New_York",
+                        "local_day_boundary": "local_day",
+                        "observation_window_local_start": "00:00",
+                        "observation_window_local_end": "23:59",
+                        "threshold_expression": "at_most:72",
+                        "contract_terms_url": "https://example.test/terms",
+                    }
+                )
+            metar_state = base / "metar_state.json"
+            metar_state.write_text(
+                json.dumps(
+                    {
+                        "latest_observation_by_station": {
+                            "KNYC": {"observation_time_utc": "2026-04-08T11:58:00Z", "temp_c": 24.5}
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            metar_summary = base / "metar_summary.json"
+            metar_summary.write_text(
+                json.dumps({"raw_sha256": "sha-new", "state_file": str(metar_state)}),
+                encoding="utf-8",
+            )
+            ws_state = base / "ws_state.json"
+            ws_state.write_text(
+                json.dumps({"markets": {"KXHIGHNY-26APR08-B72": {"sequence": 11}}}),
+                encoding="utf-8",
+            )
+
+            valid, invalid, meta = revalidate_temperature_trade_intents(
+                intents=intents,
+                output_dir=str(base),
+                specs_csv=str(specs_csv),
+                metar_summary_json=str(metar_summary),
+                metar_state_json=str(metar_state),
+                ws_state_json=str(ws_state),
+                require_market_snapshot_seq=True,
+                require_metar_snapshot_sha=False,
+            )
+
+            self.assertEqual(len(valid), 0)
+            self.assertEqual(len(invalid), 1)
+            reasons = set(invalid[0]["reasons"])
+            self.assertIn("market_snapshot_seq_changed", reasons)
+            self.assertIn("metar_observation_advanced", reasons)
+            self.assertIn("metar_snapshot_sha_changed", reasons)
+            self.assertEqual(meta["metar_snapshot_sha"], "sha-new")
+
+    def test_run_kalshi_temperature_shadow_watch_runs_multiple_cycles(self) -> None:
+        calls: list[dict[str, object]] = []
+
+        def fake_trader_runner(**kwargs: object) -> dict[str, object]:
+            calls.append(dict(kwargs))
+            loop_index = len(calls)
+            return {
+                "status": "dry_run",
+                "intent_summary": {
+                    "intents_total": 2,
+                    "intents_approved": 1,
+                    "intents_revalidated": 1,
+                    "revalidation_invalidated": 0,
+                },
+                "plan_summary": {"planned_orders": 1},
+                "execute_summary": {"status": "dry_run", "output_file": f"/tmp/execute_{loop_index}.json"},
+            }
+
+        sleeps: list[float] = []
+        summary = run_kalshi_temperature_shadow_watch(
+            env_file=".env",
+            output_dir="outputs",
+            loops=2,
+            sleep_between_loops_seconds=3.5,
+            trader_runner=fake_trader_runner,
+            sleep_fn=lambda seconds: sleeps.append(seconds),
+            now=datetime(2026, 4, 9, 13, 0, tzinfo=timezone.utc),
+        )
+
+        self.assertEqual(summary["loops_run"], 2)
+        self.assertEqual(summary["mode"], "shadow")
+        self.assertEqual(len(summary["cycle_summaries"]), 2)
+        self.assertEqual(summary["cycle_status_counts"].get("dry_run"), 2)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(sleeps, [3.5])
 
 
 if __name__ == "__main__":
     unittest.main()
-

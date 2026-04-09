@@ -2826,9 +2826,13 @@ def run_kalshi_micro_execute(
                 payload["order_group_id"] = configured_order_group_id
             plan_rank = int(plan.get("plan_rank", 0))
             safe_ticker = "".join(ch for ch in ticker if ch.isalnum())[-12:] or "market"
-            payload["client_order_id"] = (
-                f"betbot-{captured_at.strftime('%Y%m%d%H%M%S%f')[:-3]}-{plan_rank:02d}-{safe_ticker}"
-            )
+            existing_client_order_id = str(payload.get("client_order_id") or "").strip()
+            if existing_client_order_id:
+                payload["client_order_id"] = existing_client_order_id
+            else:
+                payload["client_order_id"] = (
+                    f"betbot-{captured_at.strftime('%Y%m%d%H%M%S%f')[:-3]}-{plan_rank:02d}-{safe_ticker}"
+                )
             attempt["client_order_id"] = payload["client_order_id"]
             _append_journal_event("order_submitted", attempt, status="request_sent")
             submit_started = time.monotonic()
