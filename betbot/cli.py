@@ -4021,6 +4021,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="Require the multi-snapshot trade gate to pass before any live write is allowed",
     )
     kalshi_micro_execute.add_argument(
+        "--order-group-auto-create",
+        action="store_true",
+        help="Create a Kalshi order group for this run and attach submitted orders to it",
+    )
+    kalshi_micro_execute.add_argument(
+        "--order-group-contract-limit",
+        type=int,
+        default=None,
+        help="Optional rolling-15s contracts limit used when auto-creating an order group",
+    )
+    kalshi_micro_execute.add_argument(
+        "--disable-order-group-fetch-after-run",
+        action="store_true",
+        help="Skip fetching final order-group state telemetry at the end of the run",
+    )
+    kalshi_micro_execute.add_argument(
         "--timeout-seconds",
         type=float,
         default=15.0,
@@ -5836,6 +5852,9 @@ def main() -> None:
             enforce_ws_state_authority=args.enforce_ws_state_authority,
             ws_state_json=args.ws_state_json,
             ws_state_max_age_seconds=args.ws_state_max_age_seconds,
+            order_group_auto_create=args.order_group_auto_create,
+            order_group_contract_limit=args.order_group_contract_limit,
+            order_group_fetch_after_run=not args.disable_order_group_fetch_after_run,
         )
     elif args.command == "kalshi-micro-reconcile":
         summary = run_kalshi_micro_reconcile(

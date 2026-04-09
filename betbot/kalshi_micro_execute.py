@@ -9,7 +9,7 @@ import socket
 import time
 from typing import Any, Callable
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode, urlparse
+from urllib.parse import quote, urlencode, urlparse
 from urllib.request import Request, urlopen
 
 from betbot.dns_guard import urlopen_with_dns_recovery
@@ -1588,6 +1588,49 @@ def _cancel_order(
     )
 
 
+def _create_order_group(
+    *,
+    env_data: dict[str, str],
+    contracts_limit: int,
+    timeout_seconds: float,
+    http_request_json: AuthenticatedRequester,
+    sign_request: KalshiSigner,
+) -> tuple[int, Any]:
+    payload = {
+        "contracts_limit": max(1, int(contracts_limit)),
+        "contracts_limit_fp": str(max(1, int(contracts_limit))),
+    }
+    return _signed_kalshi_request(
+        env_data=env_data,
+        method="POST",
+        path_with_query="/portfolio/order_groups/create",
+        body=payload,
+        timeout_seconds=timeout_seconds,
+        http_request_json=http_request_json,
+        sign_request=sign_request,
+    )
+
+
+def _fetch_order_group(
+    *,
+    env_data: dict[str, str],
+    order_group_id: str,
+    timeout_seconds: float,
+    http_request_json: AuthenticatedRequester,
+    sign_request: KalshiSigner,
+) -> tuple[int, Any]:
+    encoded_order_group_id = quote(str(order_group_id or "").strip(), safe="")
+    return _signed_kalshi_request(
+        env_data=env_data,
+        method="GET",
+        path_with_query=f"/portfolio/order_groups/{encoded_order_group_id}",
+        body=None,
+        timeout_seconds=timeout_seconds,
+        http_request_json=http_request_json,
+        sign_request=sign_request,
+    )
+
+
 def _extract_order_from_submission_payload(payload: Any) -> dict[str, Any] | None:
     if not isinstance(payload, dict):
         return None
@@ -1597,6 +1640,50 @@ def _extract_order_from_submission_payload(payload: Any) -> dict[str, Any] | Non
     if _normalize_text(payload.get("order_id")):
         return payload
     return None
+
+
+def _open_order_by_client_order_id(
+    *,
+    env_data: dict[str, str],
+    client_order_id: str,
+    timeout_seconds: float,
+    max_pages: int,
+    http_request_json: AuthenticatedRequester,
+    sign_request: KalshiSigner,
+) -> tuple[dict[str, Any] | None, int]:
+    cursor: str | None = None
+    pages_scanned = 0
+    normalized_client_order_id = _normalize_text(client_order_id)
+    if not normalized_client_order_id:
+        return None, pages_scanned
+    for _ in range(max(1, int(max_pages))):
+        query: dict[str, str] = {"status": "resting", "limit": "200"}
+        if cursor:
+            query["cursor"] = cursor
+        status_code, payload = _signed_kalshi_request(
+            env_data=env_data,
+            method="GET",
+            path_with_query=f"/portfolio/orders?{urlencode(query)}",
+            body=None,
+            timeout_seconds=timeout_seconds,
+            http_request_json=http_request_json,
+            sign_request=sign_request,
+        )
+        pages_scanned += 1
+        if status_code != 200 or not isinstance(payload, dict):
+            return None, pages_scanned
+        orders = payload.get("orders")
+        if isinstance(orders, list):
+            for order in orders:
+                if not isinstance(order, dict):
+                    continue
+                if _normalize_text(order.get("client_order_id")) == normalized_client_order_id:
+                    return order, pages_scanned
+        next_cursor = _normalize_text(payload.get("cursor"))
+        if not next_cursor:
+            break
+        cursor = next_cursor
+    return None, pages_scanned
 
 
 def _historical_order_by_client_order_id(
@@ -1654,6 +1741,7 @@ def _recover_order_from_submit_conflict(
 ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
     lookup_meta: dict[str, Any] = {
         "lookup_status": "not_attempted",
+        "live_pages_scanned": 0,
         "historical_pages_scanned": 0,
     }
     order_from_payload = _extract_order_from_submission_payload(submission_payload)
@@ -1662,6 +1750,19 @@ def _recover_order_from_submit_conflict(
         if not payload_client_order_id or payload_client_order_id == _normalize_text(client_order_id):
             lookup_meta["lookup_status"] = "conflict_payload_order"
             return order_from_payload, lookup_meta
+
+    open_order, open_pages_scanned = _open_order_by_client_order_id(
+        env_data=env_data,
+        client_order_id=client_order_id,
+        timeout_seconds=timeout_seconds,
+        max_pages=6,
+        http_request_json=http_request_json,
+        sign_request=sign_request,
+    )
+    lookup_meta["live_pages_scanned"] = open_pages_scanned
+    if isinstance(open_order, dict):
+        lookup_meta["lookup_status"] = "live_client_order_id"
+        return open_order, lookup_meta
 
     order, pages_scanned = _historical_order_by_client_order_id(
         env_data=env_data,
@@ -1948,6 +2049,7 @@ def _write_attempts_csv(path: Path, attempts: list[dict[str, Any]]) -> None:
         "account_limit_throttle_sleep_seconds",
         "submission_conflict_recovered",
         "submission_conflict_lookup_status",
+        "submission_conflict_live_pages_scanned",
         "submission_conflict_historical_pages_scanned",
         "resting_hold_seconds",
         "order_payload_preview",
@@ -2052,6 +2154,9 @@ def run_kalshi_micro_execute(
     account_limits_auto_throttle: bool = True,
     account_limits_throttle_safety_factor: float = 1.1,
     account_limits_min_submit_interval_seconds: float | None = None,
+    order_group_auto_create: bool = False,
+    order_group_contract_limit: int | None = None,
+    order_group_fetch_after_run: bool = True,
     http_request_json: AuthenticatedRequester = _http_request_json,
     http_get_json: HttpGetter = _http_get_json,
     sign_request: KalshiSigner = _kalshi_sign_request,
@@ -2179,6 +2284,69 @@ def run_kalshi_micro_execute(
                 min_interval = max(min_interval, max(0.0, float(account_limits_min_submit_interval_seconds)))
             account_write_min_submit_interval_seconds = round(max(0.0, min_interval), 6)
     live_submission_budget_remaining_before = live_submission_budget_remaining
+    configured_order_group_id = _normalize_text(env_data.get("BETBOT_ORDER_GROUP_ID"))
+    active_order_group_id = configured_order_group_id
+    order_group_source = "env" if configured_order_group_id else ""
+    order_group_setup = {
+        "enabled": bool(order_group_auto_create),
+        "requested_contract_limit": max(1, int(order_group_contract_limit))
+        if order_group_contract_limit is not None
+        else None,
+        "effective_contract_limit": None,
+        "attempted": False,
+        "http_status": None,
+        "status_ok": False,
+        "error": "",
+        "order_group_id": active_order_group_id,
+        "source": order_group_source,
+        "api_root_used": "",
+    }
+    if (
+        allow_live_orders
+        and live_write_allowed
+        and bool(order_group_auto_create)
+        and not active_order_group_id
+    ):
+        fallback_limit = max(
+            1,
+            min(
+                max(1, int(max_orders)),
+                max(1, int(live_submission_budget_remaining_before or max_live_submissions_per_day)),
+            ),
+        )
+        effective_contract_limit = fallback_limit
+        if account_write_limit_submission_cap_per_15s is not None:
+            effective_contract_limit = min(
+                effective_contract_limit,
+                max(1, int(account_write_limit_submission_cap_per_15s)),
+            )
+        if order_group_contract_limit is not None:
+            effective_contract_limit = max(1, int(order_group_contract_limit))
+        order_group_setup["effective_contract_limit"] = int(effective_contract_limit)
+        order_group_setup["attempted"] = True
+        create_status, create_payload = _create_order_group(
+            env_data=env_data,
+            contracts_limit=effective_contract_limit,
+            timeout_seconds=timeout_seconds,
+            http_request_json=http_request_json,
+            sign_request=sign_request,
+        )
+        order_group_setup["http_status"] = create_status
+        if isinstance(create_payload, dict):
+            order_group_setup["api_root_used"] = _normalize_text(create_payload.get("api_root_used"))
+        created_order_group_id = ""
+        if isinstance(create_payload, dict):
+            created_order_group_id = _normalize_text(create_payload.get("order_group_id"))
+        if create_status == 201 and created_order_group_id:
+            active_order_group_id = created_order_group_id
+            order_group_source = "created"
+            order_group_setup["status_ok"] = True
+            order_group_setup["order_group_id"] = created_order_group_id
+            order_group_setup["source"] = order_group_source
+        else:
+            order_group_setup["error"] = f"order_group_create_http_{create_status}"
+            order_group_setup["source"] = "create_failed"
+            live_write_allowed = False
     account_limit_throttle_sleeps = 0
     account_limit_throttle_sleep_seconds_total = 0.0
     last_live_submit_monotonic: float | None = None
@@ -2655,6 +2823,11 @@ def run_kalshi_micro_execute(
                 "estimated_entry_cost_dollars": plan.get("estimated_entry_cost_dollars", ""),
                 "estimated_entry_fee_dollars": plan.get("estimated_entry_fee_dollars", ""),
                 "api_latency_ms": orderbook_latency_ms,
+                "account_limit_throttle_sleep_seconds": 0.0,
+                "submission_conflict_recovered": False,
+                "submission_conflict_lookup_status": "",
+                "submission_conflict_live_pages_scanned": 0,
+                "submission_conflict_historical_pages_scanned": 0,
                 "resting_hold_seconds": resting_hold_seconds,
                 "order_payload_preview": plan.get("order_payload_preview", {}),
             }
@@ -2816,6 +2989,14 @@ def run_kalshi_micro_execute(
                     attempt["result"] = "blocked_by_safety_flag"
                 elif allow_live_orders and not live_execution_lock_acquired:
                     attempt["result"] = "blocked_concurrent_live_execution"
+                elif (
+                    allow_live_orders
+                    and bool(order_group_auto_create)
+                    and not configured_order_group_id
+                    and bool(order_group_setup.get("attempted"))
+                    and not bool(order_group_setup.get("status_ok"))
+                ):
+                    attempt["result"] = "blocked_order_group_setup"
                 elif allow_live_orders and live_submission_budget_remaining <= 0:
                     attempt["result"] = "blocked_submission_budget"
                 elif allow_live_orders and live_cost_remaining <= 0:
@@ -3026,9 +3207,8 @@ def run_kalshi_micro_execute(
             payload.setdefault("post_only", True)
             payload.setdefault("cancel_order_on_pause", True)
             payload.setdefault("self_trade_prevention_type", "maker")
-            configured_order_group_id = str(env_data.get("BETBOT_ORDER_GROUP_ID") or "").strip()
-            if configured_order_group_id and not str(payload.get("order_group_id") or "").strip():
-                payload["order_group_id"] = configured_order_group_id
+            if active_order_group_id:
+                payload["order_group_id"] = active_order_group_id
             plan_rank = int(plan.get("plan_rank", 0))
             safe_ticker = "".join(ch for ch in ticker if ch.isalnum())[-12:] or "market"
             existing_client_order_id = str(payload.get("client_order_id") or "").strip()
@@ -3072,6 +3252,7 @@ def run_kalshi_micro_execute(
             order = _extract_order_from_submission_payload(submission_payload)
             conflict_recovered = False
             conflict_lookup_status = ""
+            conflict_live_pages_scanned = 0
             conflict_historical_pages_scanned = 0
             if submission_status == 409:
                 recovered_order, conflict_meta = _recover_order_from_submit_conflict(
@@ -3083,12 +3264,14 @@ def run_kalshi_micro_execute(
                     sign_request=sign_request,
                 )
                 conflict_lookup_status = _normalize_text(conflict_meta.get("lookup_status"))
+                conflict_live_pages_scanned = int(conflict_meta.get("live_pages_scanned") or 0)
                 conflict_historical_pages_scanned = int(conflict_meta.get("historical_pages_scanned") or 0)
                 if isinstance(recovered_order, dict):
                     order = recovered_order
                     conflict_recovered = True
             attempt["submission_conflict_recovered"] = conflict_recovered
             attempt["submission_conflict_lookup_status"] = conflict_lookup_status
+            attempt["submission_conflict_live_pages_scanned"] = conflict_live_pages_scanned
             attempt["submission_conflict_historical_pages_scanned"] = conflict_historical_pages_scanned
             if submission_status not in {201, 409} or not isinstance(order, dict):
                 attempt["result"] = "submit_failed"
@@ -3223,6 +3406,39 @@ def run_kalshi_micro_execute(
         recent_events=max(1, int(execution_frontier_recent_rows)),
         now=captured_at,
     )
+    order_group_runtime = {
+        "fetch_enabled": bool(order_group_fetch_after_run),
+        "fetch_attempted": False,
+        "fetch_http_status": None,
+        "fetch_status_ok": False,
+        "fetch_error": "",
+        "is_auto_cancel_enabled": None,
+        "contracts_limit_fp": "",
+        "orders_in_group": None,
+        "api_root_used": "",
+    }
+    if allow_live_orders and order_group_fetch_after_run and active_order_group_id:
+        order_group_runtime["fetch_attempted"] = True
+        fetch_status, fetch_payload = _fetch_order_group(
+            env_data=env_data,
+            order_group_id=active_order_group_id,
+            timeout_seconds=timeout_seconds,
+            http_request_json=http_request_json,
+            sign_request=sign_request,
+        )
+        order_group_runtime["fetch_http_status"] = fetch_status
+        if isinstance(fetch_payload, dict):
+            order_group_runtime["api_root_used"] = _normalize_text(fetch_payload.get("api_root_used"))
+        if fetch_status == 200 and isinstance(fetch_payload, dict):
+            order_group_runtime["fetch_status_ok"] = True
+            if isinstance(fetch_payload.get("is_auto_cancel_enabled"), bool):
+                order_group_runtime["is_auto_cancel_enabled"] = bool(fetch_payload.get("is_auto_cancel_enabled"))
+            order_group_runtime["contracts_limit_fp"] = _normalize_text(fetch_payload.get("contracts_limit_fp"))
+            orders_in_group = fetch_payload.get("orders")
+            if isinstance(orders_in_group, list):
+                order_group_runtime["orders_in_group"] = len(orders_in_group)
+        else:
+            order_group_runtime["fetch_error"] = f"order_group_fetch_http_{fetch_status}"
 
     status = "dry_run"
     blocked_submission_budget_attempts = sum(1 for attempt in attempts if attempt["result"] == "blocked_submission_budget")
@@ -3241,6 +3457,14 @@ def run_kalshi_micro_execute(
         status = "blocked_by_safety_flag"
     elif allow_live_orders and not live_execution_lock_acquired:
         status = "blocked_concurrent_live_execution"
+    elif (
+        allow_live_orders
+        and bool(order_group_auto_create)
+        and not configured_order_group_id
+        and bool(order_group_setup.get("attempted"))
+        and not bool(order_group_setup.get("status_ok"))
+    ):
+        status = "blocked_order_group_setup"
     elif allow_live_orders and live_submission_budget_remaining_before <= 0:
         status = "blocked_submission_budget"
     elif allow_live_orders and live_cost_remaining_before <= 0:
@@ -3436,6 +3660,12 @@ def run_kalshi_micro_execute(
         "account_write_limit_submission_cap_per_15s": account_write_limit_submission_cap_per_15s,
         "account_limit_throttle_sleeps": account_limit_throttle_sleeps,
         "account_limit_throttle_sleep_seconds_total": account_limit_throttle_sleep_seconds_total,
+        "order_group_id": active_order_group_id,
+        "order_group_source": order_group_source,
+        "order_group_auto_create": bool(order_group_auto_create),
+        "order_group_contract_limit": order_group_contract_limit,
+        "order_group_setup": order_group_setup,
+        "order_group_runtime": order_group_runtime,
         "exchange_status": exchange_status,
         "status": status,
         "plan_status": plan_summary.get("status"),
@@ -3479,6 +3709,11 @@ def run_kalshi_micro_execute(
         "blocked_execution_policy_attempts": blocked_execution_policy_attempts,
         "submission_conflict_recovered_attempts": sum(
             1 for attempt in attempts if bool(attempt.get("submission_conflict_recovered"))
+        ),
+        "submission_conflict_live_lookup_pages_scanned": sum(
+            int(attempt.get("submission_conflict_live_pages_scanned") or 0)
+            for attempt in attempts
+            if isinstance(attempt, dict)
         ),
         "execution_policy_active_attempts": sum(1 for attempt in attempts if bool(attempt.get("execution_policy_active"))),
         "execution_policy_submit_attempts": sum(

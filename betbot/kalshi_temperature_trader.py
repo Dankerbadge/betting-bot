@@ -1408,6 +1408,7 @@ def run_kalshi_temperature_trader(
         enforce_ws_state_authority=enforce_ws_state_authority,
         ws_state_json=ws_path,
         ws_state_max_age_seconds=ws_state_max_age_seconds,
+        order_group_auto_create=bool(allow_live_orders),
         plan_runner=_synthetic_plan_runner,
         now=captured_at,
     )

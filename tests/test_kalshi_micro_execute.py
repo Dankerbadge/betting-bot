@@ -442,6 +442,240 @@ class KalshiMicroExecuteTests(unittest.TestCase):
             self.assertEqual(attempt["submission_conflict_lookup_status"], "historical_client_order_id")
             self.assertEqual(attempt["order_id"], "order-existing-1")
 
+    def test_run_kalshi_micro_execute_recovers_conflict_from_live_orders_before_historical(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            env_file = base / "env.txt"
+            env_file.write_text(
+                (
+                    "KALSHI_ENV=prod\n"
+                    "BETBOT_JURISDICTION=new_jersey\n"
+                    "BETBOT_ENABLE_LIVE_ORDERS=1\n"
+                    "KALSHI_ACCESS_KEY_ID=key123\n"
+                    "KALSHI_PRIVATE_KEY_PATH=/tmp/key.pem\n"
+                ),
+                encoding="utf-8",
+            )
+
+            historical_called = False
+
+            def fake_http_request_json(
+                url: str,
+                method: str,
+                headers: dict[str, str],
+                body: object | None,
+                timeout_seconds: float,
+            ) -> tuple[int, object]:
+                _ = headers
+                _ = body
+                _ = timeout_seconds
+                if method == "GET" and url.endswith("/account/limits"):
+                    return 200, {"usage_tier": "basic", "read_limit": 20, "write_limit": 10}
+                if method == "GET" and url.endswith("/orderbook?depth=1"):
+                    return 200, {
+                        "orderbook_fp": {
+                            "yes_dollars": [["0.4200", "120.00"]],
+                            "no_dollars": [["0.5600", "120.00"]],
+                        }
+                    }
+                if method == "POST" and url.endswith("/portfolio/orders"):
+                    return 409, {"error": "conflict", "error_code": "duplicate_client_order_id"}
+                if method == "GET" and "/portfolio/orders?" in url and "status=resting" in url:
+                    return 200, {
+                        "orders": [
+                            {
+                                "order_id": "order-live-1",
+                                "status": "resting",
+                                "ticker": "KXTEST-EDGE",
+                                "client_order_id": "temp-fixed-client-id-live",
+                            }
+                        ],
+                        "cursor": "",
+                    }
+                if method == "GET" and "/historical/orders?" in url:
+                    nonlocal historical_called
+                    historical_called = True
+                    return 200, {"orders": [], "cursor": ""}
+                if method == "GET" and url.endswith("/portfolio/orders/order-live-1/queue_position"):
+                    return 200, {"queue_position_fp": "3.00"}
+                return 404, {"error": "not found"}
+
+            summary = run_kalshi_micro_execute(
+                env_file=str(env_file),
+                output_dir=str(base),
+                allow_live_orders=True,
+                http_request_json=fake_http_request_json,
+                plan_runner=lambda **kwargs: {
+                    "status": "ready",
+                    "planned_orders": 1,
+                    "total_planned_cost_dollars": 0.42,
+                    "actual_live_balance_dollars": 40.0,
+                    "actual_live_balance_source": "live",
+                    "balance_live_verified": True,
+                    "funding_gap_dollars": 0.0,
+                    "board_warning": None,
+                    "output_file": str(base / "plan.json"),
+                    "output_csv": str(base / "plan.csv"),
+                    "orders": [
+                        {
+                            "plan_rank": 1,
+                            "category": "Climate",
+                            "market_ticker": "KXTEST-EDGE",
+                            "side": "yes",
+                            "contracts_per_order": 1,
+                            "hours_to_close": 12.0,
+                            "confidence": 0.72,
+                            "maker_entry_price_dollars": 0.42,
+                            "maker_yes_price_dollars": 0.42,
+                            "yes_ask_dollars": 0.43,
+                            "maker_entry_edge_conservative_net_total": 0.03,
+                            "estimated_entry_cost_dollars": 0.42,
+                            "order_payload_preview": {
+                                "ticker": "KXTEST-EDGE",
+                                "side": "yes",
+                                "action": "buy",
+                                "count": 1,
+                                "yes_price_dollars": "0.4200",
+                                "client_order_id": "temp-fixed-client-id-live",
+                                "time_in_force": "good_till_canceled",
+                                "post_only": True,
+                                "cancel_order_on_pause": True,
+                                "self_trade_prevention_type": "maker",
+                            },
+                        }
+                    ],
+                },
+                sign_request=lambda *_: "signed",
+                now=datetime(2026, 3, 27, 21, 0, tzinfo=timezone.utc),
+            )
+
+            self.assertIn(summary["status"], {"live_recovered_existing_orders", "live_submitted"})
+            self.assertEqual(len(summary["attempts"]), 1)
+            attempt = summary["attempts"][0]
+            self.assertEqual(attempt["result"], "submitted_existing_client_order_id")
+            self.assertTrue(attempt["submission_conflict_recovered"])
+            self.assertEqual(attempt["submission_conflict_lookup_status"], "live_client_order_id")
+            self.assertEqual(attempt["submission_conflict_live_pages_scanned"], 1)
+            self.assertEqual(attempt["submission_conflict_historical_pages_scanned"], 0)
+            self.assertEqual(attempt["order_id"], "order-live-1")
+            self.assertFalse(historical_called)
+
+    def test_run_kalshi_micro_execute_auto_creates_order_group_and_attaches_orders(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            env_file = base / "env.txt"
+            env_file.write_text(
+                (
+                    "KALSHI_ENV=prod\n"
+                    "BETBOT_JURISDICTION=new_jersey\n"
+                    "BETBOT_ENABLE_LIVE_ORDERS=1\n"
+                    "KALSHI_ACCESS_KEY_ID=key123\n"
+                    "KALSHI_PRIVATE_KEY_PATH=/tmp/key.pem\n"
+                ),
+                encoding="utf-8",
+            )
+
+            create_payloads: list[dict[str, object]] = []
+            submitted_payloads: list[dict[str, object]] = []
+
+            def fake_http_request_json(
+                url: str,
+                method: str,
+                headers: dict[str, str],
+                body: object | None,
+                timeout_seconds: float,
+            ) -> tuple[int, object]:
+                _ = headers
+                _ = timeout_seconds
+                if method == "GET" and url.endswith("/account/limits"):
+                    return 200, {"usage_tier": "basic", "read_limit": 20, "write_limit": 10}
+                if method == "POST" and url.endswith("/portfolio/order_groups/create"):
+                    if isinstance(body, dict):
+                        create_payloads.append(dict(body))
+                    return 201, {"order_group_id": "grp-1"}
+                if method == "GET" and url.endswith("/orderbook?depth=1"):
+                    return 200, {
+                        "orderbook_fp": {
+                            "yes_dollars": [["0.4200", "120.00"]],
+                            "no_dollars": [["0.5600", "120.00"]],
+                        }
+                    }
+                if method == "POST" and url.endswith("/portfolio/orders"):
+                    if isinstance(body, dict):
+                        submitted_payloads.append(dict(body))
+                    return 201, {"order": {"order_id": "order-1", "status": "executed"}}
+                if method == "GET" and url.endswith("/portfolio/order_groups/grp-1"):
+                    return 200, {
+                        "is_auto_cancel_enabled": True,
+                        "contracts_limit_fp": "1",
+                        "orders": ["order-1"],
+                    }
+                return 404, {"error": "not found"}
+
+            summary = run_kalshi_micro_execute(
+                env_file=str(env_file),
+                output_dir=str(base),
+                allow_live_orders=True,
+                max_orders=1,
+                order_group_auto_create=True,
+                http_request_json=fake_http_request_json,
+                plan_runner=lambda **kwargs: {
+                    "status": "ready",
+                    "planned_orders": 1,
+                    "total_planned_cost_dollars": 0.42,
+                    "actual_live_balance_dollars": 40.0,
+                    "actual_live_balance_source": "live",
+                    "balance_live_verified": True,
+                    "funding_gap_dollars": 0.0,
+                    "board_warning": None,
+                    "output_file": str(base / "plan.json"),
+                    "output_csv": str(base / "plan.csv"),
+                    "orders": [
+                        {
+                            "plan_rank": 1,
+                            "category": "Climate",
+                            "market_ticker": "KXTEST-EDGE",
+                            "side": "yes",
+                            "contracts_per_order": 1,
+                            "hours_to_close": 12.0,
+                            "confidence": 0.72,
+                            "maker_entry_price_dollars": 0.42,
+                            "maker_yes_price_dollars": 0.42,
+                            "yes_ask_dollars": 0.43,
+                            "maker_entry_edge_conservative_net_total": 0.03,
+                            "estimated_entry_cost_dollars": 0.42,
+                            "order_payload_preview": {
+                                "ticker": "KXTEST-EDGE",
+                                "side": "yes",
+                                "action": "buy",
+                                "count": 1,
+                                "yes_price_dollars": "0.4200",
+                                "time_in_force": "good_till_canceled",
+                                "post_only": True,
+                                "cancel_order_on_pause": True,
+                                "self_trade_prevention_type": "maker",
+                            },
+                        }
+                    ],
+                },
+                sign_request=lambda *_: "signed",
+                now=datetime(2026, 3, 27, 21, 0, tzinfo=timezone.utc),
+            )
+
+            self.assertIn(summary["status"], {"live_submitted", "live_recovered_existing_orders"})
+            self.assertEqual(summary["order_group_id"], "grp-1")
+            self.assertTrue(summary["order_group_setup"]["status_ok"])
+            self.assertEqual(summary["order_group_source"], "created")
+            self.assertTrue(summary["order_group_runtime"]["fetch_status_ok"])
+            self.assertEqual(summary["order_group_runtime"]["orders_in_group"], 1)
+            self.assertEqual(len(create_payloads), 1)
+            self.assertEqual(create_payloads[0]["contracts_limit"], 1)
+            self.assertEqual(create_payloads[0]["contracts_limit_fp"], "1")
+            self.assertEqual(len(submitted_payloads), 1)
+            self.assertEqual(submitted_payloads[0]["order_group_id"], "grp-1")
+            attempt = summary["attempts"][0]
+            self.assertEqual(attempt["order_group_id"], "grp-1")
+
     def test_run_kalshi_micro_execute_applies_account_limit_submit_spacing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
