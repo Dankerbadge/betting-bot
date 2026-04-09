@@ -48,6 +48,7 @@ from betbot.kalshi_nonsports_thresholds import run_kalshi_nonsports_thresholds
 from betbot.kalshi_temperature_constraints import run_kalshi_temperature_constraint_scan
 from betbot.kalshi_temperature_contract_specs import run_kalshi_temperature_contract_specs
 from betbot.kalshi_temperature_metar_ingest import run_kalshi_temperature_metar_ingest
+from betbot.kalshi_temperature_trader import run_kalshi_temperature_trader
 from betbot.kalshi_weather_catalog import run_kalshi_weather_catalog
 from betbot.kalshi_weather_priors import run_kalshi_weather_priors, run_kalshi_weather_station_history_prewarm
 from betbot.kalshi_climate_availability import run_kalshi_climate_realtime_router
@@ -1456,6 +1457,184 @@ def build_parser() -> argparse.ArgumentParser:
         help="HTTP timeout per METAR cache request",
     )
     kalshi_temperature_metar_ingest.add_argument("--output-dir", default="outputs", help="Output directory")
+
+    kalshi_temperature_trader = subparsers.add_parser(
+        "kalshi-temperature-trader",
+        help="Deterministic temperature intent -> policy gate -> execution bridge on top of kalshi-micro-execute",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--env-file",
+        default=".env",
+        help="Env-style file used to resolve Kalshi environment and credentials",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--specs-csv",
+        default=None,
+        help="Optional explicit contract-spec CSV; uses constraint source or latest snapshot when omitted",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--constraint-csv",
+        default=None,
+        help="Optional explicit constraint-scan CSV; runs fresh scan when omitted",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--metar-summary-json",
+        default=None,
+        help="Optional explicit METAR summary JSON; latest summary in output-dir used when omitted",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--metar-state-json",
+        default=None,
+        help="Optional explicit METAR state JSON; inferred from summary or output-dir when omitted",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--ws-state-json",
+        default=None,
+        help="Optional explicit websocket state JSON; defaults to kalshi_ws_state_latest.json in output-dir",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--policy-version",
+        default="temperature_policy_v1",
+        help="Policy version tag attached to intents",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--contracts-per-order",
+        type=int,
+        default=1,
+        help="Contracts per order for approved intents",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--max-orders",
+        type=int,
+        default=3,
+        help="Maximum approved intents to convert into executable plans",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--max-markets",
+        type=int,
+        default=100,
+        help="Maximum markets evaluated when running an implicit constraint scan",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--timeout-seconds",
+        type=float,
+        default=12.0,
+        help="HTTP timeout used by scan and execution calls",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--yes-max-entry-price",
+        type=float,
+        default=0.95,
+        help="Maximum entry price for YES-side intents",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--no-max-entry-price",
+        type=float,
+        default=0.95,
+        help="Maximum entry price for NO-side intents",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--min-settlement-confidence",
+        type=float,
+        default=0.6,
+        help="Minimum settlement confidence score required for intent approval",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--max-metar-age-minutes",
+        type=float,
+        default=20.0,
+        help="Maximum allowed METAR observation age in minutes",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--min-hours-to-close",
+        type=float,
+        default=0.0,
+        help="Minimum hours-to-close required for approval (cutoff window)",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--max-hours-to-close",
+        type=float,
+        default=48.0,
+        help="Maximum hours-to-close for active horizon filtering",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--max-intents-per-underlying",
+        type=int,
+        default=1,
+        help="Maximum approved intents per underlying key (series|station|date)",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--disable-require-market-snapshot-seq",
+        action="store_true",
+        help="Allow intents when market snapshot sequence is missing from ws-state",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--require-metar-snapshot-sha",
+        action="store_true",
+        help="Require METAR raw snapshot SHA in intent evidence",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--allow-live-orders",
+        action="store_true",
+        help="Allow live order writes (still subject to existing micro-execute safety gates)",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--intents-only",
+        action="store_true",
+        help="Build intents and bridge plans only; skip micro-execution",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--planning-bankroll",
+        type=float,
+        default=40.0,
+        help="Planning bankroll forwarded to micro-execute",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--daily-risk-cap",
+        type=float,
+        default=3.0,
+        help="Daily risk cap forwarded to micro-execute",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--cancel-resting-immediately",
+        action="store_true",
+        help="Forwarded to micro-execute cancel behavior",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--resting-hold-seconds",
+        type=float,
+        default=0.0,
+        help="Forwarded to micro-execute resting hold duration",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--max-live-submissions-per-day",
+        type=int,
+        default=3,
+        help="Forwarded live submission cap",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--max-live-cost-per-day-dollars",
+        type=float,
+        default=3.0,
+        help="Forwarded live cost cap",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--enforce-trade-gate",
+        action="store_true",
+        help="Enable micro-execute trade gate checks",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--enforce-ws-state-authority",
+        action="store_true",
+        help="Enable micro-execute websocket state authority gate",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--ws-state-max-age-seconds",
+        type=float,
+        default=30.0,
+        help="Maximum websocket state staleness before gate blocks",
+    )
+    kalshi_temperature_trader.add_argument("--output-dir", default="outputs", help="Output directory")
 
     polymarket_market_ingest = subparsers.add_parser(
         "polymarket-market-ingest",
@@ -4841,6 +5020,41 @@ def main() -> None:
             specs_csv=args.specs_csv,
             cache_url=args.cache_url,
             timeout_seconds=args.timeout_seconds,
+        )
+    elif args.command == "kalshi-temperature-trader":
+        summary = run_kalshi_temperature_trader(
+            env_file=args.env_file,
+            output_dir=args.output_dir,
+            specs_csv=args.specs_csv,
+            constraint_csv=args.constraint_csv,
+            metar_summary_json=args.metar_summary_json,
+            metar_state_json=args.metar_state_json,
+            ws_state_json=args.ws_state_json,
+            policy_version=args.policy_version,
+            contracts_per_order=args.contracts_per_order,
+            max_orders=args.max_orders,
+            max_markets=args.max_markets,
+            timeout_seconds=args.timeout_seconds,
+            allow_live_orders=args.allow_live_orders,
+            intents_only=args.intents_only,
+            min_settlement_confidence=args.min_settlement_confidence,
+            max_metar_age_minutes=args.max_metar_age_minutes,
+            min_hours_to_close=args.min_hours_to_close,
+            max_hours_to_close=args.max_hours_to_close,
+            max_intents_per_underlying=args.max_intents_per_underlying,
+            yes_max_entry_price_dollars=args.yes_max_entry_price,
+            no_max_entry_price_dollars=args.no_max_entry_price,
+            require_market_snapshot_seq=not args.disable_require_market_snapshot_seq,
+            require_metar_snapshot_sha=args.require_metar_snapshot_sha,
+            planning_bankroll_dollars=args.planning_bankroll,
+            daily_risk_cap_dollars=args.daily_risk_cap,
+            cancel_resting_immediately=args.cancel_resting_immediately,
+            resting_hold_seconds=args.resting_hold_seconds,
+            max_live_submissions_per_day=args.max_live_submissions_per_day,
+            max_live_cost_per_day_dollars=args.max_live_cost_per_day_dollars,
+            enforce_trade_gate=args.enforce_trade_gate,
+            enforce_ws_state_authority=args.enforce_ws_state_authority,
+            ws_state_max_age_seconds=args.ws_state_max_age_seconds,
         )
     elif args.command == "polymarket-market-ingest":
         summary = run_polymarket_market_data_ingest(
