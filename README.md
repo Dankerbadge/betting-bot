@@ -358,6 +358,44 @@ Optional controls:
 - `BETBOT_DISABLE_DNS_RECOVERY=1` disables recovery fallback.
 - `BETBOT_DNS_RECOVERY_ALL_HOSTS=1` enables recovery fallback for every hostname (not just supported trading/data hosts).
 
+## Automation Key + DNS Preflight
+
+Use `scripts/automation_preflight.py` to hard-block automation runs when required keys are missing/placeholder or critical hosts fail DNS.
+
+Examples:
+
+```bash
+python3 scripts/automation_preflight.py --profile hourly --env-file data/research/account_onboarding.local.env
+python3 scripts/automation_preflight.py --profile monthly --env-file data/research/account_onboarding.local.env
+python3 scripts/automation_preflight.py --profile supabase_sync --secrets-file "$HOME/.codex/secrets/betting-bot-supabase.env"
+```
+
+Secret + host reference map:
+
+- `AUTOMATION_SECRETS_DNS_REFERENCE.md`
+
+Automation prompt templates:
+
+- `scripts/codex_hourly_alpha_automation_prompt.txt`
+- `scripts/codex_monthly_climate_automation_prompt.txt`
+- `scripts/codex_paper_live_db_sync_automation_prompt.txt`
+
+### Launchd Runtime Path Repair
+
+macOS launchd can fail with `Operation not permitted` when jobs execute directly from `~/Documents`.
+Install a runtime mirror under `~/betting-bot-runtime` and re-point the hourly LaunchAgent:
+
+```bash
+bash scripts/install_hourly_launchd_runtime.sh
+```
+
+This command:
+
+- syncs the repo into `~/betting-bot-runtime` (excluding large transient folders),
+- rewrites runtime env path references (including Kalshi key path),
+- installs `~/Library/LaunchAgents/com.openai.codex.betbot.hourly.plist`,
+- bootstraps and kickstarts the hourly launchd job.
+
 ## Kalshi Autopilot And Watchdog
 
 Use `kalshi-autopilot` for a single guarded execution pass: DNS/smoke/websocket preflight gates run first, automatic self-heal retries remediate and retry in-loop, and only persistent failures force dry-run.

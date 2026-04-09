@@ -22,7 +22,7 @@ export function readDashboardEnv(): DashboardEnv {
     supabaseUrl: required("OPSBOT_SUPABASE_URL"),
     supabaseAnonKey: required("OPSBOT_SUPABASE_ANON_KEY"),
     projectRef: required("OPSBOT_SUPABASE_PROJECT_REF"),
-    forbiddenHint: (process.env.OPSBOT_FORBIDDEN_PROJECT_HINT ?? "zenith").trim(),
+    forbiddenHint: (process.env.OPSBOT_FORBIDDEN_PROJECT_HINT ?? "legacy_external_project").trim(),
   };
 
   if (env.forbiddenHint.length > 0) {

@@ -1,0 +1,16 @@
+Run `./scripts/paper_live_db_sync.sh` once from the repository root.
+
+After it finishes:
+1. Read the run summary JSON printed by the script (`/tmp/paper_live_chain_db_sync_latest.json` by default).
+2. Read preflight output when present (`supabase_preflight.json` in the run dir).
+3. Open one inbox item summarizing:
+- replication state,
+- preflight status and first actionable blocker (`errors[0]` when available),
+- ingest1/ingest2 success and return-code sequence,
+- idempotency delta (`run2_delta_all_zero`),
+- first concrete remediation action.
+
+Safety constraints:
+- Do not change Supabase keys in-place.
+- Treat any preflight failure as P0 and stop.
+- Do not report DNS failure unless preflight summary status is not `ready`.

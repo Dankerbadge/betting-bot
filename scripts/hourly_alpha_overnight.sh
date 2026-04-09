@@ -405,6 +405,81 @@ cleanup_lock() {
 trap cleanup_lock EXIT INT TERM
 printf '{"pid":%d,"started_at_utc":"%s"}\n' "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$LOCK_DIR/owner.json"
 
+PREFLIGHT_JSON="$RUN_ROOT/hourly_automation_preflight_latest.json"
+PREFLIGHT_STDOUT="$RUN_ROOT/hourly_automation_preflight.stdout.log"
+PREFLIGHT_STDERR="$RUN_ROOT/hourly_automation_preflight.stderr.log"
+set +e
+python3 "$SCRIPT_DIR/automation_preflight.py" \
+  --profile hourly \
+  --repo-root "$REPO_ROOT" \
+  --env-file "$BETBOT_ENV_FILE" \
+  --output-json "$PREFLIGHT_JSON" \
+  > "$PREFLIGHT_STDOUT" \
+  2> "$PREFLIGHT_STDERR"
+preflight_rc=$?
+set -e
+if [[ "$preflight_rc" -ne 0 ]]; then
+  python3 - <<'PY'
+from __future__ import annotations
+
+from datetime import datetime, timezone
+import json
+import os
+from pathlib import Path
+
+run_started_dt = datetime.now(timezone.utc)
+captured_at = run_started_dt.isoformat()
+output_dir = Path(os.environ["BETBOT_OUTPUT_DIR"])
+run_root = output_dir / "overnight_alpha"
+preflight_path = run_root / "hourly_automation_preflight_latest.json"
+preflight_payload: dict[str, object] = {}
+if preflight_path.exists():
+    try:
+        payload = json.loads(preflight_path.read_text(encoding="utf-8"))
+        if isinstance(payload, dict):
+            preflight_payload = payload
+    except Exception:
+        preflight_payload = {}
+
+report = {
+    "run_id": f"hourly_alpha_overnight::{run_started_dt.strftime('%Y%m%d_%H%M%S_%f')[:-3]}",
+    "run_started_at_utc": captured_at,
+    "run_finished_at_utc": captured_at,
+    "run_stamp_utc": run_started_dt.strftime("%Y%m%d_%H%M%S"),
+    "mode": "research_dry_run_only",
+    "overall_status": "failed_preflight",
+    "pipeline_ready": False,
+    "live_ready": False,
+    "live_blockers": ["automation_preflight_failed"],
+    "steps": [
+        {
+            "name": "automation_preflight",
+            "status": "blocked",
+            "ok": False,
+            "output_file": str(preflight_path),
+            "errors": preflight_payload.get("errors", []),
+        }
+    ],
+    "automation_preflight_status": preflight_payload.get("status"),
+    "automation_preflight_errors": preflight_payload.get("errors", []),
+    "automation_preflight_output_file": str(preflight_path),
+}
+(run_root / "last_preflight_failure.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+(output_dir / "overnight_alpha_latest.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+print(
+    json.dumps(
+        {
+            "status": "failed_preflight",
+            "latest_report": str(output_dir / "overnight_alpha_latest.json"),
+            "preflight_file": str(preflight_path),
+        },
+        indent=2,
+    )
+)
+PY
+  exit 1
+fi
+
 cd "$REPO_ROOT"
 
 python3 - <<'PY'
@@ -9680,6 +9755,15 @@ def main() -> int:
         live_blockers.append("daily_weather_recovery_failure_burst")
         if str(daily_weather_recovery_failure_kind or "").strip().lower().startswith("capture_upstream_error"):
             live_blockers.append("daily_weather_recovery_upstream_error_burst")
+
+    # In paper simulation mode we should not block readiness on real-cash funding gates.
+    paper_simulation_mode = bool(paper_live_enabled) and not bool(
+        isinstance(prior_trader_step, dict) and prior_trader_step.get("allow_live_orders_effective")
+    )
+    if paper_simulation_mode:
+        funding_only_blockers = {"balance_nonpositive", "prior_trade_gate_needs_funding"}
+        live_blockers = [value for value in live_blockers if str(value or "").strip() not in funding_only_blockers]
+
     live_blockers = _dedupe(live_blockers)
     pipeline_ready = overall_status == "ok"
     live_ready = pipeline_ready and not live_blockers

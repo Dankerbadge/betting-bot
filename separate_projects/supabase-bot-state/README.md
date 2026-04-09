@@ -1,7 +1,7 @@
 # Supabase Bot State (Separate Project)
 
 This project defines a **new Supabase schema** for bot persistence and reporting.
-It is intentionally separate from Zenith.
+It is intentionally separate from legacy external project.
 
 ## What It Creates
 
@@ -95,7 +95,7 @@ python3 separate_projects/supabase-bot-state/scripts/acceptance_gate.py \
 
 What this verifies:
 
-- isolation guardrails (non-Zenith target)
+- isolation guardrails (non-forbidden-target target)
 - schema objects and view readability
 - dashboard credential write probe is blocked
 - ingest idempotency by running ingestion twice
@@ -109,4 +109,4 @@ Useful options:
 
 ## Isolation Safety
 
-The ingestion script fails fast if `OPSBOT_SUPABASE_URL` or `OPSBOT_SUPABASE_PROJECT_REF` contains `zenith` (or your configured forbidden hint).
+The ingestion script fails fast if `OPSBOT_SUPABASE_URL` or `OPSBOT_SUPABASE_PROJECT_REF` contains `legacy_external_project` (or your configured forbidden hint).

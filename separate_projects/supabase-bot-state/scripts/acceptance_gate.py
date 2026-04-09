@@ -2,7 +2,7 @@
 """Acceptance checks for the separate Supabase + dashboard stack.
 
 Checks implemented:
-- Isolation guardrail (non-Zenith target)
+- Isolation guardrail (non-forbidden-target target)
 - Schema/read availability checks
 - Dashboard credential read + write-denial probe
 - Ingest idempotency (run ingest twice)
@@ -132,7 +132,7 @@ def _rest_url(base_url: str, table_or_view: str, query: dict[str, str] | None = 
     return f"{path}?{encoded}"
 
 
-def _assert_non_zenith(*, supabase_url: str, project_ref: str, forbidden_hint: str) -> None:
+def _assert_not_forbidden_target(*, supabase_url: str, project_ref: str, forbidden_hint: str) -> None:
     hint = forbidden_hint.strip().lower()
     if not hint:
         return
@@ -299,7 +299,7 @@ def _extract_balance_age_seconds(overnight_row: dict[str, Any] | None) -> float 
 
 
 def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Acceptance gate for separate Supabase/Vercel stack")
+    parser = argparse.ArgumentParser(description="Acceptance gate for isolated Supabase/Vercel stack")
     parser.add_argument("--outputs-dir", default="outputs")
     parser.add_argument(
         "--ingest-script",
@@ -319,7 +319,10 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
         "--project-ref",
         default=os.getenv("OPSBOT_SUPABASE_PROJECT_REF", "") or _derive_project_ref_from_url(os.getenv("OPSBOT_SUPABASE_URL", "")),
     )
-    parser.add_argument("--forbidden-hint", default=os.getenv("OPSBOT_FORBIDDEN_PROJECT_HINT", "zenith"))
+    parser.add_argument(
+        "--forbidden-hint",
+        default=os.getenv("OPSBOT_FORBIDDEN_PROJECT_HINT", "legacy_external_project"),
+    )
     parser.add_argument("--timeout-seconds", type=float, default=20.0)
     parser.add_argument("--batch-size", type=int, default=200)
     parser.add_argument("--max-execution-events", type=int, default=5000)
@@ -369,17 +372,17 @@ def main(argv: Iterable[str] | None = None) -> int:
         return 2
 
     try:
-        _assert_non_zenith(
+        _assert_not_forbidden_target(
             supabase_url=args.supabase_url,
             project_ref=project_ref,
             forbidden_hint=args.forbidden_hint,
         )
-        _assert_non_zenith(
+        _assert_not_forbidden_target(
             supabase_url=dashboard_url,
             project_ref=project_ref,
             forbidden_hint=args.forbidden_hint,
         )
-        state.pass_check("isolation guardrail passed (non-Zenith target)")
+        state.pass_check("isolation guardrail passed (forbidden-target check)")
     except RuntimeError as exc:
         state.fail_check(str(exc))
         summary = {

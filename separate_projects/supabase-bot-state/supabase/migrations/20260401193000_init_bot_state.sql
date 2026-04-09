@@ -1,5 +1,5 @@
 -- Separate project migration for bot state + dashboard reads.
--- This schema is intentionally non-Zenith.
+-- This schema is intentionally non-forbidden-target.
 
 create schema if not exists bot_ops;
 

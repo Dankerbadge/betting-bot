@@ -45,6 +45,9 @@ from betbot.kalshi_nonsports_research_queue import run_kalshi_nonsports_research
 from betbot.kalshi_nonsports_signals import run_kalshi_nonsports_signals
 from betbot.kalshi_nonsports_scan import run_kalshi_nonsports_scan
 from betbot.kalshi_nonsports_thresholds import run_kalshi_nonsports_thresholds
+from betbot.kalshi_temperature_constraints import run_kalshi_temperature_constraint_scan
+from betbot.kalshi_temperature_contract_specs import run_kalshi_temperature_contract_specs
+from betbot.kalshi_temperature_metar_ingest import run_kalshi_temperature_metar_ingest
 from betbot.kalshi_weather_catalog import run_kalshi_weather_catalog
 from betbot.kalshi_weather_priors import run_kalshi_weather_priors, run_kalshi_weather_station_history_prewarm
 from betbot.kalshi_climate_availability import run_kalshi_climate_realtime_router
@@ -57,6 +60,7 @@ from betbot.live_smoke import run_live_smoke
 from betbot.odds_audit import run_odds_audit
 from betbot.onboarding import run_onboarding_check
 from betbot.paper import run_paper
+from betbot.polymarket_market_ingest import run_polymarket_market_data_ingest
 from betbot.probability_path import (
     eventual_success_probability,
     hitting_probability,
@@ -1372,6 +1376,126 @@ def build_parser() -> argparse.ArgumentParser:
         help="Maximum unique station/day keys to prewarm per run",
     )
     kalshi_weather_prewarm.add_argument("--output-dir", default="outputs", help="Output directory")
+
+    kalshi_temperature_contract_specs = subparsers.add_parser(
+        "kalshi-temperature-contract-specs",
+        help="Build a canonical contract-spec snapshot for Kalshi temperature markets from live event/market metadata",
+    )
+    kalshi_temperature_contract_specs.add_argument(
+        "--env-file",
+        default=".env",
+        help="Env-style file used to resolve Kalshi environment and credentials",
+    )
+    kalshi_temperature_contract_specs.add_argument(
+        "--timeout-seconds",
+        type=float,
+        default=15.0,
+        help="HTTP timeout per Kalshi events request",
+    )
+    kalshi_temperature_contract_specs.add_argument(
+        "--page-limit",
+        type=int,
+        default=200,
+        help="Kalshi events page size",
+    )
+    kalshi_temperature_contract_specs.add_argument(
+        "--max-pages",
+        type=int,
+        default=5,
+        help="Maximum events pages to scan per run",
+    )
+    kalshi_temperature_contract_specs.add_argument(
+        "--top-n",
+        type=int,
+        default=20,
+        help="Number of top contract specs embedded in the summary",
+    )
+    kalshi_temperature_contract_specs.add_argument("--output-dir", default="outputs", help="Output directory")
+
+    kalshi_temperature_constraint_scan = subparsers.add_parser(
+        "kalshi-temperature-constraint-scan",
+        help="Scan Kalshi temperature contract specs against intraday station observations for hard constraint opportunities",
+    )
+    kalshi_temperature_constraint_scan.add_argument(
+        "--specs-csv",
+        default=None,
+        help="Optional explicit kalshi_temperature_contract_specs CSV path (latest in output-dir used when omitted)",
+    )
+    kalshi_temperature_constraint_scan.add_argument(
+        "--timeout-seconds",
+        type=float,
+        default=12.0,
+        help="HTTP timeout per station observations request",
+    )
+    kalshi_temperature_constraint_scan.add_argument(
+        "--max-markets",
+        type=int,
+        default=100,
+        help="Maximum markets to evaluate per run",
+    )
+    kalshi_temperature_constraint_scan.add_argument("--output-dir", default="outputs", help="Output directory")
+
+    kalshi_temperature_metar_ingest = subparsers.add_parser(
+        "kalshi-temperature-metar-ingest",
+        help="Ingest AviationWeather METAR cache files and update per-station local-day maxima for Kalshi temperature workflows",
+    )
+    kalshi_temperature_metar_ingest.add_argument(
+        "--specs-csv",
+        default=None,
+        help="Optional explicit kalshi_temperature_contract_specs CSV path used for station-timezone mapping",
+    )
+    kalshi_temperature_metar_ingest.add_argument(
+        "--cache-url",
+        default="https://aviationweather.gov/data/cache/metars.cache.csv.gz",
+        help="METAR cache CSV GZ URL",
+    )
+    kalshi_temperature_metar_ingest.add_argument(
+        "--timeout-seconds",
+        type=float,
+        default=20.0,
+        help="HTTP timeout per METAR cache request",
+    )
+    kalshi_temperature_metar_ingest.add_argument("--output-dir", default="outputs", help="Output directory")
+
+    polymarket_market_ingest = subparsers.add_parser(
+        "polymarket-market-ingest",
+        help="Optional market-data ingest adapter for Polymarket temperature markets (no execution)",
+    )
+    polymarket_market_ingest.add_argument(
+        "--max-markets",
+        type=int,
+        default=500,
+        help="Maximum normalized markets to keep per run",
+    )
+    polymarket_market_ingest.add_argument(
+        "--page-size",
+        type=int,
+        default=200,
+        help="Gamma API page size per request",
+    )
+    polymarket_market_ingest.add_argument(
+        "--max-pages",
+        type=int,
+        default=10,
+        help="Maximum pages to scan per run",
+    )
+    polymarket_market_ingest.add_argument(
+        "--gamma-base-url",
+        default="https://gamma-api.polymarket.com",
+        help="Polymarket Gamma API base URL",
+    )
+    polymarket_market_ingest.add_argument(
+        "--timeout-seconds",
+        type=float,
+        default=15.0,
+        help="HTTP timeout per Gamma request",
+    )
+    polymarket_market_ingest.add_argument(
+        "--include-inactive",
+        action="store_true",
+        help="Include inactive/closed markets when fetching pages",
+    )
+    polymarket_market_ingest.add_argument("--output-dir", default="outputs", help="Output directory")
 
     kalshi_focus_dossier = subparsers.add_parser(
         "kalshi-focus-dossier",
@@ -4694,6 +4818,39 @@ def main() -> None:
             station_history_cache_max_age_hours=args.station_history_cache_max_age_hours,
             timeout_seconds=args.timeout_seconds,
             max_station_day_keys=args.max_station_day_keys,
+        )
+    elif args.command == "kalshi-temperature-contract-specs":
+        summary = run_kalshi_temperature_contract_specs(
+            env_file=args.env_file,
+            output_dir=args.output_dir,
+            timeout_seconds=args.timeout_seconds,
+            page_limit=args.page_limit,
+            max_pages=args.max_pages,
+            top_n=args.top_n,
+        )
+    elif args.command == "kalshi-temperature-constraint-scan":
+        summary = run_kalshi_temperature_constraint_scan(
+            specs_csv=args.specs_csv,
+            output_dir=args.output_dir,
+            timeout_seconds=args.timeout_seconds,
+            max_markets=args.max_markets,
+        )
+    elif args.command == "kalshi-temperature-metar-ingest":
+        summary = run_kalshi_temperature_metar_ingest(
+            output_dir=args.output_dir,
+            specs_csv=args.specs_csv,
+            cache_url=args.cache_url,
+            timeout_seconds=args.timeout_seconds,
+        )
+    elif args.command == "polymarket-market-ingest":
+        summary = run_polymarket_market_data_ingest(
+            output_dir=args.output_dir,
+            max_markets=args.max_markets,
+            page_size=args.page_size,
+            max_pages=args.max_pages,
+            only_active=not args.include_inactive,
+            gamma_base_url=args.gamma_base_url,
+            timeout_seconds=args.timeout_seconds,
         )
     elif args.command == "kalshi-focus-dossier":
         summary = run_kalshi_focus_dossier(

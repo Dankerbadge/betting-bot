@@ -2,7 +2,7 @@
 """Ingest local bot artifacts into a separate Supabase project.
 
 This script intentionally uses OPSBOT_* environment variables and refuses to run
-if the configured project appears to reference Zenith.
+if the configured project appears to reference legacy external project.
 """
 
 from __future__ import annotations
@@ -86,7 +86,7 @@ def _chunked(items: list[dict[str, Any]], size: int) -> Iterator[list[dict[str, 
         yield items[idx : idx + size]
 
 
-def _assert_non_zenith(*, supabase_url: str, project_ref: str, forbidden_hint: str) -> None:
+def _assert_not_forbidden_target(*, supabase_url: str, project_ref: str, forbidden_hint: str) -> None:
     hint = forbidden_hint.strip().lower()
     if not hint:
         return
@@ -746,7 +746,7 @@ def _upsert_table(
 
 
 def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Ingest bot outputs into separate Supabase project")
+    parser = argparse.ArgumentParser(description="Ingest bot outputs into isolated Supabase project")
     parser.add_argument("--outputs-dir", default="outputs", help="Path to local outputs directory")
     parser.add_argument("--dry-run", action="store_true", help="Print counts without network writes")
     parser.add_argument("--batch-size", type=int, default=200, help="Rows per upsert request")
@@ -789,7 +789,7 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--forbidden-hint",
-        default=os.getenv("OPSBOT_FORBIDDEN_PROJECT_HINT", "zenith"),
+        default=os.getenv("OPSBOT_FORBIDDEN_PROJECT_HINT", "legacy_external_project"),
     )
     return parser.parse_args(argv)
 
@@ -802,7 +802,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         return 2
 
     try:
-        _assert_non_zenith(
+        _assert_not_forbidden_target(
             supabase_url=args.supabase_url,
             project_ref=args.project_ref,
             forbidden_hint=args.forbidden_hint,

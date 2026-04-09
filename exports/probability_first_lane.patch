@@ -1,0 +1,767 @@
+diff --git a/betbot/cli.py b/betbot/cli.py
+index fe8a624..2018291 100644
+--- a/betbot/cli.py
++++ b/betbot/cli.py
+@@ -1413,6 +1413,18 @@ def build_parser() -> argparse.ArgumentParser:
+         default=0.0,
+         help="Minimum maker-entry edge net estimated fees required to include a prior-backed plan",
+     )
++    kalshi_micro_prior_plan.add_argument(
++        "--selection-lane",
++        choices=["maker_edge", "probability_first"],
++        default="maker_edge",
++        help="Plan ranking lane: default maker-edge lane, or probability-first compounding lane",
++    )
++    kalshi_micro_prior_plan.add_argument(
++        "--min-selected-fair-probability",
++        type=float,
++        default=None,
++        help="Optional minimum selected-side fair probability gate (0-1)",
++    )
+     kalshi_micro_prior_plan.add_argument(
+         "--max-entry-price",
+         type=float,
+@@ -1512,6 +1524,24 @@ def build_parser() -> argparse.ArgumentParser:
+         default=0.0,
+         help="Minimum maker-entry edge net estimated fees required to include a prior-backed plan",
+     )
++    kalshi_micro_prior_execute.add_argument(
++        "--selection-lane",
++        choices=["maker_edge", "probability_first"],
++        default="maker_edge",
++        help="Plan ranking lane: default maker-edge lane, or probability-first compounding lane",
++    )
++    kalshi_micro_prior_execute.add_argument(
++        "--min-selected-fair-probability",
++        type=float,
++        default=None,
++        help="Optional minimum selected-side fair probability gate for planning (0-1)",
++    )
++    kalshi_micro_prior_execute.add_argument(
++        "--min-live-selected-fair-probability",
++        type=float,
++        default=None,
++        help="Optional minimum selected-side fair probability gate for live trade admission (0-1)",
++    )
+     kalshi_micro_prior_execute.add_argument(
+         "--max-entry-price",
+         type=float,
+@@ -4630,6 +4660,8 @@ def main() -> None:
+             max_orders=args.max_orders,
+             min_maker_edge=args.min_maker_edge,
+             min_maker_edge_net_fees=args.min_maker_edge_net_fees,
++            selection_lane=args.selection_lane,
++            min_selected_fair_probability=args.min_selected_fair_probability,
+             max_entry_price_dollars=args.max_entry_price,
+             canonical_mapping_csv=args.canonical_mapping_csv,
+             canonical_threshold_csv=args.canonical_threshold_csv,
+@@ -4666,6 +4698,8 @@ def main() -> None:
+             max_orders=args.max_orders,
+             min_maker_edge=args.min_maker_edge,
+             min_maker_edge_net_fees=args.min_maker_edge_net_fees,
++            selection_lane=args.selection_lane,
++            min_selected_fair_probability=args.min_selected_fair_probability,
+             max_entry_price_dollars=args.max_entry_price,
+             canonical_mapping_csv=args.canonical_mapping_csv,
+             canonical_threshold_csv=args.canonical_threshold_csv,
+@@ -4678,6 +4712,7 @@ def main() -> None:
+             max_live_cost_per_day_dollars=args.max_live_cost_per_day,
+             auto_cancel_duplicate_open_orders=not args.disable_auto_duplicate_janitor,
+             min_live_maker_edge_net_fees=args.min_live_maker_edge_net_fees,
++            min_live_selected_fair_probability=args.min_live_selected_fair_probability,
+             timeout_seconds=args.timeout_seconds,
+             ledger_csv=args.ledger_csv,
+             book_db_path=args.book_db_path,
+diff --git a/betbot/kalshi_micro_prior_execute.py b/betbot/kalshi_micro_prior_execute.py
+index c888329..de05aa3 100644
+--- a/betbot/kalshi_micro_prior_execute.py
++++ b/betbot/kalshi_micro_prior_execute.py
+@@ -722,6 +722,7 @@ def build_prior_trade_gate_decision(
+     open_positions_count: int,
+     min_live_maker_edge: float,
+     min_live_maker_edge_net_fees: float,
++    min_live_selected_fair_probability: float | None = None,
+     allowed_canonical_niches: tuple[str, ...] | None = None,
+     top_market_contract_family: str | None = None,
+     top_market_weather_history_status: str | None = None,
+@@ -735,6 +736,12 @@ def build_prior_trade_gate_decision(
+     require_daily_weather_board_coverage: bool = False,
+     require_daily_weather_board_freshness: bool = False,
+ ) -> dict[str, Any]:
++    min_live_selected_fair_probability_effective = _as_float(min_live_selected_fair_probability)
++    if isinstance(min_live_selected_fair_probability_effective, float) and (
++        min_live_selected_fair_probability_effective < 0.0
++        or min_live_selected_fair_probability_effective > 1.0
++    ):
++        raise ValueError("min_live_selected_fair_probability must be between 0 and 1")
+     live_submissions_today = int(ledger_summary.get("live_submissions_today") or 0)
+     live_submitted_cost_today = float(ledger_summary.get("live_submitted_cost_today") or 0.0)
+     live_submissions_remaining_today = int(
+@@ -778,6 +785,9 @@ def build_prior_trade_gate_decision(
+     top_market_canonical_policy_applied = plan_summary.get("top_market_canonical_policy_applied")
+     top_market_maker_entry_edge = plan_summary.get("top_market_maker_entry_edge")
+     top_market_maker_entry_edge_net_fees = plan_summary.get("top_market_maker_entry_edge_net_fees")
++    top_market_fair_probability = _as_float(plan_summary.get("top_market_fair_probability"))
++    if top_market_fair_probability is None:
++        top_market_fair_probability = _as_float(plan_summary.get("top_market_fair_probability_conservative"))
+     funding_gap_dollars = plan_summary.get("funding_gap_dollars")
+     actual_live_balance_dollars = plan_summary.get("actual_live_balance_dollars")
+     daily_weather_markets_total = int((daily_weather_board_summary or {}).get("daily_weather_markets_total") or 0)
+@@ -838,6 +848,17 @@ def build_prior_trade_gate_decision(
+             blockers.append(
+                 f"Top prior-backed maker edge net fees is below the live minimum of {min_live_maker_edge_net_fees:.3f}."
+             )
++        if (
++            isinstance(min_live_selected_fair_probability_effective, float)
++            and (
++                not isinstance(top_market_fair_probability, float)
++                or top_market_fair_probability < min_live_selected_fair_probability_effective
++            )
++        ):
++            blockers.append(
++                "Top prior-backed selected fair probability is below the live minimum of "
++                f"{min_live_selected_fair_probability_effective:.3f}."
++            )
+     normalized_allowed_niches = (
+         {value.strip().lower() for value in allowed_canonical_niches if value.strip()}
+         if allowed_canonical_niches
+@@ -939,6 +960,14 @@ def build_prior_trade_gate_decision(
+             gate_status = "no_candidates"
+         elif positive_maker_entry_markets <= 0:
+             gate_status = "no_edge"
++        elif (
++            isinstance(min_live_selected_fair_probability_effective, float)
++            and (
++                not isinstance(top_market_fair_probability, float)
++                or top_market_fair_probability < min_live_selected_fair_probability_effective
++            )
++        ):
++            gate_status = "probability_too_low"
+         else:
+             gate_status = "edge_too_small"
+ 
+@@ -1000,6 +1029,7 @@ def build_prior_trade_gate_decision(
+         "top_market_maker_entry_price_dollars": plan_summary.get("top_market_maker_entry_price_dollars"),
+         "top_market_maker_entry_edge": top_market_maker_entry_edge,
+         "top_market_maker_entry_edge_net_fees": top_market_maker_entry_edge_net_fees,
++        "min_live_selected_fair_probability": min_live_selected_fair_probability_effective,
+         "top_market_estimated_entry_cost_dollars": plan_summary.get("top_market_estimated_entry_cost_dollars"),
+         "top_market_estimated_entry_fee_dollars": plan_summary.get("top_market_estimated_entry_fee_dollars"),
+         "top_market_expected_value_dollars": plan_summary.get("top_market_expected_value_dollars"),
+@@ -1013,7 +1043,7 @@ def build_prior_trade_gate_decision(
+         "top_market_estimated_max_profit_dollars": plan_summary.get("top_market_estimated_max_profit_dollars"),
+         "top_market_estimated_max_loss_dollars": plan_summary.get("top_market_estimated_max_loss_dollars"),
+         "top_market_max_profit_roi_on_cost": plan_summary.get("top_market_max_profit_roi_on_cost"),
+-        "top_market_fair_probability": plan_summary.get("top_market_fair_probability"),
++        "top_market_fair_probability": top_market_fair_probability,
+         "top_market_fair_probability_conservative": plan_summary.get("top_market_fair_probability_conservative"),
+         "top_market_confidence": plan_summary.get("top_market_confidence"),
+         "top_market_thesis": plan_summary.get("top_market_thesis"),
+@@ -1032,6 +1062,8 @@ def run_kalshi_micro_prior_execute(
+     max_orders: int = 3,
+     min_maker_edge: float = 0.005,
+     min_maker_edge_net_fees: float = 0.0,
++    selection_lane: str = "maker_edge",
++    min_selected_fair_probability: float | None = None,
+     max_entry_price_dollars: float = 0.99,
+     min_live_entry_price_dollars: float = 0.03,
+     max_live_entry_price_dollars: float = 0.95,
+@@ -1052,6 +1084,7 @@ def run_kalshi_micro_prior_execute(
+     auto_cancel_duplicate_open_orders: bool = True,
+     min_live_maker_edge: float = 0.01,
+     min_live_maker_edge_net_fees: float = 0.0,
++    min_live_selected_fair_probability: float | None = None,
+     include_incentives: bool = False,
+     ledger_csv: str | None = None,
+     book_db_path: str | None = None,
+@@ -1108,6 +1141,14 @@ def run_kalshi_micro_prior_execute(
+         allowed_live_canonical_niches = (
+             LIVE_ALLOWED_CANONICAL_NICHES if (allow_live_orders or enforce_canonical_dataset_effective) else None
+         )
++    effective_min_live_selected_fair_probability = _as_float(min_live_selected_fair_probability)
++    if effective_min_live_selected_fair_probability is None:
++        effective_min_live_selected_fair_probability = _as_float(min_selected_fair_probability)
++    if isinstance(effective_min_live_selected_fair_probability, float) and (
++        effective_min_live_selected_fair_probability < 0.0
++        or effective_min_live_selected_fair_probability > 1.0
++    ):
++        raise ValueError("min_live_selected_fair_probability must be between 0 and 1")
+     enforce_live_quality_filters = bool(allow_live_orders or enforce_canonical_dataset_effective)
+     effective_min_entry_price_dollars = (
+         max(0.0, float(min_live_entry_price_dollars)) if enforce_live_quality_filters else 0.0
+@@ -1167,6 +1208,8 @@ def run_kalshi_micro_prior_execute(
+         max_orders=max_orders,
+         min_maker_edge=min_maker_edge,
+         min_maker_edge_net_fees=min_maker_edge_net_fees,
++        selection_lane=selection_lane,
++        min_selected_fair_probability=min_selected_fair_probability,
+         min_entry_price_dollars=effective_min_entry_price_dollars,
+         max_entry_price_dollars=effective_max_entry_price_dollars,
+         routine_max_hours_to_close=effective_routine_max_hours_to_close,
+@@ -1257,6 +1300,7 @@ def run_kalshi_micro_prior_execute(
+         open_positions_count=open_positions_count,
+         min_live_maker_edge=min_live_maker_edge,
+         min_live_maker_edge_net_fees=min_live_maker_edge_net_fees,
++        min_live_selected_fair_probability=effective_min_live_selected_fair_probability,
+         allowed_canonical_niches=allowed_live_canonical_niches,
+         top_market_contract_family=top_market_contract_family or None,
+         top_market_weather_history_status=top_market_weather_history_status,
+@@ -1367,6 +1411,9 @@ def run_kalshi_micro_prior_execute(
+         "env_file": env_file,
+         "allow_live_orders_requested": allow_live_orders,
+         "allow_live_orders_effective": effective_allow_live_orders,
++        "selection_lane": str(selection_lane or "").strip().lower() or "maker_edge",
++        "min_selected_fair_probability": _as_float(min_selected_fair_probability),
++        "min_live_selected_fair_probability": effective_min_live_selected_fair_probability,
+         "enforce_live_quality_filters": enforce_live_quality_filters,
+         "effective_min_entry_price_dollars": effective_min_entry_price_dollars,
+         "effective_max_entry_price_dollars": effective_max_entry_price_dollars,
+diff --git a/betbot/kalshi_micro_prior_plan.py b/betbot/kalshi_micro_prior_plan.py
+index 07c73a0..527f26b 100644
+--- a/betbot/kalshi_micro_prior_plan.py
++++ b/betbot/kalshi_micro_prior_plan.py
+@@ -27,6 +27,7 @@ LIVE_ALLOWED_CANONICAL_NICHES = ("macro_release", "weather_energy_transmission",
+ _DAILY_WEATHER_CONTRACT_FAMILIES = {"daily_rain", "daily_temperature", "daily_snow"}
+ _PRODUCTION_DAILY_WEATHER_CONTRACT_FAMILIES = {"daily_rain", "daily_temperature"}
+ _DAILY_WEATHER_QUOTE_STALE_MAX_AGE_SECONDS = 900.0
++_MICRO_PRIOR_SELECTION_LANES = {"maker_edge", "probability_first"}
+ 
+ 
+ def _latest_market_rows(history_rows: list[dict[str, str]]) -> dict[str, dict[str, str]]:
+@@ -931,6 +932,28 @@ def _row_canonical_niche(
+     return fallback_niche or None
+ 
+ 
++def _row_selected_side_probability(
++    row: dict[str, Any],
++    side: str,
++    *,
++    conservative: bool,
++) -> float | None:
++    normalized_side = str(side or "").strip().lower()
++    if normalized_side == "yes":
++        keys = ("fair_yes_probability_conservative", "fair_yes_probability_low", "fair_yes_probability")
++    elif normalized_side == "no":
++        keys = ("fair_no_probability_conservative", "fair_no_probability_low", "fair_no_probability")
++    else:
++        return None
++    if not conservative:
++        keys = (keys[-1], keys[0], keys[1])
++    for key in keys:
++        parsed = _as_float(row.get(key))
++        if isinstance(parsed, float):
++            return parsed
++    return None
++
++
+ def build_micro_prior_plans(
+     *,
+     enriched_rows: list[dict[str, Any]],
+@@ -953,6 +976,8 @@ def build_micro_prior_plans(
+     require_canonical_mapping: bool = False,
+     allowed_canonical_niches: set[str] | None = None,
+     require_weather_history_live_ready_for_daily_weather: bool = False,
++    selection_lane: str = "maker_edge",
++    min_selected_fair_probability: float | None = None,
+ ) -> tuple[list[dict[str, Any]], dict[str, int]]:
+     if planning_bankroll_dollars <= 0:
+         raise ValueError("planning_bankroll_dollars must be positive")
+@@ -962,6 +987,20 @@ def build_micro_prior_plans(
+         raise ValueError("contracts_per_order must be positive")
+     if max_orders <= 0:
+         raise ValueError("max_orders must be positive")
++    normalized_selection_lane = str(selection_lane or "maker_edge").strip().lower()
++    if normalized_selection_lane not in _MICRO_PRIOR_SELECTION_LANES:
++        supported = ", ".join(sorted(_MICRO_PRIOR_SELECTION_LANES))
++        raise ValueError(f"selection_lane must be one of: {supported}")
++    if isinstance(min_selected_fair_probability, bool):
++        raise ValueError("min_selected_fair_probability must be numeric between 0 and 1")
++    min_selected_fair_probability_effective = (
++        float(min_selected_fair_probability)
++        if isinstance(min_selected_fair_probability, (int, float))
++        else None
++    )
++    if isinstance(min_selected_fair_probability_effective, float):
++        if min_selected_fair_probability_effective < 0.0 or min_selected_fair_probability_effective > 1.0:
++            raise ValueError("min_selected_fair_probability must be between 0 and 1")
+ 
+     remaining_risk = round(daily_risk_cap_dollars, 4)
+     plans: list[dict[str, Any]] = []
+@@ -986,6 +1025,7 @@ def build_micro_prior_plans(
+         "canonical_per_market_risk_cap": 0,
+         "canonical_release_cluster_risk_cap": 0,
+         "canonical_correlated_risk_cap": 0,
++        "selected_fair_probability_below_min": 0,
+     }
+     release_cluster_spent_dollars: dict[str, float] = {}
+     correlated_group_spent_dollars: dict[str, float] = {}
+@@ -1010,38 +1050,79 @@ def build_micro_prior_plans(
+         )
+         ranked_rows_with_candidates.append((row, conservative_candidate))
+ 
++    def _incentive_bonus_for_row(row: dict[str, Any]) -> float:
++        if not isinstance(incentive_bonus_per_contract_by_ticker, dict):
++            return 0.0
++        return float(incentive_bonus_per_contract_by_ticker.get(str(row.get("market_ticker") or ""), 0.0))
++
++    def _candidate_metric(
++        candidate: dict[str, float | str] | None,
++        key: str,
++        *,
++        default: float = -999.0,
++    ) -> float:
++        if not isinstance(candidate, dict):
++            return default
++        value = candidate.get(key)
++        return float(value) if isinstance(value, (int, float)) else default
++
++    def _candidate_selected_fair_probability(candidate: dict[str, float | str] | None) -> float:
++        fair_probability_conservative = _candidate_metric(candidate, "fair_probability_conservative", default=-999.0)
++        if fair_probability_conservative > -999.0:
++            return fair_probability_conservative
++        return _candidate_metric(candidate, "fair_probability_midpoint", default=-999.0)
++
++    def _maker_edge_rank_key(item: tuple[dict[str, Any], dict[str, float | str] | None]) -> tuple[float, ...]:
++        row, candidate = item
++        maker_edge_conservative = _candidate_metric(candidate, "maker_entry_edge_conservative", default=-999.0)
++        maker_entry_price = _candidate_metric(candidate, "maker_entry_price_dollars", default=-999.0)
++        maker_edge_conservative_per_cost = (
++            maker_edge_conservative / maker_entry_price
++            if maker_edge_conservative > -999.0 and maker_entry_price > 0
++            else -999.0
++        )
++        maker_edge_conservative_per_cost_per_day = -999.0
++        hours_to_close = _as_float(row.get("hours_to_close"))
++        if (
++            maker_edge_conservative_per_cost > -999.0
++            and isinstance(hours_to_close, float)
++            and hours_to_close > 0
++        ):
++            maker_edge_conservative_per_cost_per_day = maker_edge_conservative_per_cost / (hours_to_close / 24.0)
++        maker_edge_conservative_net_fees = _candidate_metric(
++            candidate,
++            "maker_entry_edge_conservative_net_fees",
++            default=-999.0,
++        )
++        if maker_edge_conservative_net_fees > -999.0:
++            maker_edge_conservative_net_fees += _incentive_bonus_for_row(row)
++        return (
++            float(bool(row.get("matched_live_market"))),
++            maker_edge_conservative_net_fees,
++            maker_edge_conservative,
++            maker_edge_conservative_per_cost,
++            maker_edge_conservative_per_cost_per_day,
++        )
++
++    def _probability_first_rank_key(item: tuple[dict[str, Any], dict[str, float | str] | None]) -> tuple[float, ...]:
++        row, candidate = item
++        maker_edge_rank_key = _maker_edge_rank_key(item)
++        return (
++            float(bool(row.get("matched_live_market"))),
++            _candidate_selected_fair_probability(candidate),
++            _candidate_metric(candidate, "fair_probability_midpoint", default=-999.0),
++            maker_edge_rank_key[1],
++            maker_edge_rank_key[2],
++            maker_edge_rank_key[3],
++            maker_edge_rank_key[4],
++        )
++
++    rank_key_fn = _maker_edge_rank_key
++    if normalized_selection_lane == "probability_first":
++        rank_key_fn = _probability_first_rank_key
++
+     ranked_rows_with_candidates.sort(
+-        key=lambda item: (
+-            bool(item[0].get("matched_live_market")),
+-            (
+-                float(item[1]["maker_entry_edge_conservative_net_fees"])
+-                + (
+-                    float(incentive_bonus_per_contract_by_ticker.get(str(item[0].get("market_ticker") or ""), 0.0))
+-                    if isinstance(incentive_bonus_per_contract_by_ticker, dict)
+-                    else 0.0
+-                )
+-            )
+-            if isinstance(item[1], dict)
+-            else -999.0,
+-            float(item[1]["maker_entry_edge_conservative"]) if isinstance(item[1], dict) else -999.0,
+-            (
+-                float(item[1]["maker_entry_edge_conservative"]) / float(item[1]["maker_entry_price_dollars"])
+-                if isinstance(item[1], dict)
+-                and float(item[1]["maker_entry_price_dollars"]) > 0
+-                else -999.0
+-            ),
+-            (
+-                (
+-                    (float(item[1]["maker_entry_edge_conservative"]) / float(item[1]["maker_entry_price_dollars"]))
+-                    / (float(item[0]["hours_to_close"]) / 24.0)
+-                )
+-                if isinstance(item[1], dict)
+-                and float(item[1]["maker_entry_price_dollars"]) > 0
+-                and isinstance(item[0].get("hours_to_close"), (int, float))
+-                and float(item[0]["hours_to_close"]) > 0
+-                else -999.0
+-            ),
+-        ),
++        key=rank_key_fn,
+         reverse=True,
+     )
+ 
+@@ -1089,6 +1170,18 @@ def build_micro_prior_plans(
+         ):
+             skip_counts["missing_maker_side"] += 1
+             continue
++        selected_fair_probability = conservative_candidate.get("fair_probability_conservative")
++        if not isinstance(selected_fair_probability, (int, float)):
++            selected_fair_probability = conservative_candidate.get("fair_probability_midpoint")
++        if (
++            isinstance(min_selected_fair_probability_effective, float)
++            and (
++                not isinstance(selected_fair_probability, (int, float))
++                or float(selected_fair_probability) < min_selected_fair_probability_effective
++            )
++        ):
++            skip_counts["selected_fair_probability_below_min"] += 1
++            continue
+         ticker = str(row.get("market_ticker") or "")
+         canonical_policy, canonical_mapping_match_type, canonical_mapping_match_key = _resolve_canonical_policy_for_ticker(
+             market_ticker=ticker,
+@@ -1363,6 +1456,12 @@ def build_micro_prior_plans(
+                     else ""
+                 ),
+                 "incentive_bonus_per_contract_dollars": round(incentive_bonus_per_contract, 6),
++                "selection_lane": normalized_selection_lane,
++                "selected_fair_probability_minimum": (
++                    round(min_selected_fair_probability_effective, 6)
++                    if isinstance(min_selected_fair_probability_effective, float)
++                    else ""
++                ),
+                 "fair_probability": fair_probability,
+                 "fair_probability_conservative": fair_probability_conservative,
+                 "confidence": row.get("confidence"),
+@@ -1455,6 +1554,8 @@ def _write_plan_csv(path: Path, plans: list[dict[str, Any]]) -> None:
+         "effective_release_cluster_risk_cap_dollars",
+         "effective_same_day_correlated_risk_cap_dollars",
+         "incentive_bonus_per_contract_dollars",
++        "selection_lane",
++        "selected_fair_probability_minimum",
+         "fair_probability",
+         "fair_probability_conservative",
+         "confidence",
+@@ -1507,6 +1608,8 @@ def run_kalshi_micro_prior_plan(
+     max_orders: int = 3,
+     min_maker_edge: float = 0.005,
+     min_maker_edge_net_fees: float = 0.0,
++    selection_lane: str = "maker_edge",
++    min_selected_fair_probability: float | None = None,
+     min_entry_price_dollars: float = 0.0,
+     max_entry_price_dollars: float = 0.99,
+     routine_max_hours_to_close: float | None = None,
+@@ -1592,6 +1695,8 @@ def run_kalshi_micro_prior_plan(
+             max_orders=effective_max_orders,
+             min_maker_edge=min_maker_edge,
+             min_maker_edge_net_fees=min_maker_edge_net_fees,
++            selection_lane=selection_lane,
++            min_selected_fair_probability=min_selected_fair_probability,
+             min_entry_price_dollars=min_entry_price_dollars,
+             max_entry_price_dollars=max_entry_price_dollars,
+             routine_max_hours_to_close=routine_max_hours_to_close,
+@@ -1846,6 +1951,39 @@ def run_kalshi_micro_prior_plan(
+         if ticker and ticker != top_market_ticker:
+             next_live_ready_daily_weather_candidate = row
+             break
++    maker_edge_reference_top_markets: list[dict[str, Any]] = []
++    for row in enriched_rows:
++        if not bool(row.get("matched_live_market")):
++            continue
++        side = str(row.get("best_maker_entry_side") or "").strip().lower()
++        if side not in {"yes", "no"}:
++            continue
++        maker_edge = _as_float(row.get("best_maker_entry_edge"))
++        maker_edge_net_fees = _as_float(row.get("best_maker_entry_edge_net_fees"))
++        if not isinstance(maker_edge, float) and not isinstance(maker_edge_net_fees, float):
++            continue
++        maker_edge_reference_top_markets.append(
++            {
++                "market_ticker": str(row.get("market_ticker") or "").strip() or None,
++                "market_title": str(row.get("market_title") or "").strip() or None,
++                "side": side,
++                "maker_entry_edge": maker_edge,
++                "maker_entry_edge_net_fees": maker_edge_net_fees,
++                "fair_probability": _row_selected_side_probability(row, side, conservative=False),
++                "fair_probability_conservative": _row_selected_side_probability(row, side, conservative=True),
++            }
++        )
++    maker_edge_reference_top_markets.sort(
++        key=lambda item: (
++            float(item["maker_entry_edge_net_fees"])
++            if isinstance(item.get("maker_entry_edge_net_fees"), float)
++            else -999.0,
++            float(item["maker_entry_edge"])
++            if isinstance(item.get("maker_entry_edge"), float)
++            else -999.0,
++        ),
++        reverse=True,
++    )
+ 
+     summary = {
+         "captured_at": captured_at.isoformat(),
+@@ -1859,6 +1997,13 @@ def run_kalshi_micro_prior_plan(
+         "canonical_policy_reason": canonical_policy_diagnostics.get("canonical_policy_reason"),
+         "prefer_canonical_thresholds": prefer_canonical_thresholds,
+         "require_canonical_mapping": require_canonical_mapping,
++        "selection_lane": str(selection_lane or "").strip().lower() or "maker_edge",
++        "selection_lane_supported": sorted(_MICRO_PRIOR_SELECTION_LANES),
++        "min_selected_fair_probability": (
++            float(min_selected_fair_probability)
++            if isinstance(min_selected_fair_probability, (int, float))
++            else None
++        ),
+         "min_entry_price_dollars": min_entry_price_dollars,
+         "routine_max_hours_to_close": routine_max_hours_to_close,
+         "max_hours_to_close_by_canonical_niche": max_hours_to_close_by_canonical_niche,
+@@ -2152,6 +2297,7 @@ def run_kalshi_micro_prior_plan(
+         "incentive_markets_loaded": len(incentive_bonus_per_contract_by_ticker),
+         "skip_counts": skip_counts,
+         "canonical_covered_planned_tickers": sorted(ticker for ticker in canonical_covered_tickers if ticker),
++        "maker_edge_reference_top_markets": maker_edge_reference_top_markets[:top_n],
+         "top_plans": plans[:top_n],
+         "status": "no_candidates" if not plans else "ready",
+         "orders": plans,
+diff --git a/tests/test_kalshi_micro_prior_execute.py b/tests/test_kalshi_micro_prior_execute.py
+index dda2d07..1d2d480 100644
+--- a/tests/test_kalshi_micro_prior_execute.py
++++ b/tests/test_kalshi_micro_prior_execute.py
+@@ -1038,6 +1038,124 @@ class KalshiMicroPriorExecuteTests(unittest.TestCase):
+             self.assertFalse(summary["prior_trade_gate_summary"]["gate_pass"])
+             self.assertFalse(summary["allow_live_orders_effective"])
+ 
++    def test_run_kalshi_micro_prior_execute_blocks_live_when_probability_below_minimum(self) -> None:
++        with tempfile.TemporaryDirectory() as tmp:
++            base = Path(tmp)
++            env_file = base / "env.txt"
++            priors_csv = base / "priors.csv"
++            history_csv = base / "history.csv"
++            env_file.write_text(
++                (
++                    "KALSHI_ENV=prod\n"
++                    "BETBOT_JURISDICTION=new_jersey\n"
++                    "BETBOT_ENABLE_LIVE_ORDERS=1\n"
++                    "KALSHI_ACCESS_KEY_ID=key123\n"
++                    "KALSHI_PRIVATE_KEY_PATH=/tmp/key.pem\n"
++                ),
++                encoding="utf-8",
++            )
++            with priors_csv.open("w", newline="", encoding="utf-8") as handle:
++                writer = csv.DictWriter(
++                    handle,
++                    fieldnames=["market_ticker", "fair_yes_probability", "confidence", "thesis", "source_note", "updated_at"],
++                )
++                writer.writeheader()
++                writer.writerow(
++                    {
++                        "market_ticker": "KXTEST-1",
++                        "fair_yes_probability": "0.55",
++                        "confidence": "0.8",
++                        "thesis": "Test",
++                        "source_note": "Note",
++                        "updated_at": "2026-03-27T21:00:00+00:00",
++                    }
++                )
++            with history_csv.open("w", newline="", encoding="utf-8") as handle:
++                writer = csv.DictWriter(
++                    handle,
++                    fieldnames=["captured_at", "category", "market_ticker", "market_title", "yes_bid_dollars", "yes_ask_dollars"],
++                )
++                writer.writeheader()
++                writer.writerow(
++                    {
++                        "captured_at": "2026-03-27T21:00:00+00:00",
++                        "category": "Politics",
++                        "market_ticker": "KXTEST-1",
++                        "market_title": "Test Market",
++                        "yes_bid_dollars": "0.50",
++                        "yes_ask_dollars": "0.51",
++                    }
++                )
++
++            plan_summary = {
++                "status": "ready",
++                "planned_orders": 1,
++                "positive_maker_entry_markets": 1,
++                "positive_maker_entry_markets_with_canonical_policy": 1,
++                "top_market_ticker": "KXTEST-1",
++                "top_market_title": "Test Market",
++                "top_market_side": "yes",
++                "top_market_canonical_ticker": "PX-TEST",
++                "top_market_canonical_niche": "weather_climate",
++                "top_market_canonical_policy_applied": True,
++                "top_market_maker_entry_price_dollars": 0.50,
++                "top_market_maker_entry_edge": 0.02,
++                "top_market_maker_entry_edge_net_fees": 0.02,
++                "top_market_estimated_entry_cost_dollars": 0.50,
++                "top_market_estimated_entry_fee_dollars": 0.0,
++                "top_market_expected_value_dollars": 0.02,
++                "top_market_expected_value_net_dollars": 0.02,
++                "top_market_expected_roi_on_cost": 0.04,
++                "top_market_expected_roi_on_cost_net": 0.04,
++                "top_market_expected_value_per_day_dollars": 0.04,
++                "top_market_expected_value_per_day_net_dollars": 0.04,
++                "top_market_expected_roi_per_day": 0.08,
++                "top_market_expected_roi_per_day_net": 0.08,
++                "top_market_estimated_max_profit_dollars": 0.5,
++                "top_market_estimated_max_loss_dollars": 0.5,
++                "top_market_max_profit_roi_on_cost": 1.0,
++                "top_market_fair_probability": 0.55,
++                "top_market_confidence": 0.8,
++                "top_market_thesis": "Test",
++                "actual_live_balance_dollars": 100.0,
++                "funding_gap_dollars": 0.0,
++                "output_file": str(base / "plan.json"),
++            }
++            execute_summary = {
++                "status": "dry_run",
++                "planned_orders": 1,
++                "total_planned_cost_dollars": 0.50,
++                "actual_live_balance_dollars": 100.0,
++                "actual_live_balance_source": "live",
++                "balance_live_verified": True,
++                "output_file": str(base / "execute.json"),
++                "output_csv": str(base / "execute.csv"),
++                "attempts": [],
++            }
++
++            with (
++                patch("betbot.kalshi_micro_prior_execute.run_kalshi_micro_prior_plan", return_value=plan_summary),
++                patch("betbot.kalshi_micro_prior_execute.run_kalshi_micro_execute", return_value=execute_summary),
++            ):
++                summary = run_kalshi_micro_prior_execute(
++                    env_file=str(env_file),
++                    priors_csv=str(priors_csv),
++                    history_csv=str(history_csv),
++                    output_dir=str(base),
++                    allow_live_orders=True,
++                    enforce_canonical_dataset=False,
++                    min_live_selected_fair_probability=0.60,
++                    now=datetime(2026, 3, 27, 21, 0, tzinfo=timezone.utc),
++                )
++
++            self.assertEqual(summary["status"], "blocked_prior_trade_gate")
++            self.assertFalse(summary["allow_live_orders_effective"])
++            self.assertEqual(summary["prior_trade_gate_summary"]["gate_status"], "probability_too_low")
++            self.assertIn(
++                "selected fair probability is below the live minimum",
++                " ".join(summary["prior_trade_gate_summary"]["gate_blockers"]).lower(),
++            )
++
+     def test_run_kalshi_micro_prior_execute_requires_canonical_mapping_for_live(self) -> None:
+         with tempfile.TemporaryDirectory() as tmp:
+             base = Path(tmp)
+diff --git a/tests/test_kalshi_micro_prior_plan.py b/tests/test_kalshi_micro_prior_plan.py
+index ee79248..b5e22f2 100644
+--- a/tests/test_kalshi_micro_prior_plan.py
++++ b/tests/test_kalshi_micro_prior_plan.py
+@@ -540,6 +540,104 @@ class KalshiMicroPriorPlanTests(unittest.TestCase):
+         self.assertEqual(plans[0]["market_ticker"], "KXMAKER-FIRST")
+         self.assertEqual(plans[0]["side"], "no")
+ 
++    def test_build_micro_prior_plans_probability_first_lane_prefers_higher_fair_probability(self) -> None:
++        plans, _ = build_micro_prior_plans(
++            enriched_rows=[
++                {
++                    "market_ticker": "KXEDGE-FIRST",
++                    "market_title": "Higher edge, lower probability",
++                    "category": "Politics",
++                    "close_time": "2026-04-01T03:59:00Z",
++                    "hours_to_close": 36.0,
++                    "matched_live_market": True,
++                    "latest_yes_bid_dollars": 0.04,
++                    "latest_no_bid_dollars": 0.95,
++                    "fair_yes_probability": 0.10,
++                    "fair_yes_probability_conservative": 0.10,
++                    "fair_no_probability": 0.90,
++                    "fair_no_probability_conservative": 0.90,
++                    "confidence": 0.6,
++                    "thesis": "Large edge but low selected-side probability.",
++                },
++                {
++                    "market_ticker": "KXPROB-FIRST",
++                    "market_title": "Lower edge, higher probability",
++                    "category": "Politics",
++                    "close_time": "2026-04-01T03:59:00Z",
++                    "hours_to_close": 36.0,
++                    "matched_live_market": True,
++                    "latest_yes_bid_dollars": 0.70,
++                    "latest_no_bid_dollars": 0.20,
++                    "fair_yes_probability": 0.75,
++                    "fair_yes_probability_conservative": 0.75,
++                    "fair_no_probability": 0.25,
++                    "fair_no_probability_conservative": 0.25,
++                    "confidence": 0.6,
++                    "thesis": "Slightly smaller edge but much higher selected-side probability.",
++                },
++            ],
++            planning_bankroll_dollars=40.0,
++            daily_risk_cap_dollars=3.0,
++            contracts_per_order=1,
++            max_orders=2,
++            min_maker_edge=0.005,
++            selection_lane="probability_first",
++            max_entry_price_dollars=0.99,
++        )
++
++        self.assertEqual(len(plans), 2)
++        self.assertEqual(plans[0]["market_ticker"], "KXPROB-FIRST")
++        self.assertEqual(plans[0]["selection_lane"], "probability_first")
++
++    def test_build_micro_prior_plans_can_gate_selected_side_fair_probability(self) -> None:
++        plans, skip_counts = build_micro_prior_plans(
++            enriched_rows=[
++                {
++                    "market_ticker": "KXLOWPROB",
++                    "market_title": "Low probability high edge",
++                    "category": "Politics",
++                    "close_time": "2026-04-01T03:59:00Z",
++                    "hours_to_close": 24.0,
++                    "matched_live_market": True,
++                    "latest_yes_bid_dollars": 0.06,
++                    "latest_no_bid_dollars": 0.95,
++                    "fair_yes_probability": 0.12,
++                    "fair_yes_probability_conservative": 0.12,
++                    "fair_no_probability": 0.88,
++                    "fair_no_probability_conservative": 0.88,
++                    "confidence": 0.6,
++                    "thesis": "Should be filtered by probability gate.",
++                },
++                {
++                    "market_ticker": "KXHIGHPROB",
++                    "market_title": "High probability passing edge",
++                    "category": "Politics",
++                    "close_time": "2026-04-01T03:59:00Z",
++                    "hours_to_close": 24.0,
++                    "matched_live_market": True,
++                    "latest_yes_bid_dollars": 0.70,
++                    "latest_no_bid_dollars": 0.22,
++                    "fair_yes_probability": 0.74,
++                    "fair_yes_probability_conservative": 0.74,
++                    "fair_no_probability": 0.26,
++                    "fair_no_probability_conservative": 0.26,
++                    "confidence": 0.6,
++                    "thesis": "Should pass probability gate.",
++                },
++            ],
++            planning_bankroll_dollars=40.0,
++            daily_risk_cap_dollars=3.0,
++            contracts_per_order=1,
++            max_orders=2,
++            min_maker_edge=0.005,
++            max_entry_price_dollars=0.99,
++            min_selected_fair_probability=0.60,
++        )
++
++        self.assertEqual(len(plans), 1)
++        self.assertEqual(plans[0]["market_ticker"], "KXHIGHPROB")
++        self.assertEqual(skip_counts["selected_fair_probability_below_min"], 1)
++
+     def test_build_micro_prior_plans_gates_on_conservative_probability(self) -> None:
+         plans, skip_counts = build_micro_prior_plans(
+             enriched_rows=[

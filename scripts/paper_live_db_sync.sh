@@ -14,10 +14,18 @@ INNER_NETWORK_RETRIES="${PAPER_LIVE_INNER_NETWORK_RETRIES:-8}"
 INNER_RETRY_BACKOFF_SECONDS="${PAPER_LIVE_INNER_RETRY_BACKOFF_SECONDS:-2}"
 INNER_MAX_RETRY_BACKOFF_SECONDS="${PAPER_LIVE_INNER_MAX_RETRY_BACKOFF_SECONDS:-30}"
 LOCK_DIR="${PAPER_LIVE_SYNC_LOCK_DIR:-/tmp/paper_live_chain_db_sync.lock}"
+LOCK_PID_FILE="$LOCK_DIR/pid"
+LOCK_TS_FILE="$LOCK_DIR/started_at_utc"
 RUN_TS="$(date -u +%Y%m%dT%H%M%SZ)"
 RUN_DIR="${PAPER_LIVE_SYNC_RUN_DIR:-/tmp/paper_live_chain_db_sync_${RUN_TS}}"
 SUMMARY_JSON="${PAPER_LIVE_SYNC_SUMMARY_PATH:-$RUN_DIR/summary.json}"
 LATEST_SUMMARY_JSON="${PAPER_LIVE_SYNC_LATEST_SUMMARY_PATH:-/tmp/paper_live_chain_db_sync_latest.json}"
+SUPABASE_PREFLIGHT_JSON="$RUN_DIR/supabase_preflight.json"
+SUPABASE_PREFLIGHT_STDOUT="$RUN_DIR/supabase_preflight.stdout.log"
+SUPABASE_PREFLIGHT_STDERR="$RUN_DIR/supabase_preflight.stderr.log"
+PREFLIGHT_MAX_ATTEMPTS="${PAPER_LIVE_PREFLIGHT_MAX_ATTEMPTS:-3}"
+PREFLIGHT_BACKOFF_SECONDS="${PAPER_LIVE_PREFLIGHT_BACKOFF_SECONDS:-3}"
+PREFLIGHT_DNS_SOFT_FAIL="${PAPER_LIVE_PREFLIGHT_DNS_SOFT_FAIL:-1}"
 REQUIRED_TOOLS=("python3" "jq")
 REQUIRED_ENV_VARS=("OPSBOT_SUPABASE_URL" "OPSBOT_SUPABASE_SERVICE_ROLE_KEY" "OPSBOT_SUPABASE_PROJECT_REF")
 
@@ -43,7 +51,40 @@ PY
   fi
 done
 
-if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+try_acquire_lock() {
+  mkdir "$LOCK_DIR" 2>/dev/null || return 1
+  printf '%s\n' "$$" > "$LOCK_PID_FILE"
+  date -u +%Y-%m-%dT%H:%M:%SZ > "$LOCK_TS_FILE"
+  return 0
+}
+
+evict_stale_lock_if_safe() {
+  if [[ ! -d "$LOCK_DIR" ]]; then
+    return 0
+  fi
+  local holder_pid=""
+  if [[ -f "$LOCK_PID_FILE" ]]; then
+    holder_pid="$(tr -cd '0-9' < "$LOCK_PID_FILE" || true)"
+  fi
+  if [[ -n "$holder_pid" ]] && kill -0 "$holder_pid" 2>/dev/null; then
+    return 1
+  fi
+  rm -f "$LOCK_PID_FILE" "$LOCK_TS_FILE"
+  rmdir "$LOCK_DIR" 2>/dev/null || true
+  return 0
+}
+
+lock_acquired="false"
+if try_acquire_lock; then
+  lock_acquired="true"
+else
+  evict_stale_lock_if_safe || true
+  if try_acquire_lock; then
+    lock_acquired="true"
+  fi
+fi
+
+if [[ "$lock_acquired" != "true" ]]; then
   python3 - <<PY
 import json
 from pathlib import Path
@@ -61,6 +102,7 @@ PY
 fi
 
 cleanup() {
+  rm -f "$LOCK_PID_FILE" "$LOCK_TS_FILE" 2>/dev/null || true
   rmdir "$LOCK_DIR" 2>/dev/null || true
 }
 trap cleanup EXIT
@@ -78,6 +120,18 @@ if [[ ! -f "$SECRETS_FILE" ]]; then
 import json
 from pathlib import Path
 run_dir = Path("$RUN_DIR")
+preflight_payload = {}
+preflight_status = None
+preflight_errors = []
+try:
+    preflight_payload = json.loads(Path("$SUPABASE_PREFLIGHT_JSON").read_text(encoding="utf-8"))
+except Exception:
+    preflight_payload = {}
+if isinstance(preflight_payload, dict):
+    preflight_status = preflight_payload.get("status")
+    maybe_errors = preflight_payload.get("errors")
+    if isinstance(maybe_errors, list):
+        preflight_errors = [str(item or "") for item in maybe_errors]
 summary = {
   "run_ts_utc": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
   "run_dir": str(run_dir),
@@ -99,6 +153,186 @@ Path("$LATEST_SUMMARY_JSON").write_text(json.dumps(summary, indent=2, sort_keys=
 print(json.dumps(summary, indent=2, sort_keys=True))
 PY
   exit 1
+fi
+
+preflight_is_dns_retryable() {
+  local preflight_json_path="$1"
+  local stderr_path="$2"
+  python3 - "$preflight_json_path" "$stderr_path" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+summary_path = Path(sys.argv[1])
+stderr_path = Path(sys.argv[2])
+
+if summary_path.exists():
+    try:
+        payload = json.loads(summary_path.read_text(encoding="utf-8"))
+    except Exception:
+        payload = {}
+    errors = payload.get("errors")
+    if isinstance(errors, list) and errors:
+        normalized = [str(item or "") for item in errors]
+        dns_only = all(text.startswith("dns_unresolved_hosts:") for text in normalized)
+        print("1" if dns_only else "0")
+        raise SystemExit(0)
+
+stderr_text = ""
+try:
+    stderr_text = stderr_path.read_text(encoding="utf-8", errors="replace").lower()
+except OSError:
+    pass
+
+markers = (
+    "nodename nor servname",
+    "name or service not known",
+    "temporary failure in name resolution",
+    "no address associated with hostname",
+    "dns_unresolved_hosts",
+)
+print("1" if any(marker in stderr_text for marker in markers) else "0")
+PY
+}
+
+max_preflight_attempts="$PREFLIGHT_MAX_ATTEMPTS"
+if ! [[ "$max_preflight_attempts" =~ ^[0-9]+$ ]] || [[ "$max_preflight_attempts" -lt 1 ]]; then
+  max_preflight_attempts=1
+fi
+
+: > "$SUPABASE_PREFLIGHT_STDOUT"
+: > "$SUPABASE_PREFLIGHT_STDERR"
+echo "false" > "$RUN_DIR/supabase_preflight_dns_soft_fail.txt"
+supabase_preflight_rc=1
+supabase_preflight_attempts=0
+while [[ "$supabase_preflight_attempts" -lt "$max_preflight_attempts" ]]; do
+  supabase_preflight_attempts=$((supabase_preflight_attempts + 1))
+  attempt_stdout="$RUN_DIR/supabase_preflight.stdout.attempt${supabase_preflight_attempts}.log"
+  attempt_stderr="$RUN_DIR/supabase_preflight.stderr.attempt${supabase_preflight_attempts}.log"
+
+  set +e
+  python3 "$ROOT_DIR/scripts/automation_preflight.py" \
+    --profile supabase_sync \
+    --repo-root "$ROOT_DIR" \
+    --secrets-file "$SECRETS_FILE" \
+    --output-json "$SUPABASE_PREFLIGHT_JSON" \
+    > "$attempt_stdout" \
+    2> "$attempt_stderr"
+  supabase_preflight_rc=$?
+  set -e
+
+  {
+    printf '=== attempt %s rc=%s at %s ===\n' "$supabase_preflight_attempts" "$supabase_preflight_rc" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    cat "$attempt_stdout" 2>/dev/null || true
+    echo
+  } >> "$SUPABASE_PREFLIGHT_STDOUT"
+  {
+    printf '=== attempt %s rc=%s at %s ===\n' "$supabase_preflight_attempts" "$supabase_preflight_rc" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    cat "$attempt_stderr" 2>/dev/null || true
+    echo
+  } >> "$SUPABASE_PREFLIGHT_STDERR"
+
+  if [[ "$supabase_preflight_rc" -eq 0 ]]; then
+    break
+  fi
+  if [[ "$supabase_preflight_attempts" -ge "$max_preflight_attempts" ]]; then
+    break
+  fi
+  retryable_dns="$(preflight_is_dns_retryable "$SUPABASE_PREFLIGHT_JSON" "$attempt_stderr")"
+  if [[ "$retryable_dns" != "1" ]]; then
+    break
+  fi
+  sleep "$PREFLIGHT_BACKOFF_SECONDS"
+done
+echo "$supabase_preflight_attempts" > "$RUN_DIR/supabase_preflight_attempts.txt"
+
+if [[ "$supabase_preflight_rc" -ne 0 ]]; then
+  retryable_dns="$(preflight_is_dns_retryable "$SUPABASE_PREFLIGHT_JSON" "$SUPABASE_PREFLIGHT_STDERR")"
+  soft_fail_enabled="1"
+  case "${PREFLIGHT_DNS_SOFT_FAIL:-1}" in
+    0|false|FALSE|False|no|NO)
+      soft_fail_enabled="0"
+      ;;
+  esac
+
+  if [[ "$retryable_dns" == "1" && "$soft_fail_enabled" == "1" ]]; then
+    echo "true" > "$RUN_DIR/supabase_preflight_dns_soft_fail.txt"
+    printf 'warning: Supabase preflight DNS-only failure; continuing with ingest due to PAPER_LIVE_PREFLIGHT_DNS_SOFT_FAIL=%s\n' "${PREFLIGHT_DNS_SOFT_FAIL}" >&2
+  else
+  preflight_blocker="$(
+    python3 - "$SUPABASE_PREFLIGHT_JSON" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+if not path.exists():
+    print("supabase preflight failed without summary output")
+    raise SystemExit(0)
+try:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+except Exception:
+    print("supabase preflight failed and summary JSON was unreadable")
+    raise SystemExit(0)
+errors = payload.get("errors")
+if isinstance(errors, list) and errors:
+    print(f"supabase preflight blocked: {errors[0]}")
+else:
+    status = payload.get("status")
+    print(f"supabase preflight blocked: status={status}")
+PY
+  )"
+  echo "$preflight_blocker" > "$RUN_DIR/first_actionable_blocker.txt"
+  echo "degraded" > "$RUN_DIR/replication_state.txt"
+  echo "" > "$RUN_DIR/missing_env_vars.txt"
+  echo "-1" > "$RUN_DIR/hourly_rc.txt"
+  echo "false" > "$RUN_DIR/ingest1_success.txt"
+  echo "false" > "$RUN_DIR/ingest2_success.txt"
+  echo "{}" > "$RUN_DIR/run2_deltas.json"
+  echo "false" > "$RUN_DIR/run2_delta_all_zero.txt"
+  python3 - <<PY
+import json
+from pathlib import Path
+run_dir = Path("$RUN_DIR")
+preflight_payload = {}
+preflight_status = None
+preflight_errors = []
+try:
+    preflight_payload = json.loads(Path("$SUPABASE_PREFLIGHT_JSON").read_text(encoding="utf-8"))
+except Exception:
+    preflight_payload = {}
+if isinstance(preflight_payload, dict):
+    preflight_status = preflight_payload.get("status")
+    maybe_errors = preflight_payload.get("errors")
+    if isinstance(maybe_errors, list):
+        preflight_errors = [str(item or "") for item in maybe_errors]
+summary = {
+  "run_ts_utc": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "run_dir": str(run_dir),
+  "hourly_rc": -1,
+  "ingest1_rc": None,
+  "ingest2_rc": None,
+  "ingest1_codes": "",
+  "ingest2_codes": "",
+  "ingest1_success": False,
+  "ingest2_success": False,
+  "run2_deltas": {},
+  "run2_delta_all_zero": False,
+  "replication_state": "degraded",
+  "first_actionable_blocker": "$preflight_blocker",
+  "local_snapshot": {},
+  "supabase_preflight_json": "$SUPABASE_PREFLIGHT_JSON",
+  "supabase_preflight_attempts": $supabase_preflight_attempts,
+  "supabase_preflight_status": preflight_status,
+  "supabase_preflight_errors": preflight_errors,
+  "supabase_preflight_dns_soft_fail": False,
+}
+Path("$SUMMARY_JSON").write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
+Path("$LATEST_SUMMARY_JSON").write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
+print(json.dumps(summary, indent=2, sort_keys=True))
+PY
+    exit 1
+  fi
 fi
 
 set -a
@@ -359,6 +593,19 @@ def _read(path, default=""):
         return default
     return p.read_text(encoding="utf-8").strip()
 
+preflight_payload = {}
+preflight_status = None
+preflight_errors: list[str] = []
+try:
+    preflight_payload = json.loads(Path("$SUPABASE_PREFLIGHT_JSON").read_text(encoding="utf-8"))
+except Exception:
+    preflight_payload = {}
+if isinstance(preflight_payload, dict):
+    preflight_status = preflight_payload.get("status")
+    maybe_errors = preflight_payload.get("errors")
+    if isinstance(maybe_errors, list):
+        preflight_errors = [str(item or "") for item in maybe_errors]
+
 summary = {
     "run_ts_utc": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
     "run_dir": str(run_dir),
@@ -377,6 +624,11 @@ summary = {
     "replication_state": _read("replication_state.txt", "degraded"),
     "first_actionable_blocker": _read("first_actionable_blocker.txt", ""),
     "local_snapshot": json.loads((run_dir / "local_snapshot.json").read_text(encoding="utf-8")),
+    "supabase_preflight_json": "$SUPABASE_PREFLIGHT_JSON",
+    "supabase_preflight_attempts": int(_read("supabase_preflight_attempts.txt", "0") or "0"),
+    "supabase_preflight_status": preflight_status,
+    "supabase_preflight_errors": preflight_errors,
+    "supabase_preflight_dns_soft_fail": _read("supabase_preflight_dns_soft_fail.txt", "false") == "true",
 }
 
 Path("$SUMMARY_JSON").write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")

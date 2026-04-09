@@ -1,0 +1,20 @@
+Run `./scripts/monthly_climate_live_attempt_harness.sh` once from the repository root.
+
+Before execution, confirm mode is explicit:
+- `MONTHLY_ATTEMPT_MODE=pre_submit_smoke` for dry-run validation (default)
+- `MONTHLY_ATTEMPT_MODE=live` only when explicitly authorized
+
+After it finishes:
+1. Read `outputs/monthly_climate_live_attempt_preflight_latest.json`.
+2. Read `outputs/monthly_climate_live_attempt_summary_latest.json`.
+3. Open one inbox item summarizing:
+- preflight status and first key/DNS blocker (`errors[0]` when available),
+- attempt mode used,
+- prior-trader gate status and blockers,
+- pilot attempted/fill counts,
+- recommended next action.
+
+Safety constraints:
+- Default to `pre_submit_smoke`.
+- Do not modify env secrets or risk caps.
+- Do not report DNS failure unless preflight summary status is not `ready`.

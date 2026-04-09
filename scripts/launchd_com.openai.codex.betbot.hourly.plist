@@ -9,11 +9,11 @@
   <array>
     <string>/bin/zsh</string>
     <string>-lc</string>
-    <string>/Users/dankerbadge/Documents/Betting Bot/scripts/hourly_alpha_overnight.sh</string>
+    <string>BETBOT_ENV_FILE='/Users/dankerbadge/betting-bot-runtime/data/research/account_onboarding.local.env' '/Users/dankerbadge/betting-bot-runtime/scripts/hourly_alpha_overnight.sh'</string>
   </array>
 
   <key>WorkingDirectory</key>
-  <string>/Users/dankerbadge/Documents/Betting Bot</string>
+  <string>/Users/dankerbadge/betting-bot-runtime</string>
 
   <key>StartInterval</key>
   <integer>3600</integer>
@@ -22,9 +22,9 @@
   <true/>
 
   <key>StandardOutPath</key>
-  <string>/Users/dankerbadge/Documents/Betting Bot/outputs/hourly_alpha_launchd_stdout.log</string>
+  <string>/Users/dankerbadge/betting-bot-runtime/outputs/hourly_alpha_launchd_stdout.log</string>
 
   <key>StandardErrorPath</key>
-  <string>/Users/dankerbadge/Documents/Betting Bot/outputs/hourly_alpha_launchd_stderr.log</string>
+  <string>/Users/dankerbadge/betting-bot-runtime/outputs/hourly_alpha_launchd_stderr.log</string>
 </dict>
 </plist>

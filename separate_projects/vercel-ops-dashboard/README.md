@@ -6,8 +6,8 @@ It does not run execution loops and does not perform writes.
 ## Isolation Rules
 
 - Use only `OPSBOT_*` env vars.
-- Never reuse any Zenith project URL/ref/key.
-- App startup fails if URL/ref contains the forbidden hint (`zenith` by default).
+- Never reuse any legacy external project project URL/ref/key.
+- App startup fails if URL/ref contains the forbidden hint (`legacy_external_project` by default).
 
 ## Local Run
 

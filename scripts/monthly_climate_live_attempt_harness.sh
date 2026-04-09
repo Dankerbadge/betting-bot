@@ -38,6 +38,14 @@ if [[ "$MONTHLY_ATTEMPT_MODE" != "live" && "$MONTHLY_ATTEMPT_MODE" != "pre_submi
   exit 1
 fi
 
+MONTHLY_PREFLIGHT_JSON="$BETBOT_OUTPUT_DIR/monthly_climate_live_attempt_preflight_latest.json"
+echo "[monthly-live-attempt] Preflight: validating trading secrets and DNS dependencies"
+python3 "$SCRIPT_DIR/automation_preflight.py" \
+  --profile monthly \
+  --repo-root "$REPO_ROOT" \
+  --env-file "$BETBOT_ENV_FILE" \
+  --output-json "$MONTHLY_PREFLIGHT_JSON"
+
 STAMP="$(date -u +%Y%m%d_%H%M%S)"
 RUN_DIR="$BETBOT_OUTPUT_DIR/monthly_climate_live_attempt/$STAMP"
 mkdir -p "$RUN_DIR"
