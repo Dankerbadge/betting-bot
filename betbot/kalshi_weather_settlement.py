@@ -32,6 +32,35 @@ _CITY_TIMEZONE_BY_TOKEN = {
     "san francisco": "America/Los_Angeles",
 }
 
+_CITY_STATION_BY_TOKEN = {
+    "new york city": "KNYC",
+    "new york": "KNYC",
+    "nyc": "KNYC",
+    "washington dc": "KDCA",
+    "dc": "KDCA",
+    "boston": "KBOS",
+    "philadelphia": "KPHL",
+    "philly": "KPHL",
+    "miami": "KMIA",
+    "atlanta": "KATL",
+    "austin": "KAUS",
+    "chicago": "KMDW",
+    "dallas": "KDAL",
+    "houston": "KIAH",
+    "denver": "KDEN",
+    "phoenix": "KPHX",
+    "los angeles": "KLAX",
+    "la": "KLAX",
+    "seattle": "KSEA",
+    "las vegas": "KLAS",
+    "minneapolis": "KMSP",
+    "new orleans": "KMSY",
+    "oklahoma city": "KOKC",
+    "san antonio": "KSAT",
+    "sf": "KSFO",
+    "san francisco": "KSFO",
+}
+
 
 def normalize_rule_text(rule_text: str) -> str:
     return " ".join(str(rule_text or "").strip().split())
@@ -168,6 +197,10 @@ def infer_settlement_station(rules_primary: str, market_title: str, event_title:
     station_match = re.search(r"\bstation\s+([A-Z0-9]{3,6})\b", text, flags=re.IGNORECASE)
     if station_match:
         return station_match.group(1).upper()
+    lowered = text.lower()
+    for token, station_id in _CITY_STATION_BY_TOKEN.items():
+        if re.search(rf"\b{re.escape(token)}\b", lowered):
+            return station_id
     return ""
 
 

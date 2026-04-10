@@ -183,14 +183,21 @@ def run_kalshi_temperature_constraint_scan(
         )
         settlement_precision = "whole_degree"
 
-        snapshot = build_intraday_temperature_snapshot(
-            station_id=station_id,
-            target_date_local=target_date_local,
-            timezone_name=timezone_name,
-            settlement_unit=settlement_unit,
-            settlement_precision=settlement_precision,
-            timeout_seconds=timeout_seconds,
-        )
+        snapshot: dict[str, Any]
+        try:
+            snapshot = build_intraday_temperature_snapshot(
+                station_id=station_id,
+                target_date_local=target_date_local,
+                timezone_name=timezone_name,
+                settlement_unit=settlement_unit,
+                settlement_precision=settlement_precision,
+                timeout_seconds=timeout_seconds,
+            )
+        except Exception as exc:  # pragma: no cover - runtime safety
+            snapshot = {
+                "status": "snapshot_unavailable",
+                "error": str(exc),
+            }
 
         snapshot_status = _normalize_text(snapshot.get("status"))
         observed_raw = snapshot.get("max_temperature_settlement_raw") if isinstance(snapshot, dict) else None

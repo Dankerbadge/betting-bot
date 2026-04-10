@@ -70,6 +70,21 @@ class KalshiWeatherSettlementTests(unittest.TestCase):
         self.assertEqual(spec["observation_window_local_end"], "")
         self.assertTrue(bool(spec["rule_text_hash_sha256"]))
 
+    def test_build_weather_settlement_spec_infers_city_station_fallback(self) -> None:
+        spec = build_weather_settlement_spec(
+            {
+                "market_ticker": "KXHIGHTATL-26APR10-B75.5",
+                "market_title": "Will the high temp in Atlanta be 75-76° on Apr 10, 2026?",
+                "event_title": "Highest temperature in Atlanta on Apr 10, 2026?",
+                "rules_primary": (
+                    "If the highest temperature recorded in Atlanta for April 10, 2026 "
+                    "is between 75-76°, then the market resolves to Yes."
+                ),
+            }
+        )
+        self.assertEqual(spec["contract_family"], "daily_temperature")
+        self.assertEqual(spec["settlement_station"], "KATL")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -48,6 +48,7 @@ from betbot.kalshi_nonsports_thresholds import run_kalshi_nonsports_thresholds
 from betbot.kalshi_temperature_constraints import run_kalshi_temperature_constraint_scan
 from betbot.kalshi_temperature_contract_specs import run_kalshi_temperature_contract_specs
 from betbot.kalshi_temperature_metar_ingest import run_kalshi_temperature_metar_ingest
+from betbot.kalshi_temperature_settlement_state import run_kalshi_temperature_settlement_state
 from betbot.kalshi_temperature_trader import run_kalshi_temperature_shadow_watch, run_kalshi_temperature_trader
 from betbot.kalshi_weather_catalog import run_kalshi_weather_catalog
 from betbot.kalshi_weather_priors import run_kalshi_weather_priors, run_kalshi_weather_station_history_prewarm
@@ -1402,7 +1403,7 @@ def build_parser() -> argparse.ArgumentParser:
     kalshi_temperature_contract_specs.add_argument(
         "--max-pages",
         type=int,
-        default=5,
+        default=40,
         help="Maximum events pages to scan per run",
     )
     kalshi_temperature_contract_specs.add_argument(
@@ -1435,6 +1436,28 @@ def build_parser() -> argparse.ArgumentParser:
         help="Maximum markets to evaluate per run",
     )
     kalshi_temperature_constraint_scan.add_argument("--output-dir", default="outputs", help="Output directory")
+
+    kalshi_temperature_settlement_state = subparsers.add_parser(
+        "kalshi-temperature-settlement-state",
+        help="Build settlement-finalization state keyed by temperature underlying (series|station|date)",
+    )
+    kalshi_temperature_settlement_state.add_argument(
+        "--specs-csv",
+        default=None,
+        help="Optional explicit kalshi_temperature_contract_specs CSV path (latest in output-dir used when omitted)",
+    )
+    kalshi_temperature_settlement_state.add_argument(
+        "--constraint-csv",
+        default=None,
+        help="Optional explicit kalshi_temperature_constraint_scan CSV path (latest in output-dir used when omitted)",
+    )
+    kalshi_temperature_settlement_state.add_argument(
+        "--top-n",
+        type=int,
+        default=25,
+        help="Number of underlyings embedded in top_underlyings summary",
+    )
+    kalshi_temperature_settlement_state.add_argument("--output-dir", default="outputs", help="Output directory")
 
     kalshi_temperature_metar_ingest = subparsers.add_parser(
         "kalshi-temperature-metar-ingest",
@@ -5232,6 +5255,13 @@ def main() -> None:
             output_dir=args.output_dir,
             timeout_seconds=args.timeout_seconds,
             max_markets=args.max_markets,
+        )
+    elif args.command == "kalshi-temperature-settlement-state":
+        summary = run_kalshi_temperature_settlement_state(
+            specs_csv=args.specs_csv,
+            constraint_csv=args.constraint_csv,
+            output_dir=args.output_dir,
+            top_n=args.top_n,
         )
     elif args.command == "kalshi-temperature-metar-ingest":
         summary = run_kalshi_temperature_metar_ingest(

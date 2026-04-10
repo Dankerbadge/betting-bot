@@ -67,6 +67,19 @@ _TICKER_MONTHS = {
 
 def _is_temperature_market(event: dict[str, Any], market: dict[str, Any]) -> bool:
     category = _normalize_text(event.get("category")).lower()
+    series_ticker = _normalize_text(event.get("series_ticker")).upper()
+    event_ticker = _normalize_text(event.get("event_ticker")).upper()
+    market_ticker = _normalize_text(market.get("ticker")).upper()
+
+    # Prefer explicit ticker families first: these are stable identifiers for
+    # daily high/low temperature contracts even when titles omit "temperature".
+    if (
+        series_ticker.startswith(("KXHIGH", "KXLOW", "KXTEMP", "NHIGH", "NLOW", "NTEMP"))
+        or event_ticker.startswith(("KXHIGH", "KXLOW", "KXTEMP", "NHIGH", "NLOW", "NTEMP"))
+        or market_ticker.startswith(("KXHIGH", "KXLOW", "KXTEMP", "NHIGH", "NLOW", "NTEMP"))
+    ):
+        return True
+
     merged = " ".join(
         (
             _normalize_text(event.get("title")),
@@ -77,26 +90,32 @@ def _is_temperature_market(event: dict[str, Any], market: dict[str, Any]) -> boo
         )
     ).lower()
 
-    if "temperature" not in merged:
-        return False
-
-    if category == "climate and weather":
-        return True
-
-    series_ticker = _normalize_text(event.get("series_ticker")).upper()
-    if series_ticker.startswith(("KXHIGH", "KXLOW", "KXTEMP")):
-        return True
-
-    return any(
+    has_temperature_language = any(
         token in merged
         for token in (
+            "temperature",
+            "high temp",
+            "low temp",
             "highest temperature",
             "high temperature",
             "lowest temperature",
             "low temperature",
             "daily temperature",
+            "daily temp",
+            "degrees fahrenheit",
+            "degrees celsius",
+            "°f",
+            "°c",
         )
     )
+    if not has_temperature_language:
+        return False
+
+    # Within climate/weather category, explicit temperature phrasing is enough.
+    if category == "climate and weather":
+        return True
+
+    return has_temperature_language
 
 
 def _choose_strike_value(market: dict[str, Any], keys: tuple[str, ...]) -> str:
@@ -241,7 +260,7 @@ def run_kalshi_temperature_contract_specs(
     output_dir: str = "outputs",
     timeout_seconds: float = 15.0,
     page_limit: int = 200,
-    max_pages: int = 5,
+    max_pages: int = 40,
     top_n: int = 20,
     now: datetime | None = None,
 ) -> dict[str, Any]:

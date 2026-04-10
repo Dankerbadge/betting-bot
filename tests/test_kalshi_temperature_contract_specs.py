@@ -86,6 +86,32 @@ class KalshiTemperatureContractSpecsTests(unittest.TestCase):
         )
         self.assertEqual(score, 1.0)
 
+    def test_extract_accepts_daily_temp_ticker_without_temperature_word(self) -> None:
+        events = [
+            {
+                "category": "Climate and Weather",
+                "series_ticker": "KXLOWTSFO",
+                "event_ticker": "KXLOWTSFO-26APR10",
+                "title": "Lowest in San Francisco on Apr 10?",
+                "markets": [
+                    {
+                        "ticker": "KXLOWTSFO-26APR10-B50",
+                        "title": "50F or below",
+                        "status": "active",
+                        "rules_primary": "Resolves using station KSFO local-day max/min windows.",
+                    }
+                ],
+            }
+        ]
+
+        rows = extract_kalshi_temperature_contract_specs(
+            events=events,
+            captured_at=datetime(2026, 4, 10, 12, 0, tzinfo=timezone.utc),
+        )
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["series_ticker"], "KXLOWTSFO")
+        self.assertEqual(rows[0]["market_ticker"], "KXLOWTSFO-26APR10-B50")
+
 
 if __name__ == "__main__":
     unittest.main()
