@@ -97,6 +97,10 @@ class CliRuntimeCycleTests(unittest.TestCase):
             "0x594edb9112f526fa6a80b8f858a6379c8a2c1c11",
         )
         self.assertEqual(kwargs["output_dir"], "outputs")
+        self.assertTrue(kwargs["refresh_trades_from_api"])
+        self.assertTrue(kwargs["refresh_activity_from_api"])
+        self.assertTrue(kwargs["include_taker_only_trades"])
+        self.assertTrue(kwargs["include_all_trade_roles"])
         self.assertIn('"coldmath_snapshot"', stdout.getvalue())
 
     def test_runtime_cycle_can_build_replication_plan_before_run(self) -> None:

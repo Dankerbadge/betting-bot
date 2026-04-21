@@ -323,6 +323,50 @@ def build_parser() -> argparse.ArgumentParser:
         help="Max positions pages pulled during ColdMath refresh",
     )
     runtime_cycle.add_argument(
+        "--coldmath-disable-trades-refresh",
+        action="store_true",
+        help="Skip /trades API pulls during ColdMath snapshot refresh",
+    )
+    runtime_cycle.add_argument(
+        "--coldmath-disable-activity-refresh",
+        action="store_true",
+        help="Skip /activity API pulls during ColdMath snapshot refresh",
+    )
+    runtime_cycle.add_argument(
+        "--coldmath-disable-taker-only-trades",
+        action="store_true",
+        help="Skip takerOnly=true trade query during ColdMath snapshot refresh",
+    )
+    runtime_cycle.add_argument(
+        "--coldmath-disable-all-trade-roles",
+        action="store_true",
+        help="Skip takerOnly=false trade query during ColdMath snapshot refresh",
+    )
+    runtime_cycle.add_argument(
+        "--coldmath-trades-page-size",
+        type=int,
+        default=500,
+        help="Page size used for paginated ColdMath trades API pulls",
+    )
+    runtime_cycle.add_argument(
+        "--coldmath-trades-max-pages",
+        type=int,
+        default=20,
+        help="Maximum trades pages to fetch when ColdMath API refresh is enabled",
+    )
+    runtime_cycle.add_argument(
+        "--coldmath-activity-page-size",
+        type=int,
+        default=500,
+        help="Page size used for paginated ColdMath activity API pulls",
+    )
+    runtime_cycle.add_argument(
+        "--coldmath-activity-max-pages",
+        type=int,
+        default=20,
+        help="Maximum activity pages to fetch when ColdMath API refresh is enabled",
+    )
+    runtime_cycle.add_argument(
         "--coldmath-build-replication-plan",
         action="store_true",
         help="Build coldmath-replication-plan artifact before running runtime cycle",
@@ -3098,6 +3142,50 @@ def build_parser() -> argparse.ArgumentParser:
         default=20,
         help="Maximum positions pages to fetch when ColdMath API refresh is enabled",
     )
+    polymarket_market_ingest.add_argument(
+        "--coldmath-disable-trades-refresh",
+        action="store_true",
+        help="Skip /trades API pulls during optional ColdMath snapshot refresh",
+    )
+    polymarket_market_ingest.add_argument(
+        "--coldmath-disable-activity-refresh",
+        action="store_true",
+        help="Skip /activity API pulls during optional ColdMath snapshot refresh",
+    )
+    polymarket_market_ingest.add_argument(
+        "--coldmath-disable-taker-only-trades",
+        action="store_true",
+        help="Skip takerOnly=true trade query during optional ColdMath snapshot refresh",
+    )
+    polymarket_market_ingest.add_argument(
+        "--coldmath-disable-all-trade-roles",
+        action="store_true",
+        help="Skip takerOnly=false trade query during optional ColdMath snapshot refresh",
+    )
+    polymarket_market_ingest.add_argument(
+        "--coldmath-trades-page-size",
+        type=int,
+        default=500,
+        help="Page size used for paginated ColdMath trades API pulls",
+    )
+    polymarket_market_ingest.add_argument(
+        "--coldmath-trades-max-pages",
+        type=int,
+        default=20,
+        help="Maximum trades pages to fetch when ColdMath API refresh is enabled",
+    )
+    polymarket_market_ingest.add_argument(
+        "--coldmath-activity-page-size",
+        type=int,
+        default=500,
+        help="Page size used for paginated ColdMath activity API pulls",
+    )
+    polymarket_market_ingest.add_argument(
+        "--coldmath-activity-max-pages",
+        type=int,
+        default=20,
+        help="Maximum activity pages to fetch when ColdMath API refresh is enabled",
+    )
 
     coldmath_snapshot_summary = subparsers.add_parser(
         "coldmath-snapshot-summary",
@@ -3156,6 +3244,50 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=20,
         help="Maximum paginated positions pages to fetch during API refresh",
+    )
+    coldmath_snapshot_summary.add_argument(
+        "--disable-trades-refresh",
+        action="store_true",
+        help="Skip /trades API pulls during snapshot refresh",
+    )
+    coldmath_snapshot_summary.add_argument(
+        "--disable-activity-refresh",
+        action="store_true",
+        help="Skip /activity API pulls during snapshot refresh",
+    )
+    coldmath_snapshot_summary.add_argument(
+        "--disable-taker-only-trades",
+        action="store_true",
+        help="Skip takerOnly=true trade query during snapshot refresh",
+    )
+    coldmath_snapshot_summary.add_argument(
+        "--disable-all-trade-roles",
+        action="store_true",
+        help="Skip takerOnly=false trade query during snapshot refresh",
+    )
+    coldmath_snapshot_summary.add_argument(
+        "--trades-page-size",
+        type=int,
+        default=500,
+        help="Page size used when fetching paginated wallet trades",
+    )
+    coldmath_snapshot_summary.add_argument(
+        "--trades-max-pages",
+        type=int,
+        default=20,
+        help="Maximum paginated trades pages to fetch during API refresh",
+    )
+    coldmath_snapshot_summary.add_argument(
+        "--activity-page-size",
+        type=int,
+        default=500,
+        help="Page size used when fetching paginated wallet activity",
+    )
+    coldmath_snapshot_summary.add_argument(
+        "--activity-max-pages",
+        type=int,
+        default=20,
+        help="Maximum paginated activity pages to fetch during API refresh",
     )
     coldmath_snapshot_summary.add_argument("--output-dir", default="outputs", help="Output directory")
 
@@ -6238,6 +6370,14 @@ def main() -> None:
                 api_timeout_seconds=args.coldmath_api_timeout_seconds,
                 positions_page_size=args.coldmath_positions_page_size,
                 positions_max_pages=args.coldmath_positions_max_pages,
+                refresh_trades_from_api=not args.coldmath_disable_trades_refresh,
+                refresh_activity_from_api=not args.coldmath_disable_activity_refresh,
+                include_taker_only_trades=not args.coldmath_disable_taker_only_trades,
+                include_all_trade_roles=not args.coldmath_disable_all_trade_roles,
+                trades_page_size=args.coldmath_trades_page_size,
+                trades_max_pages=args.coldmath_trades_max_pages,
+                activity_page_size=args.coldmath_activity_page_size,
+                activity_max_pages=args.coldmath_activity_max_pages,
             )
         if args.coldmath_build_replication_plan:
             coldmath_replication_plan_summary = run_coldmath_replication_plan(
@@ -6914,6 +7054,14 @@ def main() -> None:
             coldmath_api_timeout_seconds=args.coldmath_api_timeout_seconds,
             coldmath_positions_page_size=args.coldmath_positions_page_size,
             coldmath_positions_max_pages=args.coldmath_positions_max_pages,
+            coldmath_refresh_trades_from_api=not args.coldmath_disable_trades_refresh,
+            coldmath_refresh_activity_from_api=not args.coldmath_disable_activity_refresh,
+            coldmath_include_taker_only_trades=not args.coldmath_disable_taker_only_trades,
+            coldmath_include_all_trade_roles=not args.coldmath_disable_all_trade_roles,
+            coldmath_trades_page_size=args.coldmath_trades_page_size,
+            coldmath_trades_max_pages=args.coldmath_trades_max_pages,
+            coldmath_activity_page_size=args.coldmath_activity_page_size,
+            coldmath_activity_max_pages=args.coldmath_activity_max_pages,
         )
     elif args.command == "coldmath-snapshot-summary":
         summary = run_coldmath_snapshot_summary(
@@ -6928,6 +7076,14 @@ def main() -> None:
             api_timeout_seconds=args.api_timeout_seconds,
             positions_page_size=args.positions_page_size,
             positions_max_pages=args.positions_max_pages,
+            refresh_trades_from_api=not args.disable_trades_refresh,
+            refresh_activity_from_api=not args.disable_activity_refresh,
+            include_taker_only_trades=not args.disable_taker_only_trades,
+            include_all_trade_roles=not args.disable_all_trade_roles,
+            trades_page_size=args.trades_page_size,
+            trades_max_pages=args.trades_max_pages,
+            activity_page_size=args.activity_page_size,
+            activity_max_pages=args.activity_max_pages,
         )
     elif args.command == "coldmath-replication-plan":
         summary = run_coldmath_replication_plan(

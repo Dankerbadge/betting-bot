@@ -8,6 +8,8 @@ from typing import Any, Callable
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+from betbot.coldmath_snapshot import run_coldmath_snapshot_summary, summarize_coldmath_snapshot_files
+
 
 JsonGetter = Callable[[str, float], tuple[int, dict[str, Any] | list[Any] | Any]]
 
@@ -270,6 +272,89 @@ def _write_markets_csv(path: Path, rows: list[dict[str, Any]]) -> None:
             writer.writerow(encoded)
 
 
+def _parse_float(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def summarize_coldmath_temperature_alignment(
+    *,
+    positions_csv: str | Path,
+    markets: list[dict[str, Any]],
+) -> dict[str, Any]:
+    positions_path = Path(positions_csv)
+    if not positions_path.exists():
+        return {
+            "status": "missing_positions_csv",
+            "positions_csv": str(positions_path),
+            "positions_rows": 0,
+            "matched_positions": 0,
+            "matched_ratio": 0.0,
+            "unmatched_positions": 0,
+            "top_matched_positions": [],
+            "unmatched_condition_ids_preview": [],
+        }
+
+    condition_to_market: dict[str, dict[str, Any]] = {}
+    for market in markets:
+        if not isinstance(market, dict):
+            continue
+        condition_id = str(market.get("condition_id") or "").strip().lower()
+        if condition_id and condition_id not in condition_to_market:
+            condition_to_market[condition_id] = market
+
+    with positions_path.open(newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        positions_rows = [dict(row) for row in reader]
+
+    matched_rows: list[dict[str, Any]] = []
+    unmatched_condition_ids: list[str] = []
+    for row in positions_rows:
+        condition_id = str(row.get("conditionId") or "").strip().lower()
+        if not condition_id:
+            continue
+        market = condition_to_market.get(condition_id)
+        size = _parse_float(row.get("size")) or 0.0
+        current_price = _parse_float(row.get("curPrice"))
+        notional_estimate = abs(size * current_price) if isinstance(current_price, float) else None
+        if market is None:
+            unmatched_condition_ids.append(condition_id)
+            continue
+        matched_rows.append(
+            {
+                "condition_id": condition_id,
+                "size": size,
+                "cur_price": current_price,
+                "estimated_notional": notional_estimate,
+                "market_id": str(market.get("market_id") or ""),
+                "market_slug": str(market.get("market_slug") or ""),
+                "question": str(market.get("question") or ""),
+                "event_title": str(market.get("event_title") or ""),
+            }
+        )
+
+    matched_rows.sort(
+        key=lambda row: abs(float(row.get("estimated_notional") or 0.0)),
+        reverse=True,
+    )
+    matched_count = len(matched_rows)
+    total_count = len(positions_rows)
+
+    return {
+        "status": "ready" if total_count > 0 else "empty_positions",
+        "positions_csv": str(positions_path),
+        "positions_rows": total_count,
+        "matched_positions": matched_count,
+        "matched_ratio": (round(matched_count / float(total_count), 6) if total_count > 0 else 0.0),
+        "unmatched_positions": max(0, total_count - matched_count),
+        "unique_matched_markets": len({str(row.get("market_slug") or "") for row in matched_rows if row.get("market_slug")}),
+        "top_matched_positions": matched_rows[:10],
+        "unmatched_condition_ids_preview": unmatched_condition_ids[:15],
+    }
+
+
 def run_polymarket_market_data_ingest(
     *,
     output_dir: str = "outputs",
@@ -280,6 +365,24 @@ def run_polymarket_market_data_ingest(
     gamma_base_url: str = "https://gamma-api.polymarket.com",
     timeout_seconds: float = 15.0,
     http_get_json: JsonGetter = _http_get_json,
+    coldmath_snapshot_dir: str | None = None,
+    coldmath_equity_csv: str | None = None,
+    coldmath_positions_csv: str | None = None,
+    coldmath_wallet_address: str = "",
+    coldmath_stale_hours: float = 48.0,
+    coldmath_refresh_from_api: bool = False,
+    coldmath_data_api_base_url: str = "https://data-api.polymarket.com",
+    coldmath_api_timeout_seconds: float = 20.0,
+    coldmath_positions_page_size: int = 500,
+    coldmath_positions_max_pages: int = 20,
+    coldmath_refresh_trades_from_api: bool = True,
+    coldmath_refresh_activity_from_api: bool = True,
+    coldmath_include_taker_only_trades: bool = True,
+    coldmath_include_all_trade_roles: bool = True,
+    coldmath_trades_page_size: int = 500,
+    coldmath_trades_max_pages: int = 20,
+    coldmath_activity_page_size: int = 500,
+    coldmath_activity_max_pages: int = 20,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     result = fetch_polymarket_temperature_markets(
@@ -302,6 +405,52 @@ def run_polymarket_market_data_ingest(
 
     summary = dict(result)
     summary["output_csv"] = str(csv_path)
+    snapshot_dir_path: Path | None = None
+    if coldmath_snapshot_dir:
+        snapshot_dir_path = Path(coldmath_snapshot_dir)
+    elif coldmath_equity_csv or coldmath_positions_csv:
+        snapshot_dir_path = Path(".")
+    if snapshot_dir_path is not None:
+        effective_equity_csv = coldmath_equity_csv or str(snapshot_dir_path / "equity.csv")
+        effective_positions_csv = coldmath_positions_csv or str(snapshot_dir_path / "positions.csv")
+        if coldmath_refresh_from_api and str(coldmath_wallet_address or "").strip():
+            coldmath_snapshot = run_coldmath_snapshot_summary(
+                snapshot_dir=str(snapshot_dir_path),
+                equity_csv=coldmath_equity_csv,
+                positions_csv=coldmath_positions_csv,
+                wallet_address=coldmath_wallet_address,
+                stale_hours=coldmath_stale_hours,
+                output_dir=output_dir,
+                now=now,
+                refresh_from_api=True,
+                data_api_base_url=coldmath_data_api_base_url,
+                api_timeout_seconds=coldmath_api_timeout_seconds,
+                positions_page_size=coldmath_positions_page_size,
+                positions_max_pages=coldmath_positions_max_pages,
+                refresh_trades_from_api=coldmath_refresh_trades_from_api,
+                refresh_activity_from_api=coldmath_refresh_activity_from_api,
+                include_taker_only_trades=coldmath_include_taker_only_trades,
+                include_all_trade_roles=coldmath_include_all_trade_roles,
+                trades_page_size=coldmath_trades_page_size,
+                trades_max_pages=coldmath_trades_max_pages,
+                activity_page_size=coldmath_activity_page_size,
+                activity_max_pages=coldmath_activity_max_pages,
+            )
+            summary["coldmath_snapshot"] = coldmath_snapshot
+            effective_equity_csv = str(coldmath_snapshot.get("equity_csv") or effective_equity_csv)
+            effective_positions_csv = str(coldmath_snapshot.get("positions_csv") or effective_positions_csv)
+        else:
+            summary["coldmath_snapshot"] = summarize_coldmath_snapshot_files(
+                equity_csv=effective_equity_csv,
+                positions_csv=effective_positions_csv,
+                wallet_address=coldmath_wallet_address,
+                stale_hours=coldmath_stale_hours,
+                now=now or datetime.now(timezone.utc),
+            )
+        summary["coldmath_temperature_alignment"] = summarize_coldmath_temperature_alignment(
+            positions_csv=effective_positions_csv,
+            markets=summary.get("markets") if isinstance(summary.get("markets"), list) else [],
+        )
     summary_path = output_path / f"polymarket_temperature_markets_summary_{stamp}.json"
     summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
     summary["output_file"] = str(summary_path)
