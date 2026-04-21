@@ -46,6 +46,21 @@ class CycleRunnerConfig:
     ticket_expires_at: str | None = None
 
 
+_DEFAULT_TICKET_MARKET = "SIM-MARKET"
+_DEFAULT_TICKET_SIDE = "yes"
+_DEFAULT_TICKET_MAX_COST = 1.0
+
+
+@dataclass(frozen=True)
+class RankedTicketCandidate:
+    market: str
+    side: str
+    max_cost: float
+    score: float
+    source: str
+    rationale: str
+
+
 class CycleRunner:
     def __init__(
         self,
@@ -159,6 +174,455 @@ class CycleRunner:
             approved_by=str(payload.get("approved_by") or "unknown"),
         )
 
+    @staticmethod
+    def _coerce_float(value: object) -> float | None:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _source_payload(
+        source_results: dict[str, object],
+        provider: str,
+    ) -> dict[str, object]:
+        raw = getattr(source_results.get(provider), "payload", None)
+        if isinstance(raw, dict):
+            return dict(raw)
+        return {}
+
+    @staticmethod
+    def _coerce_market_tickers(value: object) -> list[str]:
+        if isinstance(value, list):
+            return [str(item).strip() for item in value if str(item).strip()]
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return []
+            return [piece.strip() for piece in text.split(",") if piece.strip()]
+        return []
+
+    @staticmethod
+    def _ticker_family_key(ticker: str) -> str:
+        text = str(ticker).strip().upper()
+        if not text:
+            return ""
+        parts = [piece for piece in text.split("-") if piece]
+        if len(parts) >= 3:
+            return "-".join(parts[:-1])
+        if len(parts) == 2:
+            return parts[0] if any(char.isdigit() for char in parts[1]) else text
+        return text
+
+    @staticmethod
+    def _coldmath_no_side_max_cost(
+        *,
+        no_outcome_ratio: float | None,
+        high_price_no_positions: int,
+    ) -> float:
+        max_cost = 0.68
+        if isinstance(no_outcome_ratio, float):
+            max_cost = max(max_cost, 0.55 + (0.45 * max(0.0, min(1.0, no_outcome_ratio))))
+        if high_price_no_positions >= 3:
+            max_cost = max(max_cost, 0.9)
+        if high_price_no_positions >= 8:
+            max_cost = max(max_cost, 0.94)
+        if high_price_no_positions >= 12:
+            max_cost = max(max_cost, 0.97)
+        return round(max(0.5, min(0.99, max_cost)), 6)
+
+    @staticmethod
+    def _latest_coldmath_snapshot_summary(output_dir: Path) -> dict[str, object] | None:
+        candidates: list[Path] = []
+        latest_path = output_dir / "coldmath_snapshot_summary_latest.json"
+        if latest_path.exists():
+            candidates.append(latest_path)
+        candidates.extend(output_dir.glob("coldmath_snapshot_summary_*.json"))
+        if not candidates:
+            return None
+        candidates.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+        for path in candidates:
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if isinstance(payload, dict):
+                payload["_source_file"] = str(path)
+                return payload
+        return None
+
+    @staticmethod
+    def _latest_coldmath_replication_plan(output_dir: Path) -> dict[str, object] | None:
+        candidates: list[Path] = []
+        latest_path = output_dir / "coldmath_replication_plan_latest.json"
+        if latest_path.exists():
+            candidates.append(latest_path)
+        candidates.extend(output_dir.glob("coldmath_replication_plan_*.json"))
+        if not candidates:
+            return None
+        candidates.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+        for path in candidates:
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if isinstance(payload, dict):
+                payload["_source_file"] = str(path)
+                return payload
+        return None
+
+    def _coldmath_replication_signal(self, output_dir: Path) -> dict[str, object]:
+        payload = self._latest_coldmath_snapshot_summary(output_dir)
+        if payload is None:
+            return {
+                "status": "missing",
+                "summary_file": "",
+                "behavior_tags": [],
+                "no_outcome_ratio": None,
+                "positions_with_high_price_no": 0,
+                "multi_strike_family_count": 0,
+                "top_family_key": "",
+            }
+
+        family_behavior_raw = payload.get("family_behavior")
+        family_behavior = dict(family_behavior_raw) if isinstance(family_behavior_raw, dict) else {}
+        behavior_tags_raw = family_behavior.get("behavior_tags")
+        behavior_tags = (
+            [str(item).strip() for item in behavior_tags_raw if str(item).strip()]
+            if isinstance(behavior_tags_raw, list)
+            else []
+        )
+        families_raw = family_behavior.get("families")
+        families = list(families_raw) if isinstance(families_raw, list) else []
+        top_family_key = ""
+        if families and isinstance(families[0], dict):
+            top_family_key = str(families[0].get("family_key") or "").strip()
+
+        return {
+            "status": str(payload.get("status") or "").strip().lower() or "ready",
+            "summary_file": str(payload.get("_source_file") or ""),
+            "behavior_tags": behavior_tags,
+            "no_outcome_ratio": self._coerce_float(family_behavior.get("no_outcome_ratio")),
+            "positions_with_high_price_no": int(self._coerce_float(family_behavior.get("positions_with_high_price_no")) or 0),
+            "multi_strike_family_count": int(self._coerce_float(family_behavior.get("multi_strike_family_count")) or 0),
+            "top_family_key": top_family_key,
+        }
+
+    def _normalize_runtime_snapshots(
+        self,
+        *,
+        source_results: dict[str, object],
+        output_dir: Path,
+    ) -> dict[str, object]:
+        kalshi_payload = self._source_payload(source_results, "kalshi_market_data")
+        curated_payload = self._source_payload(source_results, "curated_news")
+        consensus_payload = self._source_payload(source_results, "opticodds_consensus")
+        coldmath_replication = self._coldmath_replication_signal(output_dir)
+        coldmath_replication_plan_raw = self._latest_coldmath_replication_plan(output_dir)
+        coldmath_replication_plan = (
+            dict(coldmath_replication_plan_raw) if isinstance(coldmath_replication_plan_raw, dict) else {}
+        )
+        plan_candidates_raw = list(coldmath_replication_plan.get("candidates") or [])
+        plan_candidates = [dict(item) for item in plan_candidates_raw[:20] if isinstance(item, dict)]
+
+        market_tickers = self._coerce_market_tickers(kalshi_payload.get("market_tickers"))
+        if not market_tickers:
+            market_tickers = self._coerce_market_tickers(kalshi_payload.get("market_tickers_preview"))
+
+        news_top_market_ticker = str(curated_payload.get("top_market_ticker") or "").strip()
+        news_fair_yes_probability = self._coerce_float(curated_payload.get("top_market_fair_yes_probability"))
+        if isinstance(news_fair_yes_probability, float):
+            news_fair_yes_probability = max(0.001, min(0.999, news_fair_yes_probability))
+        news_confidence = self._coerce_float(curated_payload.get("top_market_confidence"))
+        if isinstance(news_confidence, float):
+            news_confidence = max(0.0, min(1.0, news_confidence))
+
+        positive_ev_candidates = int(self._coerce_float(consensus_payload.get("positive_ev_candidates")) or 0)
+        market_pairs_with_consensus = int(self._coerce_float(consensus_payload.get("market_pairs_with_consensus")) or 0)
+
+        return {
+            "market_tickers": market_tickers,
+            "market_ticker_count": len(market_tickers),
+            "news_top_market_ticker": news_top_market_ticker,
+            "news_top_market_fair_yes_probability": news_fair_yes_probability,
+            "news_top_market_confidence": news_confidence,
+            "consensus_positive_ev_candidates": positive_ev_candidates,
+            "consensus_market_pairs_with_consensus": market_pairs_with_consensus,
+            "coldmath_replication": coldmath_replication,
+            "coldmath_replication_plan": {
+                "status": str(coldmath_replication_plan.get("status") or "").strip().lower() or "missing",
+                "source_file": str(coldmath_replication_plan.get("_source_file") or ""),
+                "theme": str(coldmath_replication_plan.get("theme") or "").strip().lower(),
+                "preferred_side": str(coldmath_replication_plan.get("preferred_side") or "").strip().lower(),
+                "candidate_count": int(self._coerce_float(coldmath_replication_plan.get("candidate_count")) or len(plan_candidates)),
+                "candidates": plan_candidates,
+            },
+        }
+
+    def _score_ticket_candidates(
+        self,
+        *,
+        normalized_snapshot: dict[str, object],
+    ) -> list[RankedTicketCandidate]:
+        market_tickers = self._coerce_market_tickers(normalized_snapshot.get("market_tickers"))
+        top_market = str(normalized_snapshot.get("news_top_market_ticker") or "").strip()
+        fair_yes_probability = self._coerce_float(normalized_snapshot.get("news_top_market_fair_yes_probability"))
+        confidence = self._coerce_float(normalized_snapshot.get("news_top_market_confidence"))
+        positive_ev_candidates = int(self._coerce_float(normalized_snapshot.get("consensus_positive_ev_candidates")) or 0)
+        coldmath_replication_raw = normalized_snapshot.get("coldmath_replication")
+        coldmath_replication = (
+            dict(coldmath_replication_raw) if isinstance(coldmath_replication_raw, dict) else {}
+        )
+        coldmath_replication_plan_raw = normalized_snapshot.get("coldmath_replication_plan")
+        coldmath_replication_plan = (
+            dict(coldmath_replication_plan_raw) if isinstance(coldmath_replication_plan_raw, dict) else {}
+        )
+        plan_status = str(coldmath_replication_plan.get("status") or "").strip().lower()
+        plan_candidates_raw = list(coldmath_replication_plan.get("candidates") or [])
+        behavior_tags = {
+            str(item).strip().lower()
+            for item in list(coldmath_replication.get("behavior_tags") or [])
+            if str(item).strip()
+        }
+        no_outcome_ratio = self._coerce_float(coldmath_replication.get("no_outcome_ratio"))
+        high_price_no_positions = int(self._coerce_float(coldmath_replication.get("positions_with_high_price_no")) or 0)
+        multi_strike_family_count = int(self._coerce_float(coldmath_replication.get("multi_strike_family_count")) or 0)
+        coldmath_no_side_bias = (
+            "no_side_bias" in behavior_tags
+            or "high_price_no_inventory" in behavior_tags
+            or (isinstance(no_outcome_ratio, float) and no_outcome_ratio >= 0.55)
+            or high_price_no_positions >= 5
+        )
+        coldmath_prefers_clustered_families = (
+            "multi_strike_clustering" in behavior_tags
+            or multi_strike_family_count >= 2
+        )
+        coldmath_replication_pressure = 0.0
+        if "multi_strike_clustering" in behavior_tags:
+            coldmath_replication_pressure += 0.03
+        if "high_price_no_inventory" in behavior_tags:
+            coldmath_replication_pressure += 0.06
+        if isinstance(no_outcome_ratio, float):
+            coldmath_replication_pressure += max(0.0, min(0.25, (no_outcome_ratio - 0.5) * 0.2))
+        coldmath_no_side_max_cost = self._coldmath_no_side_max_cost(
+            no_outcome_ratio=no_outcome_ratio,
+            high_price_no_positions=high_price_no_positions,
+        )
+
+        market_families: dict[str, str] = {
+            ticker: self._ticker_family_key(ticker)
+            for ticker in market_tickers
+        }
+        family_counts: dict[str, int] = {}
+        for family in market_families.values():
+            if not family:
+                continue
+            family_counts[family] = family_counts.get(family, 0) + 1
+        indexed_markets = list(enumerate(market_tickers))
+        if coldmath_prefers_clustered_families and family_counts:
+            indexed_markets.sort(
+                key=lambda row: (
+                    -int(family_counts.get(market_families.get(row[1], ""), 0)),
+                    int(row[0]),
+                )
+            )
+        ranked_markets = [market for _, market in indexed_markets]
+        top_family_key = ""
+        if ranked_markets:
+            top_family_key = market_families.get(ranked_markets[0], "")
+
+        candidates: list[RankedTicketCandidate] = []
+        seen_markets: set[str] = set()
+        if plan_status == "ready":
+            for row in plan_candidates_raw:
+                if not isinstance(row, dict):
+                    continue
+                market = str(row.get("market") or "").strip()
+                if not market:
+                    continue
+                if market_tickers and market not in market_tickers:
+                    continue
+                if market in seen_markets:
+                    continue
+                side = str(row.get("side") or "").strip().lower()
+                if side not in {"yes", "no"}:
+                    side = str(coldmath_replication_plan.get("preferred_side") or "no").strip().lower()
+                    if side not in {"yes", "no"}:
+                        side = "no"
+                max_cost = self._coerce_float(row.get("max_cost"))
+                if not isinstance(max_cost, float):
+                    max_cost = coldmath_no_side_max_cost if side == "no" else _DEFAULT_TICKET_MAX_COST
+                score = self._coerce_float(row.get("score"))
+                if not isinstance(score, float):
+                    score = 0.4
+                rationale = str(row.get("rationale") or "").strip() or "ColdMath replication plan candidate"
+                family_key = str(row.get("family_key") or "").strip()
+                if family_key:
+                    rationale = f"{rationale} ({family_key})"
+                candidates.append(
+                    RankedTicketCandidate(
+                        market=market,
+                        side=side,
+                        max_cost=round(max(0.01, min(0.99, float(max_cost))), 6),
+                        score=round(max(0.01, min(1.0, float(score))), 6),
+                        source="coldmath_replication_plan",
+                        rationale=rationale,
+                    )
+                )
+                seen_markets.add(market)
+
+        top_market_in_universe = top_market in market_tickers if top_market else False
+        allow_out_of_universe_curated = not market_tickers
+
+        if top_market and (top_market_in_universe or allow_out_of_universe_curated):
+            side = _DEFAULT_TICKET_SIDE
+            max_cost = _DEFAULT_TICKET_MAX_COST
+            if isinstance(fair_yes_probability, float):
+                side = "yes" if fair_yes_probability >= 0.5 else "no"
+                side_probability = fair_yes_probability if side == "yes" else 1.0 - fair_yes_probability
+                max_cost = max(0.01, min(0.99, side_probability))
+            if coldmath_no_side_bias and not (isinstance(fair_yes_probability, float) and fair_yes_probability >= 0.72):
+                side = "no"
+                if isinstance(fair_yes_probability, float):
+                    max_cost = max(max_cost, max(0.01, min(0.99, 1.0 - fair_yes_probability)))
+                else:
+                    max_cost = max(max_cost, coldmath_no_side_max_cost)
+                max_cost = max(max_cost, coldmath_no_side_max_cost)
+            confidence_score = max(0.0, min(1.0, confidence if isinstance(confidence, float) else 0.35))
+            score = 0.45 + (0.35 * confidence_score)
+            if top_market_in_universe:
+                score += 0.2
+            else:
+                score -= 0.1
+            if positive_ev_candidates > 0:
+                score += 0.05
+            if coldmath_no_side_bias and side == "no":
+                score += coldmath_replication_pressure
+            score = max(0.01, min(1.0, score))
+            candidates.append(
+                RankedTicketCandidate(
+                    market=top_market,
+                    side=side,
+                    max_cost=round(max_cost, 6),
+                    score=round(score, 6),
+                    source="curated_news",
+                    rationale=(
+                        "Curated-news prior selected top market ticker"
+                        if top_market in market_tickers
+                        else "Curated-news prior produced ticker outside current ws-state universe"
+                    )
+                    + (
+                        "; ColdMath replication pressure nudged side toward NO"
+                        if coldmath_no_side_bias and side == "no"
+                        else ""
+                    ),
+                )
+            )
+            seen_markets.add(top_market)
+
+        for index, market in enumerate(ranked_markets[:8]):
+            if market in seen_markets:
+                continue
+            if top_market and market == top_market:
+                continue
+            fallback_score = 0.3 - (0.03 * index)
+            if positive_ev_candidates > 0:
+                fallback_score += 0.02
+            fallback_side = _DEFAULT_TICKET_SIDE
+            fallback_max_cost = _DEFAULT_TICKET_MAX_COST
+            fallback_source = "kalshi_market_data"
+            fallback_rationale = "Fallback to active Kalshi ws-state market universe"
+            if coldmath_no_side_bias:
+                fallback_side = "no"
+                fallback_source = "coldmath_replication"
+                fallback_max_cost = coldmath_no_side_max_cost
+                family_key = market_families.get(market, "")
+                family_count = int(family_counts.get(family_key, 0))
+                family_suffix = (
+                    f" ({family_key}, family_size={family_count})"
+                    if family_key
+                    else ""
+                )
+                fallback_rationale = (
+                    "ColdMath replication signal favors NO-side inventory with multi-strike clustering"
+                    + family_suffix
+                )
+                fallback_score += coldmath_replication_pressure
+                if coldmath_prefers_clustered_families and family_key and family_key == top_family_key:
+                    fallback_score += 0.04
+            fallback_score = max(0.05, min(1.0, fallback_score))
+            candidates.append(
+                RankedTicketCandidate(
+                    market=market,
+                    side=fallback_side,
+                    max_cost=round(float(fallback_max_cost), 6),
+                    score=round(fallback_score, 6),
+                    source=fallback_source,
+                    rationale=fallback_rationale,
+                )
+            )
+            seen_markets.add(market)
+
+        candidates.sort(key=lambda row: row.score, reverse=True)
+        return candidates
+
+    def _resolve_ticket_inputs(
+        self,
+        *,
+        config: CycleRunnerConfig,
+        candidates: list[RankedTicketCandidate],
+    ) -> tuple[str, str, float, dict[str, object]]:
+        explicit_market = str(config.ticket_market).strip()
+        explicit_side = str(config.ticket_side).strip().lower()
+        explicit_max_cost = float(config.ticket_max_cost)
+        if explicit_side not in {"yes", "no"}:
+            explicit_side = _DEFAULT_TICKET_SIDE
+
+        if explicit_market and explicit_market != _DEFAULT_TICKET_MARKET:
+            return (
+                explicit_market,
+                explicit_side,
+                explicit_max_cost,
+                {
+                    "selection_source": "config",
+                    "selection_score": None,
+                    "selection_rationale": "Explicit ticket config provided",
+                    "market": explicit_market,
+                    "side": explicit_side,
+                    "max_cost": explicit_max_cost,
+                },
+            )
+
+        if candidates:
+            best = candidates[0]
+            return (
+                best.market,
+                best.side,
+                float(best.max_cost),
+                {
+                    "selection_source": best.source,
+                    "selection_score": best.score,
+                    "selection_rationale": best.rationale,
+                    "market": best.market,
+                    "side": best.side,
+                    "max_cost": float(best.max_cost),
+                },
+            )
+
+        return (
+            explicit_market or _DEFAULT_TICKET_MARKET,
+            explicit_side,
+            explicit_max_cost,
+            {
+                "selection_source": "default",
+                "selection_score": None,
+                "selection_rationale": "No scored candidates available",
+                "market": explicit_market or _DEFAULT_TICKET_MARKET,
+                "side": explicit_side,
+                "max_cost": explicit_max_cost,
+            },
+        )
+
     def run(self, config: CycleRunnerConfig) -> dict[str, object]:
         effective_config = load_effective_config(repo_root=config.repo_root)
         policy_payload = dict(effective_config.values.get("policy") or {})
@@ -268,6 +732,34 @@ class CycleRunner:
             hard_required_sources=hard_required_sources,
             missing_required_sources=missing_required_sources,
         )
+        normalized_snapshot = self._normalize_runtime_snapshots(
+            source_results=source_results,
+            output_dir=output_dir,
+        )
+        ticket_candidates = self._score_ticket_candidates(normalized_snapshot=normalized_snapshot)
+        coldmath_replication = (
+            dict(normalized_snapshot.get("coldmath_replication"))
+            if isinstance(normalized_snapshot.get("coldmath_replication"), dict)
+            else {}
+        )
+        coldmath_replication_plan = (
+            dict(normalized_snapshot.get("coldmath_replication_plan"))
+            if isinstance(normalized_snapshot.get("coldmath_replication_plan"), dict)
+            else {}
+        )
+        news_enrichment_summary = {
+            "provider_status": degraded_summary.source_statuses.get("curated_news", "missing"),
+            "top_market_ticker": normalized_snapshot.get("news_top_market_ticker"),
+            "top_market_fair_yes_probability": normalized_snapshot.get("news_top_market_fair_yes_probability"),
+            "top_market_confidence": normalized_snapshot.get("news_top_market_confidence"),
+            "coldmath_behavior_tags": list(coldmath_replication.get("behavior_tags") or []),
+            "coldmath_top_family_key": str(coldmath_replication.get("top_family_key") or ""),
+            "coldmath_replication_plan_status": str(coldmath_replication_plan.get("status") or ""),
+            "coldmath_replication_plan_theme": str(coldmath_replication_plan.get("theme") or ""),
+            "coldmath_replication_plan_candidates": int(
+                self._coerce_float(coldmath_replication_plan.get("candidate_count")) or 0
+            ),
+        }
 
         state.transition("news.enriching")
         events.append(
@@ -278,11 +770,59 @@ class CycleRunner:
                 phase=state.current_phase,
                 lane=config.lane,
                 severity="warn" if degraded_summary.overall_status == "degraded" else "info",
+                data=news_enrichment_summary,
             )
         )
 
         state.transition("snapshots.normalized")
+        events.append(
+            new_event(
+                run_id=run_id,
+                cycle_id=cycle_id,
+                event_type="snapshots_normalized",
+                phase=state.current_phase,
+                lane=config.lane,
+                severity="info",
+                data={
+                    "market_ticker_count": normalized_snapshot.get("market_ticker_count"),
+                    "news_top_market_ticker": normalized_snapshot.get("news_top_market_ticker"),
+                    "consensus_positive_ev_candidates": normalized_snapshot.get("consensus_positive_ev_candidates"),
+                    "consensus_market_pairs_with_consensus": normalized_snapshot.get(
+                        "consensus_market_pairs_with_consensus"
+                    ),
+                    "coldmath_replication_status": coldmath_replication.get("status"),
+                    "coldmath_no_outcome_ratio": coldmath_replication.get("no_outcome_ratio"),
+                    "coldmath_replication_plan_status": coldmath_replication_plan.get("status"),
+                    "coldmath_replication_plan_candidates": coldmath_replication_plan.get("candidate_count"),
+                },
+            )
+        )
+
         state.transition("candidates.scored")
+        events.append(
+            new_event(
+                run_id=run_id,
+                cycle_id=cycle_id,
+                event_type="candidates_scored",
+                phase=state.current_phase,
+                lane=config.lane,
+                severity="info",
+                data={
+                    "candidate_count": len(ticket_candidates),
+                    "top_candidate": (
+                        None
+                        if not ticket_candidates
+                        else {
+                            "market": ticket_candidates[0].market,
+                            "side": ticket_candidates[0].side,
+                            "max_cost": ticket_candidates[0].max_cost,
+                            "score": ticket_candidates[0].score,
+                            "source": ticket_candidates[0].source,
+                        }
+                    ),
+                },
+            )
+        )
         state.transition("policy.checked")
 
         policy_decision: PolicyDecision = evaluate_policy_gate(
@@ -325,6 +865,10 @@ class CycleRunner:
         reconciliation_remaining_quantity = 0.0
         position_status = "none"
         ticket: TicketProposal | None = None
+        resolved_ticket_market, resolved_ticket_side, resolved_ticket_max_cost, ticket_selection = self._resolve_ticket_inputs(
+            config=config,
+            candidates=ticket_candidates,
+        )
 
         if policy_decision.status == "blocked":
             state.transition("ticket.blocked")
@@ -350,9 +894,9 @@ class CycleRunner:
             ticket_status = "ready"
             ticket_expires_at = self._resolve_ticket_expires_at(config.ticket_expires_at)
             ticket = create_ticket_proposal(
-                market=config.ticket_market,
-                side=config.ticket_side,
-                max_cost=config.ticket_max_cost,
+                market=resolved_ticket_market,
+                side=resolved_ticket_side,
+                max_cost=resolved_ticket_max_cost,
                 lane=config.lane,
                 source_run_id=run_id,
                 expires_at=ticket_expires_at,
@@ -372,6 +916,9 @@ class CycleRunner:
                         "side": ticket.side,
                         "max_cost": ticket.max_cost,
                         "expires_at": ticket.expires_at,
+                        "selection_source": ticket_selection.get("selection_source"),
+                        "selection_score": ticket_selection.get("selection_score"),
+                        "selection_rationale": ticket_selection.get("selection_rationale"),
                     },
                 )
             )
@@ -746,6 +1293,10 @@ class CycleRunner:
             "live_submit_enabled": live_submit_enabled,
             "source_health": degraded_summary.source_statuses,
             "degraded_summary": degraded_summary.to_dict(),
+            "news_enrichment": news_enrichment_summary,
+            "normalized_snapshot": normalized_snapshot,
+            "candidate_scores": [asdict(candidate) for candidate in ticket_candidates[:10]],
+            "ticket_selection": dict(ticket_selection),
             "policy_decisions": [asdict(policy_decision)],
             "ticket_status": ticket_status,
             "approval_status": approval_status,

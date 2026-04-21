@@ -14,12 +14,13 @@ from betbot.runtime.source_result import SourceResult
 
 
 class _StaticAdapter:
-    def __init__(self, provider: str, status: str) -> None:
+    def __init__(self, provider: str, status: str, payload: dict[str, object] | None = None) -> None:
         self.provider = provider
         self._status = status
+        self._payload = payload or {}
 
     def fetch(self, context: AdapterContext) -> SourceResult[dict[str, object]]:
-        return SourceResult(provider=self.provider, status=self._status, payload={})
+        return SourceResult(provider=self.provider, status=self._status, payload=dict(self._payload))
 
 
 class CycleRunnerTests(unittest.TestCase):
@@ -145,6 +146,255 @@ class CycleRunnerTests(unittest.TestCase):
             )
             self.assertEqual(report["hard_required_sources"], [])
             self.assertEqual(report["overall_status"], "ok")
+
+    def test_default_ticket_selection_uses_scored_curated_news_candidate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            runner = CycleRunner(
+                adapters=[
+                    _StaticAdapter(
+                        "kalshi_market_data",
+                        "ok",
+                        payload={"market_tickers": ["KXRAINNYCM-26JUN-1", "KXRAINNYCM-26JUN-2"]},
+                    ),
+                    _StaticAdapter(
+                        "curated_news",
+                        "ok",
+                        payload={
+                            "top_market_ticker": "KXRAINNYCM-26JUN-1",
+                            "top_market_fair_yes_probability": 0.32,
+                            "top_market_confidence": 0.82,
+                        },
+                    ),
+                    _StaticAdapter(
+                        "opticodds_consensus",
+                        "ok",
+                        payload={
+                            "positive_ev_candidates": 2,
+                            "market_pairs_with_consensus": 4,
+                        },
+                    ),
+                ],
+                hard_required_sources=("kalshi_market_data",),
+            )
+            report = runner.run(
+                CycleRunnerConfig(
+                    lane="research",
+                    output_dir=str(output_dir),
+                    repo_root=str(Path.cwd()),
+                )
+            )
+
+            self.assertEqual(report["overall_status"], "ok")
+            ticket = dict(report["ticket_proposal"] or {})
+            self.assertEqual(ticket["market"], "KXRAINNYCM-26JUN-1")
+            self.assertEqual(ticket["side"], "no")
+            self.assertAlmostEqual(float(ticket["max_cost"]), 0.68, places=6)
+            self.assertEqual(report["ticket_selection"]["selection_source"], "curated_news")
+            self.assertTrue(report["candidate_scores"])
+
+    def test_unmapped_curated_news_ticker_falls_back_to_market_universe(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            runner = CycleRunner(
+                adapters=[
+                    _StaticAdapter(
+                        "kalshi_market_data",
+                        "ok",
+                        payload={"market_tickers": ["MKT-PRIMARY", "MKT-SECONDARY"]},
+                    ),
+                    _StaticAdapter(
+                        "curated_news",
+                        "ok",
+                        payload={
+                            "top_market_ticker": "OUTSIDE-MARKET",
+                            "top_market_fair_yes_probability": 0.31,
+                            "top_market_confidence": 0.9,
+                        },
+                    ),
+                ],
+                hard_required_sources=("kalshi_market_data",),
+            )
+            report = runner.run(
+                CycleRunnerConfig(
+                    lane="research",
+                    output_dir=str(output_dir),
+                    repo_root=str(Path.cwd()),
+                )
+            )
+
+            self.assertEqual(report["overall_status"], "ok")
+            self.assertEqual(report["ticket_selection"]["selection_source"], "kalshi_market_data")
+            ticket = dict(report["ticket_proposal"] or {})
+            self.assertEqual(ticket["market"], "MKT-PRIMARY")
+            self.assertEqual(ticket["side"], "yes")
+
+    def test_coldmath_replication_signal_biases_fallback_ticket_side_to_no(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            (output_dir / "coldmath_snapshot_summary_latest.json").write_text(
+                json.dumps(
+                    {
+                        "status": "ready",
+                        "family_behavior": {
+                            "behavior_tags": ["multi_strike_clustering", "high_price_no_inventory"],
+                            "no_outcome_ratio": 0.62,
+                            "positions_with_high_price_no": 12,
+                            "multi_strike_family_count": 42,
+                            "families": [
+                                {
+                                    "family_key": "highest-temperature-in-nyc-on-april-21-2026",
+                                }
+                            ],
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            runner = CycleRunner(
+                adapters=[
+                    _StaticAdapter(
+                        "kalshi_market_data",
+                        "ok",
+                        payload={"market_tickers": ["MKT-A", "MKT-B"]},
+                    ),
+                ],
+                hard_required_sources=("kalshi_market_data",),
+            )
+            report = runner.run(
+                CycleRunnerConfig(
+                    lane="research",
+                    output_dir=str(output_dir),
+                    repo_root=str(Path.cwd()),
+                )
+            )
+
+            self.assertEqual(report["overall_status"], "ok")
+            self.assertEqual(report["ticket_selection"]["selection_source"], "coldmath_replication")
+            ticket = dict(report["ticket_proposal"] or {})
+            self.assertEqual(ticket["market"], "MKT-A")
+            self.assertEqual(ticket["side"], "no")
+            self.assertGreaterEqual(float(ticket["max_cost"]), 0.94)
+            normalized_snapshot = dict(report["normalized_snapshot"] or {})
+            coldmath_replication = dict(normalized_snapshot.get("coldmath_replication") or {})
+            self.assertIn("high_price_no_inventory", coldmath_replication.get("behavior_tags", []))
+            self.assertEqual(coldmath_replication.get("status"), "ready")
+
+    def test_coldmath_replication_prefers_largest_market_family_cluster(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            (output_dir / "coldmath_snapshot_summary_latest.json").write_text(
+                json.dumps(
+                    {
+                        "status": "ready",
+                        "family_behavior": {
+                            "behavior_tags": ["multi_strike_clustering", "no_side_bias"],
+                            "no_outcome_ratio": 0.58,
+                            "positions_with_high_price_no": 2,
+                            "multi_strike_family_count": 8,
+                            "families": [
+                                {
+                                    "family_key": "highest-temperature-in-nyc-on-april-21-2026",
+                                }
+                            ],
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            runner = CycleRunner(
+                adapters=[
+                    _StaticAdapter(
+                        "kalshi_market_data",
+                        "ok",
+                        payload={
+                            "market_tickers": [
+                                "KXHIGHNYC-26APR21-B80",
+                                "KXHIGHDAL-26APR21-B80",
+                                "KXHIGHNYC-26APR21-B81",
+                                "KXHIGHNYC-26APR21-B82",
+                            ]
+                        },
+                    ),
+                ],
+                hard_required_sources=("kalshi_market_data",),
+            )
+            report = runner.run(
+                CycleRunnerConfig(
+                    lane="research",
+                    output_dir=str(output_dir),
+                    repo_root=str(Path.cwd()),
+                )
+            )
+
+            self.assertEqual(report["overall_status"], "ok")
+            self.assertEqual(report["ticket_selection"]["selection_source"], "coldmath_replication")
+            ticket = dict(report["ticket_proposal"] or {})
+            self.assertTrue(str(ticket["market"]).startswith("KXHIGHNYC-26APR21-"))
+            self.assertEqual(ticket["side"], "no")
+            self.assertGreaterEqual(float(ticket["max_cost"]), 0.8)
+            self.assertIn("family_size=3", str(report["ticket_selection"]["selection_rationale"]))
+
+    def test_coldmath_replication_plan_candidates_take_priority_when_available(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            (output_dir / "coldmath_replication_plan_latest.json").write_text(
+                json.dumps(
+                    {
+                        "status": "ready",
+                        "theme": "temperature",
+                        "preferred_side": "no",
+                        "candidate_count": 2,
+                        "candidates": [
+                            {
+                                "market": "MKT-B",
+                                "side": "no",
+                                "max_cost": 0.91,
+                                "score": 0.88,
+                                "family_key": "FAMILY-B",
+                                "rationale": "planner pick B",
+                            },
+                            {
+                                "market": "MKT-A",
+                                "side": "no",
+                                "max_cost": 0.9,
+                                "score": 0.55,
+                                "family_key": "FAMILY-A",
+                                "rationale": "planner pick A",
+                            },
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            runner = CycleRunner(
+                adapters=[
+                    _StaticAdapter(
+                        "kalshi_market_data",
+                        "ok",
+                        payload={"market_tickers": ["MKT-A", "MKT-B", "MKT-C"]},
+                    ),
+                ],
+                hard_required_sources=("kalshi_market_data",),
+            )
+            report = runner.run(
+                CycleRunnerConfig(
+                    lane="research",
+                    output_dir=str(output_dir),
+                    repo_root=str(Path.cwd()),
+                )
+            )
+
+            self.assertEqual(report["overall_status"], "ok")
+            self.assertEqual(report["ticket_selection"]["selection_source"], "coldmath_replication_plan")
+            ticket = dict(report["ticket_proposal"] or {})
+            self.assertEqual(ticket["market"], "MKT-B")
+            self.assertEqual(ticket["side"], "no")
+            self.assertAlmostEqual(float(ticket["max_cost"]), 0.91, places=6)
+            normalized_snapshot = dict(report["normalized_snapshot"] or {})
+            plan = dict(normalized_snapshot.get("coldmath_replication_plan") or {})
+            self.assertEqual(plan.get("status"), "ready")
+            self.assertGreaterEqual(int(plan.get("candidate_count") or 0), 2)
 
     def test_live_execute_with_valid_approval_submits_order(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -6,10 +6,18 @@ from datetime import datetime
 from pathlib import Path
 import sys
 
+from betbot.adapters import (
+    CuratedNewsAdapter,
+    KalshiMarketDataAdapter,
+    OpticOddsConsensusAdapter,
+    TheRundownMappingAdapter,
+)
 from betbot.alpha_scoreboard import run_alpha_scoreboard
 from betbot.backtest import run_backtest
 from betbot.bayes import conservative_planning_p
 from betbot.canonical_universe import run_canonical_universe
+from betbot.coldmath_snapshot import run_coldmath_snapshot_summary
+from betbot.coldmath_replication import run_coldmath_replication_plan
 from betbot.commands.runtime_ops import run_effective_config, run_policy_check, run_render_board
 from betbot.config import load_config
 from betbot.dns_guard import run_dns_doctor
@@ -48,6 +56,17 @@ from betbot.kalshi_nonsports_thresholds import run_kalshi_nonsports_thresholds
 from betbot.kalshi_temperature_constraints import run_kalshi_temperature_constraint_scan
 from betbot.kalshi_temperature_contract_specs import run_kalshi_temperature_contract_specs
 from betbot.kalshi_temperature_metar_ingest import run_kalshi_temperature_metar_ingest
+from betbot.kalshi_temperature_profitability import (
+    run_kalshi_temperature_profitability,
+    run_kalshi_temperature_refill_trial_balance,
+)
+from betbot.kalshi_temperature_selection_quality import run_kalshi_temperature_selection_quality
+from betbot.kalshi_temperature_bankroll_validation import (
+    run_kalshi_temperature_alpha_gap_report,
+    run_kalshi_temperature_bankroll_validation,
+    run_kalshi_temperature_go_live_gate,
+    run_kalshi_temperature_live_readiness,
+)
 from betbot.kalshi_temperature_settlement_state import run_kalshi_temperature_settlement_state
 from betbot.kalshi_temperature_trader import run_kalshi_temperature_shadow_watch, run_kalshi_temperature_trader
 from betbot.kalshi_weather_catalog import run_kalshi_weather_catalog
@@ -70,6 +89,7 @@ from betbot.probability_path import (
     units_from_dollars,
 )
 from betbot.research_audit import run_research_audit
+from betbot.runtime.cycle_runner import CycleRunner, CycleRunnerConfig
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -183,6 +203,175 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional explicit cycle JSON path",
     )
     render_board.add_argument("--output-dir", default="outputs", help="Output directory")
+
+    runtime_cycle = subparsers.add_parser(
+        "runtime-cycle",
+        help="Run one runtime cycle with adapter-backed source health and ticket selection",
+    )
+    runtime_cycle.add_argument("--lane", default="research", help="Permission lane to evaluate")
+    runtime_cycle.add_argument("--output-dir", default="outputs", help="Output directory")
+    runtime_cycle.add_argument(
+        "--repo-root",
+        default=None,
+        help="Optional repository root override for config resolution",
+    )
+    runtime_cycle.add_argument(
+        "--lane-policy-path",
+        default=None,
+        help="Optional path to lane policy YAML",
+    )
+    runtime_cycle.add_argument(
+        "--hard-required-sources",
+        default="",
+        help="Optional comma-separated override for hard required providers",
+    )
+    runtime_cycle.add_argument(
+        "--request-live-submit",
+        action="store_true",
+        help="Attempt live order submit when lane policy allows",
+    )
+    runtime_cycle.add_argument(
+        "--live-env-file",
+        default=None,
+        help="Optional env file for live venue adapter initialization",
+    )
+    runtime_cycle.add_argument(
+        "--live-timeout-seconds",
+        type=float,
+        default=10.0,
+        help="Live venue HTTP timeout budget",
+    )
+    runtime_cycle.add_argument(
+        "--allow-simulated-live-adapter",
+        action="store_true",
+        help="Allow local simulated live adapter in live_execute lane",
+    )
+    runtime_cycle.add_argument(
+        "--approval-json-path",
+        default=None,
+        help="Optional approval JSON path for live submit lanes",
+    )
+    runtime_cycle.add_argument(
+        "--ticket-market",
+        default="SIM-MARKET",
+        help="Explicit market ticker override (default resolves from scored candidates)",
+    )
+    runtime_cycle.add_argument(
+        "--ticket-side",
+        default="yes",
+        choices=("yes", "no"),
+        help="Explicit side override when --ticket-market is provided",
+    )
+    runtime_cycle.add_argument(
+        "--ticket-max-cost",
+        type=float,
+        default=1.0,
+        help="Explicit max cost override when --ticket-market is provided",
+    )
+    runtime_cycle.add_argument(
+        "--ticket-expires-at",
+        default=None,
+        help="Optional explicit ISO timestamp for ticket expiry",
+    )
+    runtime_cycle.add_argument(
+        "--include-therundown-mapping",
+        action="store_true",
+        help="Include TheRundown mapping adapter in source health checks",
+    )
+    runtime_cycle.add_argument(
+        "--coldmath-snapshot-dir",
+        default="tmp/coldmath_snapshot",
+        help="Directory containing ColdMath equity/positions snapshot CSVs",
+    )
+    runtime_cycle.add_argument(
+        "--coldmath-wallet-address",
+        default="",
+        help="Wallet address label used for optional ColdMath snapshot refresh",
+    )
+    runtime_cycle.add_argument(
+        "--coldmath-stale-hours",
+        type=float,
+        default=48.0,
+        help="Staleness threshold for ColdMath snapshot summary",
+    )
+    runtime_cycle.add_argument(
+        "--coldmath-refresh-from-api",
+        action="store_true",
+        help="Refresh ColdMath snapshot CSVs from Polymarket data API before cycle execution",
+    )
+    runtime_cycle.add_argument(
+        "--coldmath-data-api-base-url",
+        default="https://data-api.polymarket.com",
+        help="Polymarket data API base URL for ColdMath snapshot refresh",
+    )
+    runtime_cycle.add_argument(
+        "--coldmath-api-timeout-seconds",
+        type=float,
+        default=20.0,
+        help="HTTP timeout for ColdMath snapshot refresh calls",
+    )
+    runtime_cycle.add_argument(
+        "--coldmath-positions-page-size",
+        type=int,
+        default=500,
+        help="Page size used for Polymarket positions pagination",
+    )
+    runtime_cycle.add_argument(
+        "--coldmath-positions-max-pages",
+        type=int,
+        default=20,
+        help="Max positions pages pulled during ColdMath refresh",
+    )
+    runtime_cycle.add_argument(
+        "--coldmath-build-replication-plan",
+        action="store_true",
+        help="Build coldmath-replication-plan artifact before running runtime cycle",
+    )
+    runtime_cycle.add_argument(
+        "--coldmath-replication-top-n",
+        type=int,
+        default=12,
+        help="Candidate depth when building replication plan during runtime-cycle",
+    )
+    runtime_cycle.add_argument(
+        "--coldmath-replication-market-tickers",
+        default="",
+        help="Optional comma-separated ticker override for runtime-cycle replication plan build",
+    )
+    runtime_cycle.add_argument(
+        "--coldmath-replication-disable-liquidity-filter",
+        action="store_true",
+        help="Disable liquidity gating when building runtime-cycle replication plan",
+    )
+    runtime_cycle.add_argument(
+        "--coldmath-replication-disable-require-two-sided-quotes",
+        action="store_true",
+        help="Allow one-sided quotes during runtime-cycle replication plan build",
+    )
+    runtime_cycle.add_argument(
+        "--coldmath-replication-max-spread-dollars",
+        type=float,
+        default=0.18,
+        help="Liquidity gate spread cap used by runtime-cycle replication plan build",
+    )
+    runtime_cycle.add_argument(
+        "--coldmath-replication-min-liquidity-score",
+        type=float,
+        default=0.45,
+        help="Liquidity gate minimum score used by runtime-cycle replication plan build",
+    )
+    runtime_cycle.add_argument(
+        "--coldmath-replication-max-family-candidates",
+        type=int,
+        default=3,
+        help="Per-family cap for runtime-cycle replication plan candidates",
+    )
+    runtime_cycle.add_argument(
+        "--coldmath-replication-max-family-share",
+        type=float,
+        default=0.6,
+        help="Max share of selected slots allocated to one family in runtime-cycle plan build",
+    )
 
     alpha_scoreboard = subparsers.add_parser(
         "alpha-scoreboard",
@@ -1435,6 +1624,14 @@ def build_parser() -> argparse.ArgumentParser:
         default=100,
         help="Maximum markets to evaluate per run",
     )
+    kalshi_temperature_constraint_scan.add_argument(
+        "--speci-calibration-json",
+        default=None,
+        help=(
+            "Optional JSON file with calibrated SPECI shock thresholds/weights. "
+            "Used to tune shock activation, cooldown, and persistence gates."
+        ),
+    )
     kalshi_temperature_constraint_scan.add_argument("--output-dir", default="outputs", help="Output directory")
 
     kalshi_temperature_settlement_state = subparsers.add_parser(
@@ -1456,6 +1653,23 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=25,
         help="Number of underlyings embedded in top_underlyings summary",
+    )
+    kalshi_temperature_settlement_state.add_argument(
+        "--final-report-cache-ttl-minutes",
+        type=float,
+        default=30.0,
+        help="Cache TTL for station/day final report lookups",
+    )
+    kalshi_temperature_settlement_state.add_argument(
+        "--final-report-timeout-seconds",
+        type=float,
+        default=12.0,
+        help="HTTP timeout per final report lookup",
+    )
+    kalshi_temperature_settlement_state.add_argument(
+        "--disable-final-report-lookup",
+        action="store_true",
+        help="Disable authoritative station/day final report lookup enrichment",
     )
     kalshi_temperature_settlement_state.add_argument("--output-dir", default="outputs", help="Output directory")
 
@@ -1516,6 +1730,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional explicit websocket state JSON; defaults to kalshi_ws_state_latest.json in output-dir",
     )
     kalshi_temperature_trader.add_argument(
+        "--alpha-consensus-json",
+        default=None,
+        help=(
+            "Optional fused breadth-worker consensus JSON. "
+            "Defaults to output-dir/breadth_worker/breadth_worker_consensus_latest.json when present."
+        ),
+    )
+    kalshi_temperature_trader.add_argument(
         "--settlement-state-json",
         default=None,
         help="Optional settlement-finalization state JSON keyed by underlying (series|station|date)",
@@ -1539,7 +1761,7 @@ def build_parser() -> argparse.ArgumentParser:
     kalshi_temperature_trader.add_argument(
         "--max-orders",
         type=int,
-        default=3,
+        default=8,
         help="Maximum approved intents to convert into executable plans",
     )
     kalshi_temperature_trader.add_argument(
@@ -1579,6 +1801,114 @@ def build_parser() -> argparse.ArgumentParser:
         help="Maximum allowed METAR observation age in minutes",
     )
     kalshi_temperature_trader.add_argument(
+        "--metar-age-policy-json",
+        default=None,
+        help=(
+            "Optional JSON file with station/hour-specific METAR age overrides. "
+            "Schema keys: station_max_age_minutes and station_local_hour_max_age_minutes."
+        ),
+    )
+    kalshi_temperature_trader.add_argument(
+        "--speci-calibration-json",
+        default=None,
+        help=(
+            "Optional JSON file with calibrated SPECI shock thresholds/weights forwarded to implicit constraint scans."
+        ),
+    )
+    kalshi_temperature_trader.add_argument(
+        "--min-alpha-strength",
+        type=float,
+        default=0.0,
+        help="Minimum alpha-strength score required for intent approval",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--min-probability-confidence",
+        type=float,
+        default=None,
+        help="Optional minimum modeled probability confidence required for intent approval",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--min-expected-edge-net",
+        type=float,
+        default=None,
+        help="Optional minimum modeled expected edge (net) required for intent approval",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--min-edge-to-risk-ratio",
+        type=float,
+        default=None,
+        help=(
+            "Optional minimum base edge-to-risk ratio required for intent approval. "
+            "Computed as (probability - entry_price) / entry_price."
+        ),
+    )
+    kalshi_temperature_trader.add_argument(
+        "--min-base-edge-net",
+        type=float,
+        default=0.0,
+        help="Minimum base edge (probability - entry_price) required before additive bonuses",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--min-probability-breakeven-gap",
+        type=float,
+        default=0.0,
+        help="Minimum probability minus breakeven-price gap required for approval",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--disable-enforce-probability-edge-thresholds",
+        action="store_true",
+        help=(
+            "Disable probability/edge threshold enforcement when explicit thresholds are omitted. "
+            "By default, omitted thresholds are backfilled by configured fallback values."
+        ),
+    )
+    kalshi_temperature_trader.add_argument(
+        "--enforce-entry-price-probability-floor",
+        action="store_true",
+        help=(
+            "When fallback probability thresholds are active, raise minimum probability based on entry price "
+            "to avoid high-price low-conviction approvals."
+        ),
+    )
+    kalshi_temperature_trader.add_argument(
+        "--fallback-min-probability-confidence",
+        type=float,
+        default=None,
+        help=(
+            "Fallback minimum probability confidence when --min-probability-confidence is omitted "
+            "(defaults to min-settlement-confidence if unset)."
+        ),
+    )
+    kalshi_temperature_trader.add_argument(
+        "--fallback-min-expected-edge-net",
+        type=float,
+        default=0.005,
+        help=(
+            "Fallback minimum expected edge (net) when --min-expected-edge-net is omitted "
+            "(default: 0.005)."
+        ),
+    )
+    kalshi_temperature_trader.add_argument(
+        "--fallback-min-edge-to-risk-ratio",
+        type=float,
+        default=0.02,
+        help=(
+            "Fallback minimum base edge-to-risk ratio when --min-edge-to-risk-ratio is omitted "
+            "(default: 0.02)."
+        ),
+    )
+    kalshi_temperature_trader.add_argument(
+        "--disable-interval-consistency-gate",
+        action="store_true",
+        help="Disable interval-consistency checks (yes/no feasibility overlap + gap checks)",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--max-yes-possible-gap-for-yes-side",
+        type=float,
+        default=0.0,
+        help="Maximum allowed yes_possible_gap for YES-side intents",
+    )
+    kalshi_temperature_trader.add_argument(
         "--min-hours-to-close",
         type=float,
         default=0.0,
@@ -1593,8 +1923,47 @@ def build_parser() -> argparse.ArgumentParser:
     kalshi_temperature_trader.add_argument(
         "--max-intents-per-underlying",
         type=int,
-        default=1,
+        default=6,
         help="Maximum approved intents per underlying key (series|station|date)",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--taf-stale-grace-minutes",
+        type=float,
+        default=0.0,
+        help="Optional METAR-age grace when forecast/TAF path modeling is ready",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--taf-stale-grace-max-volatility-score",
+        type=float,
+        default=1.0,
+        help="Maximum TAF volatility score allowed for stale-grace activation",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--taf-stale-grace-max-range-width",
+        type=float,
+        default=10.0,
+        help="Maximum forecast range width allowed for stale-grace activation",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--metar-freshness-quality-boundary-ratio",
+        type=float,
+        default=0.92,
+        help=(
+            "Age-ratio boundary (age/max_age) where near-stale quality tightening activates. "
+            "Set <=0 to disable."
+        ),
+    )
+    kalshi_temperature_trader.add_argument(
+        "--metar-freshness-quality-probability-margin",
+        type=float,
+        default=0.03,
+        help="Additional probability-confidence margin required near stale boundary",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--metar-freshness-quality-expected-edge-margin",
+        type=float,
+        default=0.005,
+        help="Additional expected-edge margin required near stale boundary",
     )
     kalshi_temperature_trader.add_argument(
         "--disable-require-market-snapshot-seq",
@@ -1632,6 +2001,169 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=3.0,
         help="Daily risk cap forwarded to micro-execute",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--max-total-deployed-pct",
+        type=float,
+        default=0.35,
+        help="Maximum fraction of reference bankroll deployable per loop before plan truncation",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--max-same-station-exposure-pct",
+        type=float,
+        default=0.6,
+        help="Maximum per-station share of deployed loop budget during portfolio selection",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--max-same-hour-cluster-exposure-pct",
+        type=float,
+        default=0.6,
+        help="Maximum per-local-hour share of deployed loop budget during portfolio selection",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--max-same-underlying-exposure-pct",
+        type=float,
+        default=0.5,
+        help="Maximum per-underlying share of deployed loop budget during portfolio selection",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--max-orders-per-station",
+        type=int,
+        default=2,
+        help="Maximum planned orders per station per loop (count cap)",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--max-orders-per-underlying",
+        type=int,
+        default=2,
+        help="Maximum planned orders per underlying per loop (count cap)",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--min-unique-stations-per-loop",
+        type=int,
+        default=3,
+        help="Breadth quota: minimum distinct stations targeted per loop",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--min-unique-underlyings-per-loop",
+        type=int,
+        default=4,
+        help="Breadth quota: minimum distinct underlying families targeted per loop",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--min-unique-local-hours-per-loop",
+        type=int,
+        default=2,
+        help="Breadth quota: minimum distinct local-hour buckets targeted per loop",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--replan-market-side-cooldown-minutes",
+        type=float,
+        default=20.0,
+        help="Cooldown window that blocks re-planning the same market-side unless a material signal override is present",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--replan-market-side-price-change-override-dollars",
+        type=float,
+        default=0.02,
+        help="Allow cooldown override when maker entry price changes by at least this amount",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--replan-market-side-alpha-change-override",
+        type=float,
+        default=0.2,
+        help="Allow cooldown override when alpha-strength improves by at least this amount",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--replan-market-side-confidence-change-override",
+        type=float,
+        default=0.03,
+        help="Allow cooldown override when settlement confidence improves by at least this amount",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--replan-market-side-min-observation-advance-minutes",
+        type=float,
+        default=2.0,
+        help="Allow cooldown override when METAR observation timestamp advances by at least this many minutes",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--replan-market-side-repeat-window-minutes",
+        type=float,
+        default=1440.0,
+        help=(
+            "Rolling window used to cap repeated planning of the same market-side "
+            "(independent of cooldown elapsed minutes)"
+        ),
+    )
+    kalshi_temperature_trader.add_argument(
+        "--replan-market-side-max-plans-per-window",
+        type=int,
+        default=8,
+        help="Maximum recent plans allowed per market-side within repeat window (0 disables cap)",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--replan-market-side-history-files",
+        type=int,
+        default=180,
+        help="Maximum recent plan CSV files scanned for market-side cooldown enforcement",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--replan-market-side-min-orders-backstop",
+        type=int,
+        default=1,
+        help="Minimum plans kept after cooldown filtering (0 disables throughput backstop)",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--disable-historical-selection-quality",
+        action="store_true",
+        help="Disable settled-history quality calibration overlays during policy gating and ranking",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--historical-selection-quality-lookback-hours",
+        type=float,
+        default=336.0,
+        help="Lookback window (hours) for settled-history selection quality profile",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--historical-selection-quality-min-resolved-market-sides",
+        type=int,
+        default=12,
+        help="Minimum resolved unique market-side outcomes required before profile is considered fully ready",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--historical-selection-quality-min-bucket-samples",
+        type=int,
+        default=4,
+        help="Minimum settled samples required per station/hour/signal bucket in quality profile",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--historical-selection-quality-probability-penalty-max",
+        type=float,
+        default=0.05,
+        help="Maximum additional probability-confidence requirement from historical quality penalties",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--historical-selection-quality-expected-edge-penalty-max",
+        type=float,
+        default=0.006,
+        help="Maximum additional expected-edge requirement from historical quality penalties",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--historical-selection-quality-score-adjust-scale",
+        type=float,
+        default=0.35,
+        help="Score adjustment scale applied by historical quality calibration in portfolio ranking",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--historical-selection-quality-profile-max-age-hours",
+        type=float,
+        default=96.0,
+        help="Maximum allowed age of bankroll-validation artifact used for historical quality profile",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--historical-selection-quality-preferred-model",
+        default="fixed_fraction_per_underlying_family",
+        help="Preferred bankroll-validation attribution model used for historical quality bucket penalties/boosts",
     )
     kalshi_temperature_trader.add_argument(
         "--cancel-resting-immediately",
@@ -1697,6 +2229,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional explicit websocket state JSON",
     )
     kalshi_temperature_shadow_watch.add_argument(
+        "--alpha-consensus-json",
+        default=None,
+        help=(
+            "Optional fused breadth-worker consensus JSON. "
+            "Defaults to output-dir/breadth_worker/breadth_worker_consensus_latest.json when present."
+        ),
+    )
+    kalshi_temperature_shadow_watch.add_argument(
         "--settlement-state-json",
         default=None,
         help="Optional settlement-finalization state JSON keyed by underlying",
@@ -1732,7 +2272,7 @@ def build_parser() -> argparse.ArgumentParser:
     kalshi_temperature_shadow_watch.add_argument(
         "--max-orders",
         type=int,
-        default=3,
+        default=8,
         help="Maximum approved intents converted to executable plans per loop",
     )
     kalshi_temperature_shadow_watch.add_argument(
@@ -1772,6 +2312,114 @@ def build_parser() -> argparse.ArgumentParser:
         help="Maximum METAR observation age in minutes",
     )
     kalshi_temperature_shadow_watch.add_argument(
+        "--metar-age-policy-json",
+        default=None,
+        help=(
+            "Optional JSON file with station/hour-specific METAR age overrides. "
+            "Schema keys: station_max_age_minutes and station_local_hour_max_age_minutes."
+        ),
+    )
+    kalshi_temperature_shadow_watch.add_argument(
+        "--speci-calibration-json",
+        default=None,
+        help=(
+            "Optional JSON file with calibrated SPECI shock thresholds/weights forwarded to implicit constraint scans."
+        ),
+    )
+    kalshi_temperature_shadow_watch.add_argument(
+        "--min-alpha-strength",
+        type=float,
+        default=0.0,
+        help="Minimum alpha-strength score required for intent approval",
+    )
+    kalshi_temperature_shadow_watch.add_argument(
+        "--min-probability-confidence",
+        type=float,
+        default=None,
+        help="Optional minimum modeled probability confidence required for approval",
+    )
+    kalshi_temperature_shadow_watch.add_argument(
+        "--min-expected-edge-net",
+        type=float,
+        default=None,
+        help="Optional minimum modeled expected edge (net) required for approval",
+    )
+    kalshi_temperature_shadow_watch.add_argument(
+        "--min-edge-to-risk-ratio",
+        type=float,
+        default=None,
+        help=(
+            "Optional minimum base edge-to-risk ratio required for approval. "
+            "Computed as (probability - entry_price) / entry_price."
+        ),
+    )
+    kalshi_temperature_shadow_watch.add_argument(
+        "--min-base-edge-net",
+        type=float,
+        default=0.0,
+        help="Minimum base edge (probability - entry_price) required before additive bonuses",
+    )
+    kalshi_temperature_shadow_watch.add_argument(
+        "--min-probability-breakeven-gap",
+        type=float,
+        default=0.0,
+        help="Minimum probability minus breakeven-price gap required for approval",
+    )
+    kalshi_temperature_shadow_watch.add_argument(
+        "--disable-enforce-probability-edge-thresholds",
+        action="store_true",
+        help=(
+            "Disable probability/edge threshold enforcement when explicit thresholds are omitted. "
+            "By default, omitted thresholds are backfilled by configured fallback values."
+        ),
+    )
+    kalshi_temperature_shadow_watch.add_argument(
+        "--enforce-entry-price-probability-floor",
+        action="store_true",
+        help=(
+            "When fallback probability thresholds are active, raise minimum probability based on entry price "
+            "to avoid high-price low-conviction approvals."
+        ),
+    )
+    kalshi_temperature_shadow_watch.add_argument(
+        "--fallback-min-probability-confidence",
+        type=float,
+        default=None,
+        help=(
+            "Fallback minimum probability confidence when --min-probability-confidence is omitted "
+            "(defaults to min-settlement-confidence if unset)."
+        ),
+    )
+    kalshi_temperature_shadow_watch.add_argument(
+        "--fallback-min-expected-edge-net",
+        type=float,
+        default=0.005,
+        help=(
+            "Fallback minimum expected edge (net) when --min-expected-edge-net is omitted "
+            "(default: 0.005)."
+        ),
+    )
+    kalshi_temperature_shadow_watch.add_argument(
+        "--fallback-min-edge-to-risk-ratio",
+        type=float,
+        default=0.02,
+        help=(
+            "Fallback minimum base edge-to-risk ratio when --min-edge-to-risk-ratio is omitted "
+            "(default: 0.02)."
+        ),
+    )
+    kalshi_temperature_shadow_watch.add_argument(
+        "--disable-interval-consistency-gate",
+        action="store_true",
+        help="Disable interval-consistency checks (yes/no feasibility overlap + gap checks)",
+    )
+    kalshi_temperature_shadow_watch.add_argument(
+        "--max-yes-possible-gap-for-yes-side",
+        type=float,
+        default=0.0,
+        help="Maximum allowed yes_possible_gap for YES-side intents",
+    )
+    kalshi_temperature_shadow_watch.add_argument(
         "--min-hours-to-close",
         type=float,
         default=0.0,
@@ -1786,13 +2434,52 @@ def build_parser() -> argparse.ArgumentParser:
     kalshi_temperature_shadow_watch.add_argument(
         "--max-intents-per-underlying",
         type=int,
-        default=1,
+        default=6,
         help="Maximum approved intents per station/date underlying",
+    )
+    kalshi_temperature_shadow_watch.add_argument(
+        "--taf-stale-grace-minutes",
+        type=float,
+        default=0.0,
+        help="Optional METAR-age grace when forecast/TAF path modeling is ready",
+    )
+    kalshi_temperature_shadow_watch.add_argument(
+        "--taf-stale-grace-max-volatility-score",
+        type=float,
+        default=1.0,
+        help="Maximum TAF volatility score allowed for stale-grace activation",
+    )
+    kalshi_temperature_shadow_watch.add_argument(
+        "--taf-stale-grace-max-range-width",
+        type=float,
+        default=10.0,
+        help="Maximum forecast range width allowed for stale-grace activation",
+    )
+    kalshi_temperature_shadow_watch.add_argument(
+        "--metar-freshness-quality-boundary-ratio",
+        type=float,
+        default=0.92,
+        help=(
+            "Age-ratio boundary (age/max_age) where near-stale quality tightening activates. "
+            "Set <=0 to disable."
+        ),
+    )
+    kalshi_temperature_shadow_watch.add_argument(
+        "--metar-freshness-quality-probability-margin",
+        type=float,
+        default=0.03,
+        help="Additional probability-confidence margin required near stale boundary",
+    )
+    kalshi_temperature_shadow_watch.add_argument(
+        "--metar-freshness-quality-expected-edge-margin",
+        type=float,
+        default=0.005,
+        help="Additional expected-edge margin required near stale boundary",
     )
     kalshi_temperature_shadow_watch.add_argument(
         "--disable-require-market-snapshot-seq",
         action="store_true",
-        help="Allow intents when ws-state sequence is missing",
+        help="Disable market-sequence gating (shadow mode already defaults to this; live mode can opt out with this flag)",
     )
     kalshi_temperature_shadow_watch.add_argument(
         "--require-metar-snapshot-sha",
@@ -1820,6 +2507,169 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=3.0,
         help="Daily risk cap forwarded to micro-execute",
+    )
+    kalshi_temperature_shadow_watch.add_argument(
+        "--max-total-deployed-pct",
+        type=float,
+        default=0.35,
+        help="Maximum fraction of reference bankroll deployable per loop before plan truncation",
+    )
+    kalshi_temperature_shadow_watch.add_argument(
+        "--max-same-station-exposure-pct",
+        type=float,
+        default=0.6,
+        help="Maximum per-station share of deployed loop budget during portfolio selection",
+    )
+    kalshi_temperature_shadow_watch.add_argument(
+        "--max-same-hour-cluster-exposure-pct",
+        type=float,
+        default=0.6,
+        help="Maximum per-local-hour share of deployed loop budget during portfolio selection",
+    )
+    kalshi_temperature_shadow_watch.add_argument(
+        "--max-same-underlying-exposure-pct",
+        type=float,
+        default=0.5,
+        help="Maximum per-underlying share of deployed loop budget during portfolio selection",
+    )
+    kalshi_temperature_shadow_watch.add_argument(
+        "--max-orders-per-station",
+        type=int,
+        default=2,
+        help="Maximum planned orders per station per loop (count cap)",
+    )
+    kalshi_temperature_shadow_watch.add_argument(
+        "--max-orders-per-underlying",
+        type=int,
+        default=2,
+        help="Maximum planned orders per underlying per loop (count cap)",
+    )
+    kalshi_temperature_shadow_watch.add_argument(
+        "--min-unique-stations-per-loop",
+        type=int,
+        default=3,
+        help="Breadth quota: minimum distinct stations targeted per loop",
+    )
+    kalshi_temperature_shadow_watch.add_argument(
+        "--min-unique-underlyings-per-loop",
+        type=int,
+        default=4,
+        help="Breadth quota: minimum distinct underlying families targeted per loop",
+    )
+    kalshi_temperature_shadow_watch.add_argument(
+        "--min-unique-local-hours-per-loop",
+        type=int,
+        default=2,
+        help="Breadth quota: minimum distinct local-hour buckets targeted per loop",
+    )
+    kalshi_temperature_shadow_watch.add_argument(
+        "--replan-market-side-cooldown-minutes",
+        type=float,
+        default=20.0,
+        help="Cooldown window that blocks re-planning the same market-side unless a material signal override is present",
+    )
+    kalshi_temperature_shadow_watch.add_argument(
+        "--replan-market-side-price-change-override-dollars",
+        type=float,
+        default=0.02,
+        help="Allow cooldown override when maker entry price changes by at least this amount",
+    )
+    kalshi_temperature_shadow_watch.add_argument(
+        "--replan-market-side-alpha-change-override",
+        type=float,
+        default=0.2,
+        help="Allow cooldown override when alpha-strength improves by at least this amount",
+    )
+    kalshi_temperature_shadow_watch.add_argument(
+        "--replan-market-side-confidence-change-override",
+        type=float,
+        default=0.03,
+        help="Allow cooldown override when settlement confidence improves by at least this amount",
+    )
+    kalshi_temperature_shadow_watch.add_argument(
+        "--replan-market-side-min-observation-advance-minutes",
+        type=float,
+        default=2.0,
+        help="Allow cooldown override when METAR observation timestamp advances by at least this many minutes",
+    )
+    kalshi_temperature_shadow_watch.add_argument(
+        "--replan-market-side-repeat-window-minutes",
+        type=float,
+        default=1440.0,
+        help=(
+            "Rolling window used to cap repeated planning of the same market-side "
+            "(independent of cooldown elapsed minutes)"
+        ),
+    )
+    kalshi_temperature_shadow_watch.add_argument(
+        "--replan-market-side-max-plans-per-window",
+        type=int,
+        default=8,
+        help="Maximum recent plans allowed per market-side within repeat window (0 disables cap)",
+    )
+    kalshi_temperature_shadow_watch.add_argument(
+        "--replan-market-side-history-files",
+        type=int,
+        default=180,
+        help="Maximum recent plan CSV files scanned for market-side cooldown enforcement",
+    )
+    kalshi_temperature_shadow_watch.add_argument(
+        "--replan-market-side-min-orders-backstop",
+        type=int,
+        default=1,
+        help="Minimum plans kept after cooldown filtering (0 disables throughput backstop)",
+    )
+    kalshi_temperature_shadow_watch.add_argument(
+        "--disable-historical-selection-quality",
+        action="store_true",
+        help="Disable settled-history quality calibration overlays during policy gating and ranking",
+    )
+    kalshi_temperature_shadow_watch.add_argument(
+        "--historical-selection-quality-lookback-hours",
+        type=float,
+        default=336.0,
+        help="Lookback window (hours) for settled-history selection quality profile",
+    )
+    kalshi_temperature_shadow_watch.add_argument(
+        "--historical-selection-quality-min-resolved-market-sides",
+        type=int,
+        default=12,
+        help="Minimum resolved unique market-side outcomes required before profile is considered fully ready",
+    )
+    kalshi_temperature_shadow_watch.add_argument(
+        "--historical-selection-quality-min-bucket-samples",
+        type=int,
+        default=4,
+        help="Minimum settled samples required per station/hour/signal bucket in quality profile",
+    )
+    kalshi_temperature_shadow_watch.add_argument(
+        "--historical-selection-quality-probability-penalty-max",
+        type=float,
+        default=0.05,
+        help="Maximum additional probability-confidence requirement from historical quality penalties",
+    )
+    kalshi_temperature_shadow_watch.add_argument(
+        "--historical-selection-quality-expected-edge-penalty-max",
+        type=float,
+        default=0.006,
+        help="Maximum additional expected-edge requirement from historical quality penalties",
+    )
+    kalshi_temperature_shadow_watch.add_argument(
+        "--historical-selection-quality-score-adjust-scale",
+        type=float,
+        default=0.35,
+        help="Score adjustment scale applied by historical quality calibration in portfolio ranking",
+    )
+    kalshi_temperature_shadow_watch.add_argument(
+        "--historical-selection-quality-profile-max-age-hours",
+        type=float,
+        default=96.0,
+        help="Maximum allowed age of bankroll-validation artifact used for historical quality profile",
+    )
+    kalshi_temperature_shadow_watch.add_argument(
+        "--historical-selection-quality-preferred-model",
+        default="fixed_fraction_per_underlying_family",
+        help="Preferred bankroll-validation attribution model used for historical quality bucket penalties/boosts",
     )
     kalshi_temperature_shadow_watch.add_argument(
         "--cancel-resting-immediately",
@@ -1862,6 +2712,299 @@ def build_parser() -> argparse.ArgumentParser:
     )
     kalshi_temperature_shadow_watch.add_argument("--output-dir", default="outputs", help="Output directory")
 
+    kalshi_temperature_profitability = subparsers.add_parser(
+        "kalshi-temperature-profitability",
+        help="Summarize temperature strategy expected edge vs realized PnL and win rate over a time window",
+    )
+    kalshi_temperature_profitability.add_argument(
+        "--hours",
+        type=float,
+        default=24.0,
+        help="Lookback window in hours",
+    )
+    kalshi_temperature_profitability.add_argument(
+        "--journal-db-path",
+        default=None,
+        help="Optional explicit execution journal SQLite path",
+    )
+    kalshi_temperature_profitability.add_argument(
+        "--top-n",
+        type=int,
+        default=20,
+        help="Number of top settled orders by absolute realized PnL in summary",
+    )
+    kalshi_temperature_profitability.add_argument("--output-dir", default="outputs", help="Output directory")
+
+    kalshi_temperature_selection_quality = subparsers.add_parser(
+        "kalshi-temperature-selection-quality",
+        help="Audit historical selection-quality profile and quantify current intent-level adjustment pressure",
+    )
+    kalshi_temperature_selection_quality.add_argument(
+        "--output-dir",
+        default="outputs",
+        help="Output directory containing temperature artifacts",
+    )
+    kalshi_temperature_selection_quality.add_argument(
+        "--lookback-hours",
+        type=float,
+        default=14.0 * 24.0,
+        help="Lookback window (hours) used to build historical selection-quality profile",
+    )
+    kalshi_temperature_selection_quality.add_argument(
+        "--intent-hours",
+        type=float,
+        default=24.0,
+        help="Lookback window (hours) for recent intent CSV rows used to compute adjustment pressure",
+    )
+    kalshi_temperature_selection_quality.add_argument(
+        "--min-resolved-market-sides",
+        type=int,
+        default=12,
+        help="Minimum resolved unique market-side outcomes required for profile readiness",
+    )
+    kalshi_temperature_selection_quality.add_argument(
+        "--min-bucket-samples",
+        type=int,
+        default=4,
+        help="Minimum bucket sample size used for per-dimension profile penalties/boosts",
+    )
+    kalshi_temperature_selection_quality.add_argument(
+        "--preferred-attribution-model",
+        default="fixed_fraction_per_underlying_family",
+        help="Preferred bankroll-validation attribution model to source bucket overrides",
+    )
+    kalshi_temperature_selection_quality.add_argument(
+        "--max-profile-age-hours",
+        type=float,
+        default=96.0,
+        help="Maximum allowed age of bankroll/profitability artifacts before profile is marked stale",
+    )
+    kalshi_temperature_selection_quality.add_argument(
+        "--probability-penalty-max",
+        type=float,
+        default=0.05,
+        help="Maximum probability-confidence uplift applied by historical-quality penalties",
+    )
+    kalshi_temperature_selection_quality.add_argument(
+        "--expected-edge-penalty-max",
+        type=float,
+        default=0.006,
+        help="Maximum expected-edge uplift applied by historical-quality penalties",
+    )
+    kalshi_temperature_selection_quality.add_argument(
+        "--score-adjust-scale",
+        type=float,
+        default=0.35,
+        help="Scale factor for historical-quality score adjustment term",
+    )
+    kalshi_temperature_selection_quality.add_argument(
+        "--top-n",
+        type=int,
+        default=10,
+        help="Top source count to include in adjustment attribution diagnostics",
+    )
+
+    kalshi_temperature_refill_trial_balance = subparsers.add_parser(
+        "kalshi-temperature-refill-trial-balance",
+        help="Reset/refill the persistent trial balance used by timed profitability checkpoints",
+    )
+    kalshi_temperature_refill_trial_balance.add_argument(
+        "--starting-balance-dollars",
+        type=float,
+        default=1000.0,
+        help="Starting balance to persist after refill",
+    )
+    kalshi_temperature_refill_trial_balance.add_argument(
+        "--reason",
+        default="manual_refill",
+        help="Reset reason label stored in trial_balance_state.json",
+    )
+    kalshi_temperature_refill_trial_balance.add_argument(
+        "--output-dir",
+        default="outputs",
+        help="Output directory containing checkpoints/trial_balance_state.json",
+    )
+
+    kalshi_temperature_bankroll_validation = subparsers.add_parser(
+        "kalshi-temperature-bankroll-validation",
+        help="Truth-first alpha breadth and bankroll viability validation across row/order/market-side/family layers",
+    )
+    kalshi_temperature_bankroll_validation.add_argument(
+        "--output-dir",
+        default="outputs",
+        help="Output directory containing temperature artifacts",
+    )
+    kalshi_temperature_bankroll_validation.add_argument(
+        "--hours",
+        type=float,
+        default=24.0,
+        help="Rolling lookback window in hours",
+    )
+    kalshi_temperature_bankroll_validation.add_argument(
+        "--reference-bankroll-dollars",
+        type=float,
+        default=1000.0,
+        help="Reference bankroll used for sizing and viability simulation",
+    )
+    kalshi_temperature_bankroll_validation.add_argument(
+        "--sizing-models-json",
+        default=None,
+        help="JSON string or JSON file path overriding sizing model parameters",
+    )
+    kalshi_temperature_bankroll_validation.add_argument(
+        "--slippage-bps-list",
+        default="0,5,10",
+        help="Comma-separated slippage basis points or JSON file path",
+    )
+    kalshi_temperature_bankroll_validation.add_argument(
+        "--fee-model-json",
+        default=None,
+        help="JSON string or JSON file path for fee model and HYSA comparison assumptions",
+    )
+    kalshi_temperature_bankroll_validation.add_argument(
+        "--top-n",
+        type=int,
+        default=10,
+        help="Top and bottom contributor count per attribution group",
+    )
+
+    kalshi_temperature_alpha_gap_report = subparsers.add_parser(
+        "kalshi-temperature-alpha-gap-report",
+        help="Quantify current signal ceiling and missing layers vs broader ColdMath-style weather engine",
+    )
+    kalshi_temperature_alpha_gap_report.add_argument(
+        "--output-dir",
+        default="outputs",
+        help="Output directory containing temperature artifacts",
+    )
+    kalshi_temperature_alpha_gap_report.add_argument(
+        "--hours",
+        type=float,
+        default=24.0,
+        help="Rolling lookback window in hours",
+    )
+    kalshi_temperature_alpha_gap_report.add_argument(
+        "--reference-bankroll-dollars",
+        type=float,
+        default=1000.0,
+        help="Reference bankroll used in embedded validation context",
+    )
+    kalshi_temperature_alpha_gap_report.add_argument(
+        "--sizing-models-json",
+        default=None,
+        help="JSON string or JSON file path overriding sizing model parameters",
+    )
+    kalshi_temperature_alpha_gap_report.add_argument(
+        "--slippage-bps-list",
+        default="0,5,10",
+        help="Comma-separated slippage basis points or JSON file path",
+    )
+    kalshi_temperature_alpha_gap_report.add_argument(
+        "--fee-model-json",
+        default=None,
+        help="JSON string or JSON file path for fee model and HYSA comparison assumptions",
+    )
+    kalshi_temperature_alpha_gap_report.add_argument(
+        "--top-n",
+        type=int,
+        default=10,
+        help="Top and bottom contributor count per attribution group",
+    )
+    kalshi_temperature_alpha_gap_report.add_argument(
+        "--source-bankroll-validation-file",
+        default=None,
+        help="Optional precomputed kalshi_temperature_bankroll_validation JSON to reuse instead of recomputing",
+    )
+
+    kalshi_temperature_live_readiness = subparsers.add_parser(
+        "kalshi-temperature-live-readiness",
+        help="Evaluate shadow-settled readiness for risking real money across rolling horizons (1d to 1yr)",
+    )
+    kalshi_temperature_live_readiness.add_argument(
+        "--output-dir",
+        default="outputs",
+        help="Output directory containing temperature artifacts",
+    )
+    kalshi_temperature_live_readiness.add_argument(
+        "--horizons",
+        default="1d,7d,14d,21d,28d,3mo,6mo,1yr",
+        help="Comma-separated horizons (presets: 1d,7d,14d,21d,28d,3mo,6mo,1yr; or custom 48h/30d)",
+    )
+    kalshi_temperature_live_readiness.add_argument(
+        "--reference-bankroll-dollars",
+        type=float,
+        default=1000.0,
+        help="Reference bankroll used for projected and simulated returns",
+    )
+    kalshi_temperature_live_readiness.add_argument(
+        "--sizing-models-json",
+        default=None,
+        help="JSON string or JSON file path overriding sizing model parameters",
+    )
+    kalshi_temperature_live_readiness.add_argument(
+        "--slippage-bps-list",
+        default="0,5,10",
+        help="Comma-separated slippage basis points or JSON file path",
+    )
+    kalshi_temperature_live_readiness.add_argument(
+        "--fee-model-json",
+        default=None,
+        help="JSON string or JSON file path for fee model and HYSA comparison assumptions",
+    )
+    kalshi_temperature_live_readiness.add_argument(
+        "--top-n",
+        type=int,
+        default=10,
+        help="Top and bottom contributor count per attribution group",
+    )
+
+    kalshi_temperature_go_live_gate = subparsers.add_parser(
+        "kalshi-temperature-go-live-gate",
+        help="One-shot PASS/FAIL live promotion gate built from rolling readiness horizons",
+    )
+    kalshi_temperature_go_live_gate.add_argument(
+        "--output-dir",
+        default="outputs",
+        help="Output directory containing temperature artifacts",
+    )
+    kalshi_temperature_go_live_gate.add_argument(
+        "--horizons",
+        default="1d,7d,14d,21d,28d,3mo,6mo,1yr",
+        help="Comma-separated horizons (presets: 1d,7d,14d,21d,28d,3mo,6mo,1yr; or custom 48h/30d)",
+    )
+    kalshi_temperature_go_live_gate.add_argument(
+        "--reference-bankroll-dollars",
+        type=float,
+        default=1000.0,
+        help="Reference bankroll used for projected and simulated returns",
+    )
+    kalshi_temperature_go_live_gate.add_argument(
+        "--sizing-models-json",
+        default=None,
+        help="JSON string or JSON file path overriding sizing model parameters",
+    )
+    kalshi_temperature_go_live_gate.add_argument(
+        "--slippage-bps-list",
+        default="0,5,10",
+        help="Comma-separated slippage basis points or JSON file path",
+    )
+    kalshi_temperature_go_live_gate.add_argument(
+        "--fee-model-json",
+        default=None,
+        help="JSON string or JSON file path for fee model and HYSA comparison assumptions",
+    )
+    kalshi_temperature_go_live_gate.add_argument(
+        "--top-n",
+        type=int,
+        default=10,
+        help="Top and bottom contributor count per attribution group",
+    )
+    kalshi_temperature_go_live_gate.add_argument(
+        "--source-live-readiness-file",
+        default=None,
+        help="Optional precomputed kalshi_temperature_live_readiness JSON to reuse instead of recomputing",
+    )
+
     polymarket_market_ingest = subparsers.add_parser(
         "polymarket-market-ingest",
         help="Optional market-data ingest adapter for Polymarket temperature markets (no execution)",
@@ -1901,6 +3044,171 @@ def build_parser() -> argparse.ArgumentParser:
         help="Include inactive/closed markets when fetching pages",
     )
     polymarket_market_ingest.add_argument("--output-dir", default="outputs", help="Output directory")
+    polymarket_market_ingest.add_argument(
+        "--coldmath-snapshot-dir",
+        default=None,
+        help="Optional directory containing ColdMath-style equity.csv and positions.csv snapshots",
+    )
+    polymarket_market_ingest.add_argument(
+        "--coldmath-equity-csv",
+        default=None,
+        help="Optional explicit ColdMath equity CSV path",
+    )
+    polymarket_market_ingest.add_argument(
+        "--coldmath-positions-csv",
+        default=None,
+        help="Optional explicit ColdMath positions CSV path",
+    )
+    polymarket_market_ingest.add_argument(
+        "--coldmath-wallet-address",
+        default="",
+        help="Optional wallet address label for snapshot metadata",
+    )
+    polymarket_market_ingest.add_argument(
+        "--coldmath-stale-hours",
+        type=float,
+        default=48.0,
+        help="Staleness threshold for optional ColdMath snapshot summary",
+    )
+    polymarket_market_ingest.add_argument(
+        "--coldmath-refresh-from-api",
+        action="store_true",
+        help="Refresh ColdMath snapshot CSVs from Polymarket data API before ingest alignment",
+    )
+    polymarket_market_ingest.add_argument(
+        "--coldmath-data-api-base-url",
+        default="https://data-api.polymarket.com",
+        help="Polymarket data API base URL used for ColdMath snapshot refresh",
+    )
+    polymarket_market_ingest.add_argument(
+        "--coldmath-api-timeout-seconds",
+        type=float,
+        default=20.0,
+        help="HTTP timeout for ColdMath data API refresh",
+    )
+    polymarket_market_ingest.add_argument(
+        "--coldmath-positions-page-size",
+        type=int,
+        default=500,
+        help="Page size used for paginated ColdMath positions API pulls",
+    )
+    polymarket_market_ingest.add_argument(
+        "--coldmath-positions-max-pages",
+        type=int,
+        default=20,
+        help="Maximum positions pages to fetch when ColdMath API refresh is enabled",
+    )
+
+    coldmath_snapshot_summary = subparsers.add_parser(
+        "coldmath-snapshot-summary",
+        help="Summarize ColdMath-style equity/positions snapshots and write normalized diagnostics",
+    )
+    coldmath_snapshot_summary.add_argument(
+        "--snapshot-dir",
+        default="tmp/coldmath_snapshot",
+        help="Directory containing equity.csv and positions.csv",
+    )
+    coldmath_snapshot_summary.add_argument(
+        "--equity-csv",
+        default=None,
+        help="Optional explicit equity CSV path (overrides --snapshot-dir/equity.csv)",
+    )
+    coldmath_snapshot_summary.add_argument(
+        "--positions-csv",
+        default=None,
+        help="Optional explicit positions CSV path (overrides --snapshot-dir/positions.csv)",
+    )
+    coldmath_snapshot_summary.add_argument(
+        "--wallet-address",
+        default="",
+        help="Optional wallet address label stored in summary output",
+    )
+    coldmath_snapshot_summary.add_argument(
+        "--stale-hours",
+        type=float,
+        default=48.0,
+        help="Staleness threshold in hours for valuation timestamp",
+    )
+    coldmath_snapshot_summary.add_argument(
+        "--refresh-from-api",
+        action="store_true",
+        help="Refresh snapshot CSVs from Polymarket data API before summarizing",
+    )
+    coldmath_snapshot_summary.add_argument(
+        "--data-api-base-url",
+        default="https://data-api.polymarket.com",
+        help="Polymarket data API base URL used for wallet snapshot refresh",
+    )
+    coldmath_snapshot_summary.add_argument(
+        "--api-timeout-seconds",
+        type=float,
+        default=20.0,
+        help="HTTP timeout (seconds) for Polymarket data API snapshot refresh",
+    )
+    coldmath_snapshot_summary.add_argument(
+        "--positions-page-size",
+        type=int,
+        default=500,
+        help="Page size used when fetching paginated wallet positions",
+    )
+    coldmath_snapshot_summary.add_argument(
+        "--positions-max-pages",
+        type=int,
+        default=20,
+        help="Maximum paginated positions pages to fetch during API refresh",
+    )
+    coldmath_snapshot_summary.add_argument("--output-dir", default="outputs", help="Output directory")
+
+    coldmath_replication_plan = subparsers.add_parser(
+        "coldmath-replication-plan",
+        help="Build a ranked ColdMath weather replication candidate plan from latest artifacts",
+    )
+    coldmath_replication_plan.add_argument("--output-dir", default="outputs", help="Output directory")
+    coldmath_replication_plan.add_argument(
+        "--top-n",
+        type=int,
+        default=12,
+        help="Maximum replication candidates to include",
+    )
+    coldmath_replication_plan.add_argument(
+        "--market-tickers",
+        default="",
+        help="Optional comma-separated market ticker override (defaults to latest ws-state summary)",
+    )
+    coldmath_replication_plan.add_argument(
+        "--disable-liquidity-filter",
+        action="store_true",
+        help="Disable top-of-book liquidity gating for replication candidates",
+    )
+    coldmath_replication_plan.add_argument(
+        "--disable-require-two-sided-quotes",
+        action="store_true",
+        help="Allow one-sided books when evaluating replication candidate tradability",
+    )
+    coldmath_replication_plan.add_argument(
+        "--max-spread-dollars",
+        type=float,
+        default=0.18,
+        help="Maximum acceptable spread per candidate side for liquidity gating",
+    )
+    coldmath_replication_plan.add_argument(
+        "--min-liquidity-score",
+        type=float,
+        default=0.45,
+        help="Minimum liquidity score threshold (0-1) for candidate eligibility",
+    )
+    coldmath_replication_plan.add_argument(
+        "--max-family-candidates",
+        type=int,
+        default=3,
+        help="Hard cap on selected candidates per family before backfill",
+    )
+    coldmath_replication_plan.add_argument(
+        "--max-family-share",
+        type=float,
+        default=0.6,
+        help="Maximum share of selected slots allocated to one family (0.1-1.0)",
+    )
 
     kalshi_focus_dossier = subparsers.add_parser(
         "kalshi-focus-dossier",
@@ -4035,8 +5343,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     kalshi_micro_execute.add_argument(
         "--history-csv",
-        default="outputs/kalshi_nonsports_history.csv",
-        help="Persistent non-sports history CSV path used for the trade gate",
+        default=None,
+        help="Optional persistent non-sports history CSV path used for the trade gate (defaults to <output-dir>/kalshi_nonsports_history.csv)",
     )
     kalshi_micro_execute.add_argument(
         "--enforce-trade-gate",
@@ -4119,8 +5427,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     kalshi_micro_gate.add_argument(
         "--history-csv",
-        default="outputs/kalshi_nonsports_history.csv",
-        help="Persistent non-sports history CSV path used for the gate",
+        default=None,
+        help="Optional persistent non-sports history CSV path used for the gate (defaults to <output-dir>/kalshi_nonsports_history.csv)",
     )
     kalshi_micro_gate.add_argument(
         "--timeout-seconds",
@@ -4249,8 +5557,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     kalshi_micro_trader.add_argument(
         "--history-csv",
-        default="outputs/kalshi_nonsports_history.csv",
-        help="Persistent non-sports history CSV path used for the trade gate",
+        default=None,
+        help="Optional persistent non-sports history CSV path used for the trade gate (defaults to <output-dir>/kalshi_nonsports_history.csv)",
     )
     kalshi_micro_trader.add_argument(
         "--timeout-seconds",
@@ -4353,8 +5661,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     kalshi_micro_watch.add_argument(
         "--history-csv",
-        default="outputs/kalshi_nonsports_history.csv",
-        help="Persistent non-sports history CSV path used for the watch cycle",
+        default=None,
+        help="Optional persistent non-sports history CSV path used for the watch cycle (defaults to <output-dir>/kalshi_nonsports_history.csv)",
     )
     kalshi_micro_watch.add_argument(
         "--timeout-seconds",
@@ -4913,6 +6221,72 @@ def main() -> None:
             cycle_json=args.cycle_json,
             output_dir=args.output_dir,
         )
+    elif args.command == "runtime-cycle":
+        hard_required_sources = tuple(
+            item.strip() for item in str(args.hard_required_sources or "").split(",") if item.strip()
+        )
+        coldmath_snapshot_summary: dict[str, object] | None = None
+        coldmath_replication_plan_summary: dict[str, object] | None = None
+        if args.coldmath_refresh_from_api:
+            coldmath_snapshot_summary = run_coldmath_snapshot_summary(
+                snapshot_dir=args.coldmath_snapshot_dir,
+                wallet_address=args.coldmath_wallet_address,
+                stale_hours=args.coldmath_stale_hours,
+                output_dir=args.output_dir,
+                refresh_from_api=True,
+                data_api_base_url=args.coldmath_data_api_base_url,
+                api_timeout_seconds=args.coldmath_api_timeout_seconds,
+                positions_page_size=args.coldmath_positions_page_size,
+                positions_max_pages=args.coldmath_positions_max_pages,
+            )
+        if args.coldmath_build_replication_plan:
+            coldmath_replication_plan_summary = run_coldmath_replication_plan(
+                output_dir=args.output_dir,
+                top_n=args.coldmath_replication_top_n,
+                market_tickers=[
+                    item.strip()
+                    for item in str(args.coldmath_replication_market_tickers or "").split(",")
+                    if item.strip()
+                ],
+                require_liquidity_filter=not args.coldmath_replication_disable_liquidity_filter,
+                require_two_sided_quotes=not args.coldmath_replication_disable_require_two_sided_quotes,
+                max_spread_dollars=args.coldmath_replication_max_spread_dollars,
+                min_liquidity_score=args.coldmath_replication_min_liquidity_score,
+                max_family_candidates=args.coldmath_replication_max_family_candidates,
+                max_family_share=args.coldmath_replication_max_family_share,
+            )
+
+        adapters = [
+            KalshiMarketDataAdapter(),
+            CuratedNewsAdapter(),
+            OpticOddsConsensusAdapter(),
+        ]
+        if args.include_therundown_mapping:
+            adapters.append(TheRundownMappingAdapter())
+
+        runner = CycleRunner(adapters=adapters)
+        summary = runner.run(
+            CycleRunnerConfig(
+                lane=args.lane,
+                output_dir=args.output_dir,
+                repo_root=args.repo_root,
+                lane_policy_path=args.lane_policy_path,
+                request_live_submit=args.request_live_submit,
+                live_env_file=args.live_env_file,
+                live_timeout_seconds=args.live_timeout_seconds,
+                allow_simulated_live_adapter=args.allow_simulated_live_adapter,
+                hard_required_sources=(hard_required_sources or None),
+                approval_json_path=args.approval_json_path,
+                ticket_market=args.ticket_market,
+                ticket_side=args.ticket_side,
+                ticket_max_cost=args.ticket_max_cost,
+                ticket_expires_at=args.ticket_expires_at,
+            )
+        )
+        if coldmath_snapshot_summary is not None:
+            summary["coldmath_snapshot"] = coldmath_snapshot_summary
+        if coldmath_replication_plan_summary is not None:
+            summary["coldmath_replication_plan"] = coldmath_replication_plan_summary
     elif args.command == "alpha-scoreboard":
         summary = run_alpha_scoreboard(
             output_dir=args.output_dir,
@@ -5255,6 +6629,7 @@ def main() -> None:
             output_dir=args.output_dir,
             timeout_seconds=args.timeout_seconds,
             max_markets=args.max_markets,
+            speci_calibration_json=args.speci_calibration_json,
         )
     elif args.command == "kalshi-temperature-settlement-state":
         summary = run_kalshi_temperature_settlement_state(
@@ -5262,6 +6637,9 @@ def main() -> None:
             constraint_csv=args.constraint_csv,
             output_dir=args.output_dir,
             top_n=args.top_n,
+            final_report_lookup_enabled=not bool(args.disable_final_report_lookup),
+            final_report_cache_ttl_minutes=args.final_report_cache_ttl_minutes,
+            final_report_timeout_seconds=args.final_report_timeout_seconds,
         )
     elif args.command == "kalshi-temperature-metar-ingest":
         summary = run_kalshi_temperature_metar_ingest(
@@ -5279,6 +6657,7 @@ def main() -> None:
             metar_summary_json=args.metar_summary_json,
             metar_state_json=args.metar_state_json,
             ws_state_json=args.ws_state_json,
+            alpha_consensus_json=args.alpha_consensus_json,
             settlement_state_json=args.settlement_state_json,
             book_db_path=args.book_db_path,
             policy_version=args.policy_version,
@@ -5290,9 +6669,30 @@ def main() -> None:
             intents_only=args.intents_only,
             min_settlement_confidence=args.min_settlement_confidence,
             max_metar_age_minutes=args.max_metar_age_minutes,
+            metar_age_policy_json=args.metar_age_policy_json,
+            speci_calibration_json=args.speci_calibration_json,
+            min_alpha_strength=args.min_alpha_strength,
+            min_probability_confidence=args.min_probability_confidence,
+            min_expected_edge_net=args.min_expected_edge_net,
+            min_edge_to_risk_ratio=args.min_edge_to_risk_ratio,
+            min_base_edge_net=args.min_base_edge_net,
+            min_probability_breakeven_gap=args.min_probability_breakeven_gap,
+            enforce_probability_edge_thresholds=not args.disable_enforce_probability_edge_thresholds,
+            enforce_entry_price_probability_floor=args.enforce_entry_price_probability_floor,
+            fallback_min_probability_confidence=args.fallback_min_probability_confidence,
+            fallback_min_expected_edge_net=args.fallback_min_expected_edge_net,
+            fallback_min_edge_to_risk_ratio=args.fallback_min_edge_to_risk_ratio,
+            enforce_interval_consistency=not args.disable_interval_consistency_gate,
+            max_yes_possible_gap_for_yes_side=args.max_yes_possible_gap_for_yes_side,
             min_hours_to_close=args.min_hours_to_close,
             max_hours_to_close=args.max_hours_to_close,
             max_intents_per_underlying=args.max_intents_per_underlying,
+            taf_stale_grace_minutes=args.taf_stale_grace_minutes,
+            taf_stale_grace_max_volatility_score=args.taf_stale_grace_max_volatility_score,
+            taf_stale_grace_max_range_width=args.taf_stale_grace_max_range_width,
+            metar_freshness_quality_boundary_ratio=args.metar_freshness_quality_boundary_ratio,
+            metar_freshness_quality_probability_margin=args.metar_freshness_quality_probability_margin,
+            metar_freshness_quality_expected_edge_margin=args.metar_freshness_quality_expected_edge_margin,
             yes_max_entry_price_dollars=args.yes_max_entry_price,
             no_max_entry_price_dollars=args.no_max_entry_price,
             require_market_snapshot_seq=not args.disable_require_market_snapshot_seq,
@@ -5307,8 +6707,38 @@ def main() -> None:
             enforce_trade_gate=args.enforce_trade_gate,
             enforce_ws_state_authority=args.enforce_ws_state_authority,
             ws_state_max_age_seconds=args.ws_state_max_age_seconds,
+            max_total_deployed_pct=args.max_total_deployed_pct,
+            max_same_station_exposure_pct=args.max_same_station_exposure_pct,
+            max_same_hour_cluster_exposure_pct=args.max_same_hour_cluster_exposure_pct,
+            max_same_underlying_exposure_pct=args.max_same_underlying_exposure_pct,
+            max_orders_per_station=args.max_orders_per_station,
+            max_orders_per_underlying=args.max_orders_per_underlying,
+            min_unique_stations_per_loop=args.min_unique_stations_per_loop,
+            min_unique_underlyings_per_loop=args.min_unique_underlyings_per_loop,
+            min_unique_local_hours_per_loop=args.min_unique_local_hours_per_loop,
+            replan_market_side_cooldown_minutes=args.replan_market_side_cooldown_minutes,
+            replan_market_side_price_change_override_dollars=args.replan_market_side_price_change_override_dollars,
+            replan_market_side_alpha_change_override=args.replan_market_side_alpha_change_override,
+            replan_market_side_confidence_change_override=args.replan_market_side_confidence_change_override,
+            replan_market_side_min_observation_advance_minutes=args.replan_market_side_min_observation_advance_minutes,
+            replan_market_side_repeat_window_minutes=args.replan_market_side_repeat_window_minutes,
+            replan_market_side_max_plans_per_window=args.replan_market_side_max_plans_per_window,
+            replan_market_side_history_files=args.replan_market_side_history_files,
+            replan_market_side_min_orders_backstop=args.replan_market_side_min_orders_backstop,
+            historical_selection_quality_enabled=not args.disable_historical_selection_quality,
+            historical_selection_quality_lookback_hours=args.historical_selection_quality_lookback_hours,
+            historical_selection_quality_min_resolved_market_sides=args.historical_selection_quality_min_resolved_market_sides,
+            historical_selection_quality_min_bucket_samples=args.historical_selection_quality_min_bucket_samples,
+            historical_selection_quality_probability_penalty_max=args.historical_selection_quality_probability_penalty_max,
+            historical_selection_quality_expected_edge_penalty_max=args.historical_selection_quality_expected_edge_penalty_max,
+            historical_selection_quality_score_adjust_scale=args.historical_selection_quality_score_adjust_scale,
+            historical_selection_quality_profile_max_age_hours=args.historical_selection_quality_profile_max_age_hours,
+            historical_selection_quality_preferred_model=args.historical_selection_quality_preferred_model,
         )
     elif args.command == "kalshi-temperature-shadow-watch":
+        # In shadow mode we prefer discovery over strict websocket-sequence
+        # gating. Live mode keeps sequence gating on by default.
+        shadow_require_market_snapshot_seq = bool(args.allow_live_orders) and not args.disable_require_market_snapshot_seq
         summary = run_kalshi_temperature_shadow_watch(
             env_file=args.env_file,
             output_dir=args.output_dir,
@@ -5320,6 +6750,7 @@ def main() -> None:
             metar_summary_json=args.metar_summary_json,
             metar_state_json=args.metar_state_json,
             ws_state_json=args.ws_state_json,
+            alpha_consensus_json=args.alpha_consensus_json,
             settlement_state_json=args.settlement_state_json,
             book_db_path=args.book_db_path,
             policy_version=args.policy_version,
@@ -5329,12 +6760,33 @@ def main() -> None:
             timeout_seconds=args.timeout_seconds,
             min_settlement_confidence=args.min_settlement_confidence,
             max_metar_age_minutes=args.max_metar_age_minutes,
+            metar_age_policy_json=args.metar_age_policy_json,
+            speci_calibration_json=args.speci_calibration_json,
+            min_alpha_strength=args.min_alpha_strength,
+            min_probability_confidence=args.min_probability_confidence,
+            min_expected_edge_net=args.min_expected_edge_net,
+            min_edge_to_risk_ratio=args.min_edge_to_risk_ratio,
+            min_base_edge_net=args.min_base_edge_net,
+            min_probability_breakeven_gap=args.min_probability_breakeven_gap,
+            enforce_probability_edge_thresholds=not args.disable_enforce_probability_edge_thresholds,
+            enforce_entry_price_probability_floor=args.enforce_entry_price_probability_floor,
+            fallback_min_probability_confidence=args.fallback_min_probability_confidence,
+            fallback_min_expected_edge_net=args.fallback_min_expected_edge_net,
+            fallback_min_edge_to_risk_ratio=args.fallback_min_edge_to_risk_ratio,
+            enforce_interval_consistency=not args.disable_interval_consistency_gate,
+            max_yes_possible_gap_for_yes_side=args.max_yes_possible_gap_for_yes_side,
             min_hours_to_close=args.min_hours_to_close,
             max_hours_to_close=args.max_hours_to_close,
             max_intents_per_underlying=args.max_intents_per_underlying,
+            taf_stale_grace_minutes=args.taf_stale_grace_minutes,
+            taf_stale_grace_max_volatility_score=args.taf_stale_grace_max_volatility_score,
+            taf_stale_grace_max_range_width=args.taf_stale_grace_max_range_width,
+            metar_freshness_quality_boundary_ratio=args.metar_freshness_quality_boundary_ratio,
+            metar_freshness_quality_probability_margin=args.metar_freshness_quality_probability_margin,
+            metar_freshness_quality_expected_edge_margin=args.metar_freshness_quality_expected_edge_margin,
             yes_max_entry_price_dollars=args.yes_max_entry_price,
             no_max_entry_price_dollars=args.no_max_entry_price,
-            require_market_snapshot_seq=not args.disable_require_market_snapshot_seq,
+            require_market_snapshot_seq=shadow_require_market_snapshot_seq,
             require_metar_snapshot_sha=args.require_metar_snapshot_sha,
             enforce_underlying_netting=not args.disable_underlying_netting,
             planning_bankroll_dollars=args.planning_bankroll,
@@ -5346,6 +6798,102 @@ def main() -> None:
             enforce_trade_gate=args.enforce_trade_gate,
             enforce_ws_state_authority=args.enforce_ws_state_authority,
             ws_state_max_age_seconds=args.ws_state_max_age_seconds,
+            max_total_deployed_pct=args.max_total_deployed_pct,
+            max_same_station_exposure_pct=args.max_same_station_exposure_pct,
+            max_same_hour_cluster_exposure_pct=args.max_same_hour_cluster_exposure_pct,
+            max_same_underlying_exposure_pct=args.max_same_underlying_exposure_pct,
+            max_orders_per_station=args.max_orders_per_station,
+            max_orders_per_underlying=args.max_orders_per_underlying,
+            min_unique_stations_per_loop=args.min_unique_stations_per_loop,
+            min_unique_underlyings_per_loop=args.min_unique_underlyings_per_loop,
+            min_unique_local_hours_per_loop=args.min_unique_local_hours_per_loop,
+            replan_market_side_cooldown_minutes=args.replan_market_side_cooldown_minutes,
+            replan_market_side_price_change_override_dollars=args.replan_market_side_price_change_override_dollars,
+            replan_market_side_alpha_change_override=args.replan_market_side_alpha_change_override,
+            replan_market_side_confidence_change_override=args.replan_market_side_confidence_change_override,
+            replan_market_side_min_observation_advance_minutes=args.replan_market_side_min_observation_advance_minutes,
+            replan_market_side_repeat_window_minutes=args.replan_market_side_repeat_window_minutes,
+            replan_market_side_max_plans_per_window=args.replan_market_side_max_plans_per_window,
+            replan_market_side_history_files=args.replan_market_side_history_files,
+            replan_market_side_min_orders_backstop=args.replan_market_side_min_orders_backstop,
+            historical_selection_quality_enabled=not args.disable_historical_selection_quality,
+            historical_selection_quality_lookback_hours=args.historical_selection_quality_lookback_hours,
+            historical_selection_quality_min_resolved_market_sides=args.historical_selection_quality_min_resolved_market_sides,
+            historical_selection_quality_min_bucket_samples=args.historical_selection_quality_min_bucket_samples,
+            historical_selection_quality_probability_penalty_max=args.historical_selection_quality_probability_penalty_max,
+            historical_selection_quality_expected_edge_penalty_max=args.historical_selection_quality_expected_edge_penalty_max,
+            historical_selection_quality_score_adjust_scale=args.historical_selection_quality_score_adjust_scale,
+            historical_selection_quality_profile_max_age_hours=args.historical_selection_quality_profile_max_age_hours,
+            historical_selection_quality_preferred_model=args.historical_selection_quality_preferred_model,
+        )
+    elif args.command == "kalshi-temperature-profitability":
+        summary = run_kalshi_temperature_profitability(
+            output_dir=args.output_dir,
+            hours=args.hours,
+            journal_db_path=args.journal_db_path,
+            top_n=args.top_n,
+        )
+    elif args.command == "kalshi-temperature-selection-quality":
+        summary = run_kalshi_temperature_selection_quality(
+            output_dir=args.output_dir,
+            lookback_hours=args.lookback_hours,
+            min_resolved_market_sides=args.min_resolved_market_sides,
+            min_bucket_samples=args.min_bucket_samples,
+            preferred_attribution_model=args.preferred_attribution_model,
+            max_profile_age_hours=args.max_profile_age_hours,
+            probability_penalty_max=args.probability_penalty_max,
+            expected_edge_penalty_max=args.expected_edge_penalty_max,
+            score_adjust_scale=args.score_adjust_scale,
+            intent_hours=args.intent_hours,
+            top_n=args.top_n,
+        )
+    elif args.command == "kalshi-temperature-refill-trial-balance":
+        summary = run_kalshi_temperature_refill_trial_balance(
+            output_dir=args.output_dir,
+            starting_balance_dollars=args.starting_balance_dollars,
+            reason=args.reason,
+        )
+    elif args.command == "kalshi-temperature-bankroll-validation":
+        summary = run_kalshi_temperature_bankroll_validation(
+            output_dir=args.output_dir,
+            hours=args.hours,
+            reference_bankroll_dollars=args.reference_bankroll_dollars,
+            sizing_models_json=args.sizing_models_json,
+            slippage_bps_list=args.slippage_bps_list,
+            fee_model_json=args.fee_model_json,
+            top_n=args.top_n,
+        )
+    elif args.command == "kalshi-temperature-alpha-gap-report":
+        summary = run_kalshi_temperature_alpha_gap_report(
+            output_dir=args.output_dir,
+            hours=args.hours,
+            reference_bankroll_dollars=args.reference_bankroll_dollars,
+            sizing_models_json=args.sizing_models_json,
+            slippage_bps_list=args.slippage_bps_list,
+            fee_model_json=args.fee_model_json,
+            top_n=args.top_n,
+            source_bankroll_validation_file=args.source_bankroll_validation_file,
+        )
+    elif args.command == "kalshi-temperature-live-readiness":
+        summary = run_kalshi_temperature_live_readiness(
+            output_dir=args.output_dir,
+            horizons=args.horizons,
+            reference_bankroll_dollars=args.reference_bankroll_dollars,
+            sizing_models_json=args.sizing_models_json,
+            slippage_bps_list=args.slippage_bps_list,
+            fee_model_json=args.fee_model_json,
+            top_n=args.top_n,
+        )
+    elif args.command == "kalshi-temperature-go-live-gate":
+        summary = run_kalshi_temperature_go_live_gate(
+            output_dir=args.output_dir,
+            horizons=args.horizons,
+            reference_bankroll_dollars=args.reference_bankroll_dollars,
+            sizing_models_json=args.sizing_models_json,
+            slippage_bps_list=args.slippage_bps_list,
+            fee_model_json=args.fee_model_json,
+            top_n=args.top_n,
+            source_live_readiness_file=args.source_live_readiness_file,
         )
     elif args.command == "polymarket-market-ingest":
         summary = run_polymarket_market_data_ingest(
@@ -5356,6 +6904,42 @@ def main() -> None:
             only_active=not args.include_inactive,
             gamma_base_url=args.gamma_base_url,
             timeout_seconds=args.timeout_seconds,
+            coldmath_snapshot_dir=args.coldmath_snapshot_dir,
+            coldmath_equity_csv=args.coldmath_equity_csv,
+            coldmath_positions_csv=args.coldmath_positions_csv,
+            coldmath_wallet_address=args.coldmath_wallet_address,
+            coldmath_stale_hours=args.coldmath_stale_hours,
+            coldmath_refresh_from_api=args.coldmath_refresh_from_api,
+            coldmath_data_api_base_url=args.coldmath_data_api_base_url,
+            coldmath_api_timeout_seconds=args.coldmath_api_timeout_seconds,
+            coldmath_positions_page_size=args.coldmath_positions_page_size,
+            coldmath_positions_max_pages=args.coldmath_positions_max_pages,
+        )
+    elif args.command == "coldmath-snapshot-summary":
+        summary = run_coldmath_snapshot_summary(
+            snapshot_dir=args.snapshot_dir,
+            equity_csv=args.equity_csv,
+            positions_csv=args.positions_csv,
+            wallet_address=args.wallet_address,
+            stale_hours=args.stale_hours,
+            output_dir=args.output_dir,
+            refresh_from_api=args.refresh_from_api,
+            data_api_base_url=args.data_api_base_url,
+            api_timeout_seconds=args.api_timeout_seconds,
+            positions_page_size=args.positions_page_size,
+            positions_max_pages=args.positions_max_pages,
+        )
+    elif args.command == "coldmath-replication-plan":
+        summary = run_coldmath_replication_plan(
+            output_dir=args.output_dir,
+            top_n=args.top_n,
+            market_tickers=[item.strip() for item in str(args.market_tickers or "").split(",") if item.strip()],
+            require_liquidity_filter=not args.disable_liquidity_filter,
+            require_two_sided_quotes=not args.disable_require_two_sided_quotes,
+            max_spread_dollars=args.max_spread_dollars,
+            min_liquidity_score=args.min_liquidity_score,
+            max_family_candidates=args.max_family_candidates,
+            max_family_share=args.max_family_share,
         )
     elif args.command == "kalshi-focus-dossier":
         summary = run_kalshi_focus_dossier(
@@ -5794,7 +7378,6 @@ def main() -> None:
             max_orders=args.max_orders,
             max_live_submissions_per_day=args.max_live_submissions_per_day,
             max_live_cost_per_day_dollars=args.max_live_cost_per_day,
-            auto_cancel_duplicate_open_orders=not args.disable_auto_duplicate_janitor,
             ledger_csv=args.ledger_csv,
             timeout_seconds=args.timeout_seconds,
         )
