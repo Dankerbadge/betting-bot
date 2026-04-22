@@ -1495,3 +1495,171 @@ def test_shadow_check_strict_fails_when_discord_route_guard_timer_expected_but_n
 
     assert result.returncode == 2
     assert "STRICT CHECK FAILED: discord-route-guard timer expected but not enabled" in result.stderr
+
+
+def test_shadow_check_strict_fails_when_live_status_is_unknown_non_green(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    _write_json(
+        output_dir / "health" / "live_status_latest.json",
+        {
+            "status": "orange",
+            "trigger_flags": {
+                "approvals_resumed": False,
+                "planned_orders_resumed": False,
+            },
+            "freshness_plan": {
+                "approval_rate_guardrail_status": "within_band",
+                "approval_rate_guardrail_evaluated": True,
+                "approval_rate": 0.1,
+                "metar_observation_stale_rate": 0.0,
+            },
+            "scan_budget": {
+                "effective_max_markets": 100,
+            },
+            "latest_cycle_metrics": {
+                "intents_approved": 1,
+                "intents_total": 10,
+                "planned_orders": 1,
+            },
+            "red_reasons": [],
+            "yellow_reasons": [],
+        },
+    )
+
+    env_file = tmp_path / "shadow.env"
+    _write_env_file(env_file=env_file, output_dir=output_dir)
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_shadow_check(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 2
+    assert "STRICT CHECK FAILED: live_status is unknown/non-green" in result.stderr
+
+
+def test_shadow_check_strict_fails_when_alpha_summary_artifact_is_stale(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    alpha_path = output_dir / "health" / "alpha_summary_latest.json"
+    os.utime(alpha_path, (1, 1))
+
+    env_file = tmp_path / "shadow.env"
+    _write_env_file(
+        env_file=env_file,
+        output_dir=output_dir,
+        extra_lines=(
+            "ALPHA_SUMMARY_STRICT_MAX_AGE_SECONDS=1",
+        ),
+    )
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_shadow_check(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 2
+    assert "STRICT CHECK FAILED: alpha summary artifact stale" in result.stderr
+
+
+def test_shadow_check_strict_fails_when_alpha_summary_health_status_is_unknown(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    _write_json(
+        output_dir / "health" / "alpha_summary_latest.json",
+        {
+            "health": {
+                "status": "UNKNOWN",
+                "reason_text": "",
+            },
+            "headline_metrics": {
+                "health_status": "UNKNOWN",
+                "live_recommendation": "no_go_shadow_only",
+                "approval_rate": 0.1,
+                "deployment_confidence_score": 10.0,
+                "approval_auto_apply_payload_consistent": True,
+                "message_quality_overall_pass": True,
+                "trader_view_payload_consistent": True,
+            },
+            "approval_auto_apply": {
+                "enabled": False,
+                "should_apply": False,
+                "applied_in_this_run": False,
+                "released_in_this_run": False,
+                "apply_reason": "none",
+            },
+            "trader_view": {
+                "mode": "shadow_only",
+                "decision_now": "stay_shadow_only",
+                "live_recommendation": "no_go_shadow_only",
+                "approval_rate": 0.1,
+                "confidence_score": 10.0,
+            },
+        },
+    )
+
+    env_file = tmp_path / "shadow.env"
+    _write_env_file(env_file=env_file, output_dir=output_dir)
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_shadow_check(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 2
+    assert "STRICT CHECK FAILED: alpha summary health status unknown" in result.stderr
+
+
+def test_shadow_check_strict_fails_when_stale_metrics_timer_expected_but_not_active(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+
+    env_file = tmp_path / "shadow.env"
+    _write_env_file(
+        env_file=env_file,
+        output_dir=output_dir,
+        extra_lines=(
+            "STALE_METRICS_DRILL_TIMER_EXPECTED=1",
+        ),
+    )
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_shadow_check(
+        script_path=script_path,
+        env_file=env_file,
+        tool_dir=tool_dir,
+        extra_env={
+            "MOCK_STALE_METRICS_DRILL_TIMER_ACTIVE": "inactive",
+        },
+    )
+
+    assert result.returncode == 2
+    assert "STRICT CHECK FAILED: stale-metrics drill timer expected but not active" in result.stderr
+
+
+def test_shadow_check_strict_fails_when_stale_metrics_timer_expected_but_not_enabled(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+
+    env_file = tmp_path / "shadow.env"
+    _write_env_file(
+        env_file=env_file,
+        output_dir=output_dir,
+        extra_lines=(
+            "STALE_METRICS_DRILL_TIMER_EXPECTED=1",
+        ),
+    )
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_shadow_check(
+        script_path=script_path,
+        env_file=env_file,
+        tool_dir=tool_dir,
+        extra_env={
+            "MOCK_STALE_METRICS_DRILL_TIMER_ACTIVE": "active",
+            "MOCK_STALE_METRICS_DRILL_TIMER_ENABLED": "disabled",
+        },
+    )
+
+    assert result.returncode == 2
+    assert "STRICT CHECK FAILED: stale-metrics drill timer expected but not enabled" in result.stderr
