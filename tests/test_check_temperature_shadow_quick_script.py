@@ -378,3 +378,72 @@ def test_quick_check_strict_fails_when_live_status_artifact_is_missing(tmp_path:
 
     assert result.returncode == 2
     assert "live_status_missing" in result.stdout
+
+
+def test_quick_check_strict_fails_when_live_status_artifact_is_stale(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    live_status_file = output_dir / "health" / "live_status_latest.json"
+    os.utime(live_status_file, (1, 1))
+
+    env_file = tmp_path / "quick.env"
+    _write_env_file(
+        env_file=env_file,
+        output_dir=output_dir,
+        extra_lines=(
+            "LIVE_STATUS_STRICT_MAX_AGE_SECONDS=5",
+        ),
+    )
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_quick_script(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 2
+    assert "live_status_stale" in result.stdout
+
+
+def test_quick_check_strict_fails_when_alpha_summary_artifact_is_stale(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    alpha_summary_file = output_dir / "health" / "alpha_summary_latest.json"
+    os.utime(alpha_summary_file, (1, 1))
+
+    env_file = tmp_path / "quick.env"
+    _write_env_file(
+        env_file=env_file,
+        output_dir=output_dir,
+        extra_lines=(
+            "ALPHA_SUMMARY_STRICT_MAX_AGE_SECONDS=5",
+        ),
+    )
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_quick_script(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 2
+    assert "alpha_summary_stale" in result.stdout
+
+
+def test_quick_check_strict_fails_when_route_guard_artifact_is_stale(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    route_guard_file = output_dir / "health" / "discord_route_guard" / "discord_route_guard_latest.json"
+    os.utime(route_guard_file, (1, 1))
+
+    env_file = tmp_path / "quick.env"
+    _write_env_file(
+        env_file=env_file,
+        output_dir=output_dir,
+        extra_lines=(
+            "DISCORD_ROUTE_GUARD_STRICT_MAX_AGE_SECONDS=5",
+        ),
+    )
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_quick_script(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 2
+    assert "route_guard_stale" in result.stdout
