@@ -13,7 +13,12 @@ def _write_json(path: Path, payload: dict[str, object]) -> None:
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
-def _prepare_script_bundle(*, tmp_path: Path, root: Path) -> tuple[Path, Path]:
+def _prepare_script_bundle(
+    *,
+    tmp_path: Path,
+    root: Path,
+    thread_map_json: str | None = None,
+) -> tuple[Path, Path]:
     bundle_dir = tmp_path / "bundle"
     bundle_dir.mkdir(parents=True, exist_ok=True)
 
@@ -23,15 +28,20 @@ def _prepare_script_bundle(*, tmp_path: Path, root: Path) -> tuple[Path, Path]:
     quick_script.chmod(0o755)
 
     # Keep thread-map checks deterministic so tests only exercise quick-health logic.
+    if not thread_map_json:
+        thread_map_json = (
+            '{"ready_for_apply": true, "route_guard_shared_route_group_count": 0, '
+            '"missing_required_in_map": [], "missing_required_in_env": []}'
+        )
     fake_thread_map = bundle_dir / "check_discord_thread_map.sh"
     fake_thread_map.write_text(
-        """#!/usr/bin/env bash
+        f"""#!/usr/bin/env bash
 set -euo pipefail
 if [[ "${1:-}" == "--env" ]]; then
   shift 2 || true
 fi
 if [[ "${1:-}" == "--json" ]]; then
-  echo '{"ready_for_apply": true, "route_guard_shared_route_group_count": 0, "missing_required_in_map": [], "missing_required_in_env": []}'
+  echo '{thread_map_json}'
   exit 0
 fi
 echo "ok"
@@ -245,3 +255,27 @@ def test_quick_check_strict_fails_when_lane_state_required_but_missing(tmp_path:
 
     assert result.returncode == 2
     assert "decision_matrix_lane_state_missing" in result.stdout
+
+
+def test_quick_check_strict_fails_when_thread_map_is_incomplete(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+
+    env_file = tmp_path / "quick.env"
+    _write_env_file(env_file=env_file, output_dir=output_dir)
+    script_path, tool_dir = _prepare_script_bundle(
+        tmp_path=tmp_path,
+        root=root,
+        thread_map_json=(
+            '{"ready_for_apply": false, "route_guard_shared_route_group_count": 2, '
+            '"missing_required_in_map": ["SHADOW_ALERT_WEBHOOK_THREAD_ID"], '
+            '"missing_required_in_env": ["ALPHA_SUMMARY_WEBHOOK_OPS_THREAD_ID"]}'
+        ),
+    )
+    result = _run_quick_script(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 2
+    assert "thread_map_incomplete" in result.stdout
+    assert "next_action: fill /etc/betbot/discord-thread-map.env then run:" in result.stdout
