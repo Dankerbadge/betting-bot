@@ -821,15 +821,19 @@ fi
 
 log_maintenance_alert_state="$OUTPUT_DIR/health/log_maintenance/log_maintenance_alert_state.json"
 if [[ -f "$log_maintenance_alert_state" && "$HAS_JQ" == "1" ]]; then
-  last_alert_epoch="$(jq -r '.last_alert_epoch // 0' "$log_maintenance_alert_state" 2>/dev/null || echo "0")"
-  now_epoch="$(date +%s)"
-  alert_age_seconds="n/a"
-  if [[ "$last_alert_epoch" =~ ^[0-9]+$ ]] && (( last_alert_epoch > 0 )) && (( now_epoch >= last_alert_epoch )); then
-    alert_age_seconds="$((now_epoch - last_alert_epoch))"
+  if jq -e . "$log_maintenance_alert_state" >/dev/null 2>&1; then
+    last_alert_epoch="$(jq -r '.last_alert_epoch // 0' "$log_maintenance_alert_state" 2>/dev/null || echo "0")"
+    now_epoch="$(date +%s)"
+    alert_age_seconds="n/a"
+    if [[ "$last_alert_epoch" =~ ^[0-9]+$ ]] && (( last_alert_epoch > 0 )) && (( now_epoch >= last_alert_epoch )); then
+      alert_age_seconds="$((now_epoch - last_alert_epoch))"
+    fi
+    jq -r --arg alert_age_seconds "$alert_age_seconds" '
+      "log_maintenance_alert_state last_status=\(.last_status // "unknown") last_alert_age_seconds=\($alert_age_seconds) dedupe_fingerprint_set=\(((.last_fingerprint // "") | length) > 0)"
+    ' "$log_maintenance_alert_state"
+  else
+    echo "log_maintenance_alert_state -> PARSE_ERROR ($log_maintenance_alert_state)"
   fi
-  jq -r --arg alert_age_seconds "$alert_age_seconds" '
-    "log_maintenance_alert_state last_status=\(.last_status // "unknown") last_alert_age_seconds=\($alert_age_seconds) dedupe_fingerprint_set=\(((.last_fingerprint // "") | length) > 0)"
-  ' "$log_maintenance_alert_state"
 fi
 
 decision_matrix_lane_strict_statuses_normalized="$(printf '%s' "$DECISION_MATRIX_LANE_STRICT_DEGRADED_STATUSES" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
