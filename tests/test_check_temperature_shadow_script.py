@@ -450,6 +450,35 @@ def test_shadow_check_strict_fails_when_route_guard_artifact_is_stale_and_expect
     assert "STRICT CHECK FAILED: discord-route-guard artifact stale" in result.stderr
 
 
+def test_shadow_check_strict_fails_when_route_guard_expected_defaults_to_installed_timer(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+
+    env_file = tmp_path / "shadow.env"
+    _write_env_file(
+        env_file=env_file,
+        output_dir=output_dir,
+        extra_lines=(
+            "unset DISCORD_ROUTE_GUARD_TIMER_EXPECTED",
+            "DISCORD_ROUTE_GUARD_STRICT_FAIL_ON_COLLISION=0",
+        ),
+    )
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_shadow_check(
+        script_path=script_path,
+        env_file=env_file,
+        tool_dir=tool_dir,
+        extra_env={
+            "MOCK_DISCORD_ROUTE_GUARD_TIMER_ACTIVE": "inactive",
+        },
+    )
+
+    assert result.returncode == 2
+    assert "STRICT CHECK FAILED: discord-route-guard timer expected but not active" in result.stderr
+
+
 def test_shadow_check_strict_ignores_stale_route_guard_when_not_expected(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[1]
     output_dir = tmp_path / "out"
@@ -528,6 +557,55 @@ def test_shadow_check_strict_warns_when_alpha_summary_health_is_yellow(tmp_path:
 
     assert result.returncode == 1
     assert "STRICT CHECK WARNING: alpha summary health is yellow" in result.stderr
+
+
+def test_shadow_check_strict_warns_when_alpha_summary_health_is_yellow_without_reason_text(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    _write_json(
+        output_dir / "health" / "alpha_summary_latest.json",
+        {
+            "health": {
+                "status": "YELLOW",
+                "reason_text": "",
+            },
+            "headline_metrics": {
+                "health_status": "YELLOW",
+                "health_reason_text": "",
+                "live_recommendation": "no_go_shadow_only",
+                "approval_rate": 0.1,
+                "deployment_confidence_score": 10.0,
+                "approval_auto_apply_payload_consistent": True,
+                "message_quality_overall_pass": True,
+                "trader_view_payload_consistent": True,
+            },
+            "approval_auto_apply": {
+                "enabled": False,
+                "should_apply": False,
+                "applied_in_this_run": False,
+                "released_in_this_run": False,
+                "apply_reason": "none",
+            },
+            "trader_view": {
+                "mode": "shadow_only",
+                "decision_now": "stay_shadow_only",
+                "live_recommendation": "no_go_shadow_only",
+                "approval_rate": 0.1,
+                "confidence_score": 10.0,
+            },
+        },
+    )
+
+    env_file = tmp_path / "shadow.env"
+    _write_env_file(env_file=env_file, output_dir=output_dir)
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_shadow_check(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 1
+    assert "STRICT CHECK WARNING: alpha summary health is yellow" in result.stderr
+    assert "(reason:" not in result.stderr
 
 
 def test_shadow_check_strict_fails_when_alpha_summary_health_is_red(tmp_path: Path) -> None:
