@@ -317,3 +317,70 @@ def test_shadow_check_strict_allows_non_green_route_guard_when_collision_gate_di
 
     assert result.returncode == 0
     assert "STRICT CHECK FAILED: discord-route-guard indicates non-green route separation" not in result.stderr
+
+
+def test_shadow_check_strict_fails_when_route_guard_artifact_is_stale_and_expected(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    route_guard_path = output_dir / "health" / "discord_route_guard" / "discord_route_guard_latest.json"
+    _write_json(
+        route_guard_path,
+        {
+            "guard_status": "green",
+            "shared_route_group_count": 0,
+            "route_remediations": [],
+        },
+    )
+    # Force artifact age far beyond strict max-age threshold.
+    os.utime(route_guard_path, (1, 1))
+
+    env_file = tmp_path / "shadow.env"
+    _write_env_file(
+        env_file=env_file,
+        output_dir=output_dir,
+        extra_lines=(
+            "DISCORD_ROUTE_GUARD_TIMER_EXPECTED=1",
+            "DISCORD_ROUTE_GUARD_STRICT_FAIL_ON_COLLISION=0",
+            "DISCORD_ROUTE_GUARD_STRICT_MAX_AGE_SECONDS=1",
+        ),
+    )
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_shadow_check(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 2
+    assert "STRICT CHECK FAILED: discord-route-guard artifact stale" in result.stderr
+
+
+def test_shadow_check_strict_ignores_stale_route_guard_when_not_expected(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    route_guard_path = output_dir / "health" / "discord_route_guard" / "discord_route_guard_latest.json"
+    _write_json(
+        route_guard_path,
+        {
+            "guard_status": "green",
+            "shared_route_group_count": 0,
+            "route_remediations": [],
+        },
+    )
+    os.utime(route_guard_path, (1, 1))
+
+    env_file = tmp_path / "shadow.env"
+    _write_env_file(
+        env_file=env_file,
+        output_dir=output_dir,
+        extra_lines=(
+            "DISCORD_ROUTE_GUARD_TIMER_EXPECTED=0",
+            "DISCORD_ROUTE_GUARD_STRICT_FAIL_ON_COLLISION=0",
+            "DISCORD_ROUTE_GUARD_STRICT_MAX_AGE_SECONDS=1",
+        ),
+    )
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_shadow_check(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 0
+    assert "STRICT CHECK FAILED: discord-route-guard artifact stale" not in result.stderr
