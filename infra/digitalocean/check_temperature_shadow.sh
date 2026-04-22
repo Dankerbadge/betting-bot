@@ -502,9 +502,13 @@ fi
 
 latest_alpha_dashboard="$(ls -1t "$OUTPUT_DIR"/alpha_workers/alpha_worker_dashboard_latest.json 2>/dev/null | head -n 1 || true)"
 if [[ -n "$latest_alpha_dashboard" && "$HAS_JQ" == "1" ]]; then
-  jq -r '
-    "alpha_dashboard profiles=\(.explorer_profiles.rankings.profile_count // 0) approved_delta=\(.explorer_profiles.delta_relaxed_minus_default.approved_delta_relaxed_minus_default // 0) resolved_unique_market_sides=\(.conservative_headline.metrics.resolved_unique_market_sides // 0) roi_ref=\(.conservative_headline.metrics.roi_on_reference_bankroll // 0) live_ready=\(.latest_reports.live_readiness.ready_for_small_live_pilot // false) gate=\(.latest_reports.go_live_gate.gate_status // "unknown") main_limit=\(.conservative_headline.metrics.main_limiting_factor // "unknown") next_layer=\(.conservative_headline.metrics.next_missing_alpha_layer // "")"
-  ' "$latest_alpha_dashboard"
+  if jq -e . "$latest_alpha_dashboard" >/dev/null 2>&1; then
+    jq -r '
+      "alpha_dashboard profiles=\(.explorer_profiles.rankings.profile_count // 0) approved_delta=\(.explorer_profiles.delta_relaxed_minus_default.approved_delta_relaxed_minus_default // 0) resolved_unique_market_sides=\(.conservative_headline.metrics.resolved_unique_market_sides // 0) roi_ref=\(.conservative_headline.metrics.roi_on_reference_bankroll // 0) live_ready=\(.latest_reports.live_readiness.ready_for_small_live_pilot // false) gate=\(.latest_reports.go_live_gate.gate_status // "unknown") main_limit=\(.conservative_headline.metrics.main_limiting_factor // "unknown") next_layer=\(.conservative_headline.metrics.next_missing_alpha_layer // "")"
+    ' "$latest_alpha_dashboard"
+  else
+    echo "alpha_dashboard_latest -> PARSE_ERROR ($latest_alpha_dashboard)"
+  fi
 fi
 
 latest_breadth_dashboard="$(ls -1t "$OUTPUT_DIR"/breadth_worker/breadth_worker_dashboard_latest.json 2>/dev/null | head -n 1 || true)"

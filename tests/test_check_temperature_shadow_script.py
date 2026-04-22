@@ -2929,6 +2929,24 @@ def test_shadow_check_strict_handles_live_readiness_malformed_json(tmp_path: Pat
     assert "live_readiness_latest -> PARSE_ERROR" in result.stdout
 
 
+def test_shadow_check_strict_handles_alpha_dashboard_malformed_json(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    alpha_dashboard_path = output_dir / "alpha_workers" / "alpha_worker_dashboard_latest.json"
+    alpha_dashboard_path.parent.mkdir(parents=True, exist_ok=True)
+    alpha_dashboard_path.write_text("{not-json", encoding="utf-8")
+
+    env_file = tmp_path / "shadow.env"
+    _write_env_file(env_file=env_file, output_dir=output_dir)
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_shadow_check(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 0
+    assert "alpha_dashboard_latest -> PARSE_ERROR" in result.stdout
+
+
 def test_shadow_check_strict_handles_log_maintenance_alert_state_malformed_json(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[1]
     output_dir = tmp_path / "out"
