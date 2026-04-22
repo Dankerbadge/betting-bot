@@ -6,12 +6,14 @@ import gzip
 import hashlib
 import io
 import json
+import math
 from pathlib import Path
 from typing import Any, Callable
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
 from betbot.dns_guard import urlopen_with_dns_recovery
+from betbot.kalshi_weather_settlement import infer_timezone_from_station
 
 
 BytesGetter = Callable[[str, float], tuple[int, bytes, dict[str, str]]]
@@ -21,6 +23,7 @@ DEFAULT_METAR_CACHE_URL = "https://aviationweather.gov/data/cache/metars.cache.c
 OBSERVATION_FIELDNAMES = [
     "captured_at",
     "station_id",
+    "report_type",
     "observation_time_utc",
     "timezone_name",
     "local_date",
@@ -93,6 +96,20 @@ def _pick_row_value(row: dict[str, Any], keys: tuple[str, ...]) -> str:
     return ""
 
 
+def _infer_report_type(*, row: dict[str, Any], raw_text: str) -> str:
+    explicit = _pick_row_value(row, ("report_type", "reportType", "metar_type", "report"))
+    if explicit:
+        normalized = explicit.upper()
+        if normalized in {"METAR", "SPECI"}:
+            return normalized
+    stripped_raw = _normalize_text(raw_text).upper()
+    if stripped_raw.startswith("SPECI "):
+        return "SPECI"
+    if stripped_raw.startswith("METAR "):
+        return "METAR"
+    return ""
+
+
 def parse_metar_cache_csv_gz(blob_gz: bytes) -> dict[str, Any]:
     if not blob_gz:
         return {
@@ -143,13 +160,18 @@ def parse_metar_cache_csv_gz(blob_gz: bytes) -> dict[str, Any]:
         temp_c = None
         if temp_text:
             try:
-                temp_c = float(temp_text)
-            except ValueError:
+                parsed_temp = float(temp_text)
+                if not math.isfinite(parsed_temp):
+                    raise ValueError("non_finite_temp_c")
+                temp_c = parsed_temp
+            except (TypeError, ValueError):
                 errors.append(f"row_{index}:invalid_temp_c")
                 temp_c = None
         raw_text = _pick_row_value(row, ("raw_text", "raw_ob", "raw", "metar"))
+        report_type = _infer_report_type(row=row, raw_text=raw_text)
         canonical = {
             "station_id": station_id,
+            "report_type": report_type,
             "observation_time_utc": observed.isoformat(),
             "temp_c": temp_c,
             "raw_text": raw_text,
@@ -190,8 +212,11 @@ def _load_station_timezone_map(specs_csv: str | None, output_dir: str) -> dict[s
         for row in csv.DictReader(handle):
             station = _normalize_text(row.get("settlement_station")).upper()
             timezone_name = _normalize_text(row.get("settlement_timezone"))
-            if station and timezone_name and station not in station_timezone:
-                station_timezone[station] = timezone_name
+            if not station:
+                continue
+            resolved_timezone = timezone_name or infer_timezone_from_station(station)
+            if resolved_timezone and station not in station_timezone:
+                station_timezone[station] = resolved_timezone
     return station_timezone
 
 
@@ -200,6 +225,7 @@ def _load_state(path: Path) -> dict[str, Any]:
         return {
             "latest_observation_by_station": {},
             "max_temp_c_by_station_local_day": {},
+            "min_temp_c_by_station_local_day": {},
         }
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -207,22 +233,42 @@ def _load_state(path: Path) -> dict[str, Any]:
         return {
             "latest_observation_by_station": {},
             "max_temp_c_by_station_local_day": {},
+            "min_temp_c_by_station_local_day": {},
         }
     if not isinstance(payload, dict):
         return {
             "latest_observation_by_station": {},
             "max_temp_c_by_station_local_day": {},
+            "min_temp_c_by_station_local_day": {},
         }
     if not isinstance(payload.get("latest_observation_by_station"), dict):
         payload["latest_observation_by_station"] = {}
     if not isinstance(payload.get("max_temp_c_by_station_local_day"), dict):
         payload["max_temp_c_by_station_local_day"] = {}
+    if not isinstance(payload.get("min_temp_c_by_station_local_day"), dict):
+        payload["min_temp_c_by_station_local_day"] = {}
+    if not isinstance(payload.get("station_observation_interval_stats"), dict):
+        payload["station_observation_interval_stats"] = {}
     return payload
 
 
 def _write_state(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def _percentile(values: list[float], p: float) -> float | None:
+    if not values:
+        return None
+    if len(values) == 1:
+        return float(values[0])
+    rank = max(0.0, min(1.0, float(p))) * (len(values) - 1)
+    lower = int(rank)
+    upper = min(len(values) - 1, lower + 1)
+    if lower == upper:
+        return float(values[lower])
+    weight = rank - lower
+    return float(values[lower] * (1.0 - weight) + values[upper] * weight)
 
 
 def _observation_local_date(observation_time_utc: str, timezone_name: str) -> str:
@@ -233,7 +279,13 @@ def _observation_local_date(observation_time_utc: str, timezone_name: str) -> st
         zone = ZoneInfo(timezone_name)
     except Exception:
         zone = timezone.utc
-    return observed.astimezone(zone).date().isoformat()
+    local_timestamp = observed.astimezone(zone)
+    # Kalshi weather resolution references local standard time; when DST is in
+    # effect, shift back by the DST delta so day buckets align with settlement.
+    dst_delta = local_timestamp.dst()
+    if dst_delta and dst_delta.total_seconds() > 0:
+        local_timestamp = local_timestamp - dst_delta
+    return local_timestamp.date().isoformat()
 
 
 def _write_observations_csv(path: Path, rows: list[dict[str, Any]]) -> None:
@@ -282,12 +334,20 @@ def run_kalshi_temperature_metar_ingest(
     state_payload = _load_state(state_path)
     latest_by_station = state_payload.get("latest_observation_by_station")
     max_by_station_day = state_payload.get("max_temp_c_by_station_local_day")
+    min_by_station_day = state_payload.get("min_temp_c_by_station_local_day")
+    station_interval_stats = state_payload.get("station_observation_interval_stats")
     if not isinstance(latest_by_station, dict):
         latest_by_station = {}
         state_payload["latest_observation_by_station"] = latest_by_station
     if not isinstance(max_by_station_day, dict):
         max_by_station_day = {}
         state_payload["max_temp_c_by_station_local_day"] = max_by_station_day
+    if not isinstance(min_by_station_day, dict):
+        min_by_station_day = {}
+        state_payload["min_temp_c_by_station_local_day"] = min_by_station_day
+    if not isinstance(station_interval_stats, dict):
+        station_interval_stats = {}
+        state_payload["station_observation_interval_stats"] = station_interval_stats
 
     observation_rows: list[dict[str, Any]] = []
     new_station_updates = 0
@@ -304,6 +364,7 @@ def run_kalshi_temperature_metar_ingest(
             {
                 "captured_at": captured_at.isoformat(),
                 "station_id": station_id,
+                "report_type": _normalize_text(row.get("report_type")),
                 "observation_time_utc": observed_utc,
                 "timezone_name": timezone_name,
                 "local_date": local_date,
@@ -317,14 +378,77 @@ def run_kalshi_temperature_metar_ingest(
         existing_time = _parse_iso_datetime(existing.get("observation_time_utc")) if isinstance(existing, dict) else None
         current_time = _parse_iso_datetime(observed_utc)
         if current_time is not None and (existing_time is None or current_time >= existing_time):
-            latest_by_station[station_id] = {
+            previous_observation_time = (
+                _normalize_text(existing.get("observation_time_utc")) if isinstance(existing, dict) else ""
+            )
+            previous_temp_c = (
+                existing.get("temp_c")
+                if isinstance(existing, dict) and isinstance(existing.get("temp_c"), (int, float))
+                else None
+            )
+            previous_report_type = (
+                _normalize_text(existing.get("report_type")) if isinstance(existing, dict) else ""
+            )
+            previous_payload_hash = (
+                _normalize_text(existing.get("payload_hash")) if isinstance(existing, dict) else ""
+            )
+            previous_local_date = (
+                _normalize_text(existing.get("local_date")) if isinstance(existing, dict) else ""
+            )
+            if existing_time is not None and current_time > existing_time:
+                interval_minutes = (current_time - existing_time).total_seconds() / 60.0
+                # Ignore pathological long gaps so adaptive freshness does not
+                # balloon from outages or sparse historical backfills.
+                if 1.0 <= interval_minutes <= 180.0:
+                    stats_payload = station_interval_stats.get(station_id)
+                    if not isinstance(stats_payload, dict):
+                        stats_payload = {}
+                    raw_recent = stats_payload.get("recent_interval_minutes")
+                    recent: list[float] = []
+                    if isinstance(raw_recent, list):
+                        for value in raw_recent:
+                            if isinstance(value, (int, float)):
+                                recent.append(float(value))
+                    recent.append(float(interval_minutes))
+                    recent = recent[-16:]
+                    ordered = sorted(recent)
+                    median = _percentile(ordered, 0.5)
+                    p90 = _percentile(ordered, 0.9)
+                    stats_payload.update(
+                        {
+                            "sample_count": len(recent),
+                            "latest_interval_minutes": round(float(interval_minutes), 3),
+                            "interval_median_minutes": (
+                                round(float(median), 3) if isinstance(median, (int, float)) else None
+                            ),
+                            "interval_p90_minutes": (
+                                round(float(p90), 3) if isinstance(p90, (int, float)) else None
+                            ),
+                            "recent_interval_minutes": [round(float(value), 3) for value in recent],
+                            "updated_at": captured_at.isoformat(),
+                        }
+                    )
+                    station_interval_stats[station_id] = stats_payload
+            latest_by_station_entry: dict[str, Any] = {
                 "observation_time_utc": observed_utc,
                 "temp_c": temp_c if isinstance(temp_c, (int, float)) else None,
+                "report_type": _normalize_text(row.get("report_type")),
                 "payload_hash": _normalize_text(row.get("payload_hash")),
                 "timezone_name": timezone_name,
                 "local_date": local_date,
                 "captured_at": captured_at.isoformat(),
             }
+            if previous_observation_time:
+                latest_by_station_entry["previous_observation_time_utc"] = previous_observation_time
+            if previous_temp_c is not None:
+                latest_by_station_entry["previous_temp_c"] = round(float(previous_temp_c), 3)
+            if previous_report_type:
+                latest_by_station_entry["previous_report_type"] = previous_report_type
+            if previous_payload_hash:
+                latest_by_station_entry["previous_payload_hash"] = previous_payload_hash
+            if previous_local_date:
+                latest_by_station_entry["previous_local_date"] = previous_local_date
+            latest_by_station[station_id] = latest_by_station_entry
             new_station_updates += 1
 
         if isinstance(temp_c, (int, float)) and local_date:
@@ -338,6 +462,15 @@ def run_kalshi_temperature_metar_ingest(
                 existing_max_value = None
             if existing_max_value is None or float(temp_c) > existing_max_value:
                 max_by_station_day[max_key] = round(float(temp_c), 3)
+            existing_min = min_by_station_day.get(max_key)
+            existing_min_value = None
+            try:
+                if existing_min is not None:
+                    existing_min_value = float(existing_min)
+            except (TypeError, ValueError):
+                existing_min_value = None
+            if existing_min_value is None or float(temp_c) < existing_min_value:
+                min_by_station_day[max_key] = round(float(temp_c), 3)
 
     _write_state(state_path, state_payload)
 
@@ -364,7 +497,9 @@ def run_kalshi_temperature_metar_ingest(
         "parse_errors": parse_errors[:100],
         "station_updates": new_station_updates,
         "stations_tracked": len(latest_by_station),
+        "station_interval_stats_count": len(station_interval_stats),
         "station_local_day_max_count": len(max_by_station_day),
+        "station_local_day_min_count": len(min_by_station_day),
         "state_file": str(state_path),
         "output_csv": str(observations_csv),
     }
@@ -372,4 +507,3 @@ def run_kalshi_temperature_metar_ingest(
     summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
     summary["output_file"] = str(summary_path)
     return summary
-

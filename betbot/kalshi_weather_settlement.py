@@ -18,6 +18,12 @@ _CITY_TIMEZONE_BY_TOKEN = {
     "detroit": "America/New_York",
     "minneapolis": "America/Chicago",
     "chicago": "America/Chicago",
+    "austin": "America/Chicago",
+    "san antonio": "America/Chicago",
+    "new orleans": "America/Chicago",
+    "nola": "America/Chicago",
+    "oklahoma city": "America/Chicago",
+    "okc": "America/Chicago",
     "dallas": "America/Chicago",
     "houston": "America/Chicago",
     "denver": "America/Denver",
@@ -59,6 +65,29 @@ _CITY_STATION_BY_TOKEN = {
     "san antonio": "KSAT",
     "sf": "KSFO",
     "san francisco": "KSFO",
+}
+
+_STATION_TIMEZONE_BY_ID = {
+    "KNYC": "America/New_York",
+    "KBOS": "America/New_York",
+    "KDCA": "America/New_York",
+    "KPHL": "America/New_York",
+    "KMIA": "America/New_York",
+    "KATL": "America/New_York",
+    "KMDW": "America/Chicago",
+    "KDAL": "America/Chicago",
+    "KIAH": "America/Chicago",
+    "KAUS": "America/Chicago",
+    "KSAT": "America/Chicago",
+    "KMSY": "America/Chicago",
+    "KOKC": "America/Chicago",
+    "KMSP": "America/Chicago",
+    "KDEN": "America/Denver",
+    "KPHX": "America/Phoenix",
+    "KLAX": "America/Los_Angeles",
+    "KSEA": "America/Los_Angeles",
+    "KLAS": "America/Los_Angeles",
+    "KSFO": "America/Los_Angeles",
 }
 
 
@@ -151,6 +180,16 @@ def infer_settlement_sources(rules_primary: str) -> tuple[str, str]:
         elif token == "monthly climate report":
             fallback = "NWS Monthly Climate Report"
 
+    if primary and fallback and primary == fallback:
+        alternate_primary = next(
+            (source_name for _, source_name in source_positions if source_name != fallback),
+            "",
+        )
+        if alternate_primary:
+            primary = alternate_primary
+        else:
+            fallback = ""
+
     if not primary and fallback:
         primary = fallback
         fallback = ""
@@ -206,10 +245,19 @@ def infer_settlement_station(rules_primary: str, market_title: str, event_title:
 
 def infer_settlement_timezone(market_ticker: str, market_title: str, event_title: str) -> str:
     merged = " ".join((market_ticker, market_title, event_title)).lower()
-    for token, timezone_name in _CITY_TIMEZONE_BY_TOKEN.items():
-        if token in merged:
+    # Use token boundaries to avoid substring false positives (e.g. "la"
+    # inside "oklahoma"). Prefer longer tokens first.
+    for token, timezone_name in sorted(_CITY_TIMEZONE_BY_TOKEN.items(), key=lambda item: len(item[0]), reverse=True):
+        if re.search(rf"\b{re.escape(token)}\b", merged):
             return timezone_name
     return ""
+
+
+def infer_timezone_from_station(station_id: str) -> str:
+    station = str(station_id or "").strip().upper()
+    if not station:
+        return ""
+    return str(_STATION_TIMEZONE_BY_ID.get(station) or "")
 
 
 def infer_local_day_boundary(rules_primary: str) -> str:
@@ -294,12 +342,16 @@ def build_weather_settlement_spec(row: dict[str, Any]) -> dict[str, Any]:
     )
     primary_source, fallback_source = infer_settlement_sources(rules_primary)
     window_start, window_end, window_source = infer_observation_window_local(rules_primary)
+    settlement_station = infer_settlement_station(rules_primary, market_title, event_title)
+    settlement_timezone = infer_settlement_timezone(market_ticker, market_title, event_title)
+    if not settlement_timezone and settlement_station:
+        settlement_timezone = infer_timezone_from_station(settlement_station)
     return {
         "contract_family": family,
         "settlement_source_primary": primary_source,
         "settlement_source_fallback": fallback_source,
-        "settlement_station": infer_settlement_station(rules_primary, market_title, event_title),
-        "settlement_timezone": infer_settlement_timezone(market_ticker, market_title, event_title),
+        "settlement_station": settlement_station,
+        "settlement_timezone": settlement_timezone,
         "local_day_boundary": infer_local_day_boundary(rules_primary),
         "observation_window_local_start": window_start,
         "observation_window_local_end": window_end,

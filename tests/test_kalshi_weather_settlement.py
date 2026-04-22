@@ -8,6 +8,8 @@ from betbot.kalshi_weather_settlement import (
     infer_contract_family,
     infer_observation_window_local,
     infer_settlement_sources,
+    infer_settlement_timezone,
+    infer_timezone_from_station,
     rule_text_hash_sha256,
 )
 
@@ -28,6 +30,20 @@ class KalshiWeatherSettlementTests(unittest.TestCase):
         )
         self.assertEqual(primary, "NWS")
         self.assertEqual(fallback, "NCEI")
+
+    def test_infer_settlement_sources_prefers_non_fallback_primary_when_clause_comes_first(self) -> None:
+        primary, fallback = infer_settlement_sources(
+            "If unavailable, NCEI published value will be used. Otherwise the market resolves according to National Weather Service station report."
+        )
+        self.assertEqual(primary, "NWS")
+        self.assertEqual(fallback, "NCEI")
+
+    def test_infer_settlement_sources_does_not_duplicate_single_source_fallback(self) -> None:
+        primary, fallback = infer_settlement_sources(
+            "If unavailable, NCEI published value will be used for settlement."
+        )
+        self.assertEqual(primary, "NCEI")
+        self.assertEqual(fallback, "")
 
     def test_extract_threshold_expression_parses_between(self) -> None:
         threshold = extract_threshold_expression(
@@ -84,6 +100,34 @@ class KalshiWeatherSettlementTests(unittest.TestCase):
         )
         self.assertEqual(spec["contract_family"], "daily_temperature")
         self.assertEqual(spec["settlement_station"], "KATL")
+
+    def test_infer_settlement_timezone_avoids_la_substring_false_positive(self) -> None:
+        timezone_name = infer_settlement_timezone(
+            market_ticker="KXHIGHTOKC-26APR11-B82.5",
+            market_title="Will the high temp in Oklahoma City be above 82?",
+            event_title="Highest temperature in Oklahoma City?",
+        )
+        self.assertEqual(timezone_name, "America/Chicago")
+
+        timezone_name_nola = infer_settlement_timezone(
+            market_ticker="KXHIGHTNOLA-26APR11-B86.5",
+            market_title="Will the high temp in New Orleans be above 86?",
+            event_title="Highest temperature in New Orleans?",
+        )
+        self.assertEqual(timezone_name_nola, "America/Chicago")
+
+    def test_build_weather_settlement_spec_falls_back_to_station_timezone(self) -> None:
+        spec = build_weather_settlement_spec(
+            {
+                "market_ticker": "KXHIGHTSATX-26APR10-B82.5",
+                "market_title": "Will station KSAT high be above 82 on Apr 10?",
+                "event_title": "KSAT station daily high on Apr 10?",
+                "rules_primary": "If station KSAT reports a high above 82, market resolves Yes.",
+            }
+        )
+        self.assertEqual(spec["settlement_station"], "KSAT")
+        self.assertEqual(spec["settlement_timezone"], "America/Chicago")
+        self.assertEqual(infer_timezone_from_station("KSAT"), "America/Chicago")
 
 
 if __name__ == "__main__":

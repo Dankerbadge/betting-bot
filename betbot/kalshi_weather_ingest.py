@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import gzip
 import json
 import math
 import os
@@ -21,6 +22,7 @@ JsonGetterWithHeaders = Callable[
     tuple[int, dict[str, Any] | list[Any] | Any],
 ]
 TextGetter = Callable[[str, float], tuple[int, str]]
+BytesGetter = Callable[[str, float], tuple[int, bytes, dict[str, str]]]
 
 _NWS_GRIDPOINT_LAYER_KEYS = (
     "maxTemperature",
@@ -30,6 +32,8 @@ _NWS_GRIDPOINT_LAYER_KEYS = (
     "snowfallAmount",
     "hazards",
 )
+
+DEFAULT_TAF_CACHE_URL = "https://aviationweather.gov/data/cache/tafs.cache.xml.gz"
 
 
 _NCEI_CDO_STATION_BY_ICAO = {
@@ -55,7 +59,17 @@ _NCEI_CDO_STATION_BY_ICAO = {
     "KPDX": "GHCND:USW00024229",
 }
 
+_NWS_CLI_LOCATION_BY_STATION = {
+    # Some settlement stations do not expose CLI products under the raw ICAO/IATA code.
+    # Keep this intentionally minimal and override via BETBOT_WEATHER_NWS_CLI_LOCATION_MAP when needed.
+    "KDAL": ("DFW",),
+}
+
 _HTTP_ERROR_STATUS_RE = re.compile(r"\bhttp error\s+(\d{3})\b", flags=re.IGNORECASE)
+
+
+def _normalize_text(value: Any) -> str:
+    return str(value or "").strip()
 
 
 def _http_status_from_exception(exc: BaseException) -> int | None:
@@ -97,6 +111,56 @@ def _resolve_cdo_station_id(station_id: str) -> str:
                     return override_value
 
     return _NCEI_CDO_STATION_BY_ICAO.get(clean_station_id, "")
+
+
+def _resolve_nws_cli_location_candidates(station_id: str) -> tuple[list[str], set[str]]:
+    clean_station_id = str(station_id or "").strip().upper()
+    if not clean_station_id:
+        return ([], set())
+
+    candidates: list[str] = []
+    allowed_station_codes: set[str] = set()
+
+    def _add(code: str) -> None:
+        normalized = str(code or "").strip().upper()
+        if not normalized:
+            return
+        if normalized not in candidates:
+            candidates.append(normalized)
+        allowed_station_codes.add(normalized)
+
+    _add(clean_station_id)
+    if clean_station_id.startswith("K") and len(clean_station_id) > 1:
+        _add(clean_station_id[1:])
+
+    for alias in _NWS_CLI_LOCATION_BY_STATION.get(clean_station_id, ()):
+        _add(alias)
+
+    override_text = str(os.getenv("BETBOT_WEATHER_NWS_CLI_LOCATION_MAP") or "").strip()
+    if override_text:
+        parsed_overrides: dict[str, list[str]] = {}
+        for chunk in override_text.replace(";", ",").split(","):
+            item = chunk.strip()
+            if not item or "=" not in item:
+                continue
+            key, value = item.split("=", 1)
+            station_key = key.strip().upper()
+            if not station_key:
+                continue
+            override_codes = [
+                code.strip().upper()
+                for code in re.split(r"[|/]", value)
+                if code.strip()
+            ]
+            if not override_codes:
+                continue
+            parsed_overrides.setdefault(station_key, []).extend(override_codes)
+
+        for key in (clean_station_id, clean_station_id[1:] if clean_station_id.startswith("K") else clean_station_id):
+            for alias in parsed_overrides.get(key, []):
+                _add(alias)
+
+    return candidates, allowed_station_codes
 
 
 def _normalize_cdo_temperature_f(value: Any) -> float | None:
@@ -287,6 +351,15 @@ def _write_cdo_cache_entry(path: Path, payload: dict[str, Any], now: datetime) -
     path.write_text(json.dumps(cache_wrapper, indent=2), encoding="utf-8")
 
 
+def _safe_write_cdo_cache_entry(path: Path, payload: dict[str, Any], now: datetime) -> str | None:
+    try:
+        _write_cdo_cache_entry(path, payload, now)
+        return None
+    except OSError as exc:
+        message = str(exc).strip()
+        return message or exc.__class__.__name__
+
+
 def _http_get_json(url: str, timeout_seconds: float) -> tuple[int, dict[str, Any] | list[Any] | Any]:
     request = Request(
         url,
@@ -354,6 +427,208 @@ def _http_get_text(url: str, timeout_seconds: float) -> tuple[int, str]:
         status = int(getattr(response, "status", 200) or 200)
         payload = response.read().decode("utf-8", errors="replace")
     return (status, payload)
+
+
+def _http_get_bytes(url: str, timeout_seconds: float) -> tuple[int, bytes, dict[str, str]]:
+    request = Request(
+        url,
+        headers={
+            "Accept": "application/gzip, application/xml, text/xml, text/plain, */*;q=0.8",
+            "User-Agent": "betbot-weather-ingest/1.0 (research)",
+        },
+        method="GET",
+    )
+    with urlopen_with_dns_recovery(
+        request,
+        timeout_seconds=max(1.0, float(timeout_seconds)),
+        urlopen_fn=urlopen,
+    ) as response:
+        status = int(getattr(response, "status", 200) or 200)
+        payload = response.read()
+        headers: dict[str, str] = {}
+        for key in ("etag", "last-modified", "content-type", "content-length"):
+            value = response.headers.get(key)
+            if value:
+                headers[key] = str(value)
+    return (status, payload, headers)
+
+
+def _xml_local_name(tag: str) -> str:
+    text = str(tag or "")
+    if "}" in text:
+        text = text.split("}", 1)[1]
+    return text.lower()
+
+
+def _parse_taf_temp_c(token: str) -> float | None:
+    text = str(token or "").strip().upper()
+    if not text:
+        return None
+    sign = -1.0 if text.startswith("M") else 1.0
+    digits = text[1:] if text.startswith("M") else text
+    if len(digits) != 2 or not digits.isdigit():
+        return None
+    return sign * float(int(digits))
+
+
+def _extract_taf_envelope_from_raw_text(raw_text: str) -> dict[str, Any]:
+    text = str(raw_text or "").upper()
+    tx_values_f: list[float] = []
+    tn_values_f: list[float] = []
+    for match in re.finditer(r"\bTX(M?\d{2})/\d{4}Z\b", text):
+        temp_c = _parse_taf_temp_c(match.group(1))
+        if isinstance(temp_c, float):
+            tx_values_f.append(round((temp_c * 9.0 / 5.0) + 32.0, 3))
+    for match in re.finditer(r"\bTN(M?\d{2})/\d{4}Z\b", text):
+        temp_c = _parse_taf_temp_c(match.group(1))
+        if isinstance(temp_c, float):
+            tn_values_f.append(round((temp_c * 9.0 / 5.0) + 32.0, 3))
+
+    marker_counts = {
+        "tempo_count": len(re.findall(r"\bTEMPO\b", text)),
+        "prob_count": len(re.findall(r"\bPROB(?:30|40)\b", text)),
+        "fm_count": len(re.findall(r"\bFM\d{6}\b", text)),
+        "becmg_count": len(re.findall(r"\bBECMG\b", text)),
+        "thunder_count": len(re.findall(r"\bTS(?:RA|GR|SN)?\b", text)),
+        "amended_count": len(re.findall(r"\bAMD\b", text)),
+    }
+    volatility_score = (
+        (1.40 * marker_counts["tempo_count"])
+        + (1.20 * marker_counts["prob_count"])
+        + (0.75 * marker_counts["fm_count"])
+        + (0.50 * marker_counts["becmg_count"])
+        + (0.90 * marker_counts["thunder_count"])
+        + (1.10 * marker_counts["amended_count"])
+    )
+    if volatility_score > 10.0:
+        volatility_score = 10.0
+
+    return {
+        "taf_tx_values_f": tx_values_f,
+        "taf_tn_values_f": tn_values_f,
+        "taf_upper_bound_f": max(tx_values_f) if tx_values_f else None,
+        "taf_lower_bound_f": min(tn_values_f) if tn_values_f else None,
+        "taf_volatility_score": round(float(volatility_score), 6),
+        "taf_marker_counts": marker_counts,
+    }
+
+
+def fetch_aviationweather_taf_temperature_envelopes(
+    *,
+    station_ids: list[str],
+    cache_url: str = DEFAULT_TAF_CACHE_URL,
+    timeout_seconds: float = 20.0,
+    http_get_bytes: BytesGetter = _http_get_bytes,
+) -> dict[str, Any]:
+    requested = sorted({_normalize_text(item).upper() for item in station_ids if _normalize_text(item)})
+    if not requested:
+        return {
+            "status": "no_station_ids",
+            "cache_url": cache_url,
+            "requested_station_count": 0,
+            "station_envelopes": {},
+        }
+
+    status_code, payload, _ = http_get_bytes(str(cache_url), float(timeout_seconds))
+    if status_code != 200:
+        return {
+            "status": "request_failed",
+            "cache_url": cache_url,
+            "http_status": status_code,
+            "requested_station_count": len(requested),
+            "station_envelopes": {},
+        }
+
+    try:
+        xml_bytes = gzip.decompress(payload)
+    except OSError as exc:
+        return {
+            "status": "invalid_gzip",
+            "cache_url": cache_url,
+            "requested_station_count": len(requested),
+            "error": str(exc),
+            "station_envelopes": {},
+        }
+
+    try:
+        root = ET.fromstring(xml_bytes.decode("utf-8", errors="replace"))
+    except ET.ParseError as exc:
+        return {
+            "status": "invalid_xml",
+            "cache_url": cache_url,
+            "requested_station_count": len(requested),
+            "error": str(exc),
+            "station_envelopes": {},
+        }
+
+    latest_by_station: dict[str, dict[str, Any]] = {}
+    for element in root.iter():
+        if _xml_local_name(element.tag) != "taf":
+            continue
+        field_map: dict[str, str] = {}
+        for child in element.iter():
+            local_tag = _xml_local_name(child.tag)
+            text = str(child.text or "").strip()
+            if text and local_tag not in field_map:
+                field_map[local_tag] = text
+        station_id = _normalize_text(
+            field_map.get("station_id")
+            or field_map.get("station")
+            or field_map.get("icao_id")
+            or field_map.get("icaoid")
+        ).upper()
+        if not station_id or station_id not in requested:
+            continue
+        raw_text = _normalize_text(field_map.get("raw_text") or field_map.get("raw") or field_map.get("taf"))
+        issue_time_text = _normalize_text(field_map.get("issue_time") or field_map.get("issue") or field_map.get("issuetime"))
+        issue_time = _parse_iso_datetime(issue_time_text)
+        existing = latest_by_station.get(station_id)
+        existing_issue = _parse_iso_datetime(existing.get("taf_issue_time")) if isinstance(existing, dict) else None
+        if isinstance(existing_issue, datetime) and isinstance(issue_time, datetime):
+            if issue_time <= existing_issue:
+                continue
+        elif isinstance(existing_issue, datetime) and issue_time is None:
+            continue
+        latest_by_station[station_id] = {
+            "station_id": station_id,
+            "taf_issue_time": issue_time.isoformat() if isinstance(issue_time, datetime) else issue_time_text,
+            "taf_raw_text": raw_text,
+        }
+
+    station_envelopes: dict[str, dict[str, Any]] = {}
+    ready_count = 0
+    for station in requested:
+        latest = latest_by_station.get(station)
+        if not isinstance(latest, dict):
+            station_envelopes[station] = {
+                "taf_status": "missing_station",
+                "station_id": station,
+                "taf_upper_bound_f": None,
+                "taf_lower_bound_f": None,
+                "taf_volatility_score": 0.0,
+                "taf_marker_counts": {},
+            }
+            continue
+        extracted = _extract_taf_envelope_from_raw_text(_normalize_text(latest.get("taf_raw_text")))
+        station_envelopes[station] = {
+            "taf_status": "ready",
+            "station_id": station,
+            "taf_issue_time": _normalize_text(latest.get("taf_issue_time")),
+            "taf_upper_bound_f": extracted["taf_upper_bound_f"],
+            "taf_lower_bound_f": extracted["taf_lower_bound_f"],
+            "taf_volatility_score": extracted["taf_volatility_score"],
+            "taf_marker_counts": extracted["taf_marker_counts"],
+        }
+        ready_count += 1
+
+    return {
+        "status": "ready",
+        "cache_url": cache_url,
+        "http_status": status_code,
+        "requested_station_count": len(requested),
+        "taf_station_ready_count": ready_count,
+        "station_envelopes": station_envelopes,
+    }
 
 
 def _parse_s3_list_bucket_payload(payload_text: str) -> dict[str, Any]:
@@ -1143,9 +1418,12 @@ def fetch_noaa_global_land_ocean_anomaly_series(
     values: list[float] = []
     for item in payload:
         try:
-            values.append(float(item))
+            numeric = float(item)
         except (TypeError, ValueError):
             continue
+        if not math.isfinite(numeric):
+            continue
+        values.append(numeric)
     if not values:
         return {
             "status": "noaa_series_empty",
@@ -1318,10 +1596,9 @@ def fetch_ncei_cdo_station_daily_history(
                 if not daily_samples:
                     result["status"] = "no_history"
                 if cache_file is not None:
-                    try:
-                        _write_cdo_cache_entry(cache_file, result, current_time)
-                    except OSError:
-                        pass
+                    cache_write_error = _safe_write_cdo_cache_entry(cache_file, result, current_time)
+                    if cache_write_error:
+                        result["cache_write_error"] = cache_write_error
                 return result
 
         if cache_payload is not None:
@@ -1496,10 +1773,9 @@ def fetch_ncei_cdo_station_daily_history(
             data_source="cdo_api_v2",
         )
         if cache_file is not None:
-            try:
-                _write_cdo_cache_entry(cache_file, result, current_time)
-            except OSError:
-                pass
+            cache_write_error = _safe_write_cdo_cache_entry(cache_file, result, current_time)
+            if cache_write_error:
+                result["cache_write_error"] = cache_write_error
         result["rate_limit_retries_used"] = int(rate_limit_retries_used)
         return result
 
@@ -1519,9 +1795,414 @@ def fetch_ncei_cdo_station_daily_history(
         data_source="cdo_api_v2",
     )
     if cache_file is not None:
-        try:
-            _write_cdo_cache_entry(cache_file, result, current_time)
-        except OSError:
-            pass
+        cache_write_error = _safe_write_cdo_cache_entry(cache_file, result, current_time)
+        if cache_write_error:
+            result["cache_write_error"] = cache_write_error
     result["rate_limit_retries_used"] = int(rate_limit_retries_used)
     return result
+
+
+def _parse_cli_report_target_date(product_text: str) -> str:
+    text = str(product_text or "")
+    match = re.search(
+        r"CLIMATE SUMMARY FOR\s+([A-Z]+)\s+(\d{1,2})\s+(\d{4})",
+        text.upper(),
+    )
+    if not match:
+        return ""
+    month_name = str(match.group(1) or "").strip().title()
+    day_text = str(match.group(2) or "").strip()
+    year_text = str(match.group(3) or "").strip()
+    for month_format in ("%B", "%b"):
+        try:
+            month_value = datetime.strptime(month_name, month_format).month
+        except ValueError:
+            continue
+        try:
+            day_value = int(day_text)
+            year_value = int(year_text)
+            return datetime(year=year_value, month=month_value, day=day_value, tzinfo=timezone.utc).date().isoformat()
+        except (TypeError, ValueError):
+            return ""
+    return ""
+
+
+def _parse_cli_station_code(product_text: str) -> str:
+    text = str(product_text or "")
+    match = re.search(r"(?m)^\s*CLI([A-Z0-9]{3,4})\s*$", text.upper())
+    if not match:
+        return ""
+    return str(match.group(1) or "").strip().upper()
+
+
+def _parse_cli_observed_high_low_f(product_text: str) -> tuple[float | None, float | None]:
+    text = str(product_text or "")
+    tmax_f: float | None = None
+    tmin_f: float | None = None
+    for raw_line in text.splitlines():
+        line = raw_line.upper()
+        if tmax_f is None:
+            max_match = re.search(r"^\s*MAXIMUM(?:\s+TEMPERATURE\s*\(F\))?\s+(-?\d{1,3})\b", line)
+            if max_match:
+                try:
+                    tmax_f = float(int(max_match.group(1)))
+                except (TypeError, ValueError):
+                    tmax_f = None
+        if tmin_f is None:
+            min_match = re.search(r"^\s*MINIMUM(?:\s+TEMPERATURE\s*\(F\))?\s+(-?\d{1,3})\b", line)
+            if min_match:
+                try:
+                    tmin_f = float(int(min_match.group(1)))
+                except (TypeError, ValueError):
+                    tmin_f = None
+        if tmax_f is not None and tmin_f is not None:
+            break
+    return tmax_f, tmin_f
+
+
+def fetch_nws_cli_station_daily_summary_for_date(
+    *,
+    station_id: str,
+    target_date: str,
+    timeout_seconds: float = 12.0,
+    max_products: int = 20,
+    http_get_json: JsonGetter = _http_get_json,
+) -> dict[str, Any]:
+    clean_station_id = str(station_id or "").strip().upper()
+    if not clean_station_id:
+        return {
+            "status": "invalid_station",
+            "station_id": "",
+            "target_date": str(target_date or ""),
+            "error": "Missing station identifier.",
+        }
+
+    target_text = str(target_date or "").strip()
+    try:
+        target_stamp = datetime.fromisoformat(target_text).date().isoformat()
+    except ValueError:
+        return {
+            "status": "invalid_target_date",
+            "station_id": clean_station_id,
+            "target_date": target_text,
+            "error": "target_date must be YYYY-MM-DD.",
+        }
+
+    location_candidates, allowed_station_codes = _resolve_nws_cli_location_candidates(clean_station_id)
+
+    max_products_safe = max(1, int(max_products))
+    product_errors: list[str] = []
+    scanned_products = 0
+    for location in location_candidates:
+        list_url = f"https://api.weather.gov/products/types/CLI/locations/{location}"
+        list_status, list_payload = http_get_json(list_url, timeout_seconds)
+        if list_status != 200 or not isinstance(list_payload, dict):
+            product_errors.append(f"location_lookup_failed:{location}:{list_status}")
+            continue
+        graph = list_payload.get("@graph")
+        if not isinstance(graph, list) or not graph:
+            continue
+        sorted_graph = sorted(
+            [item for item in graph if isinstance(item, dict)],
+            key=lambda item: str(item.get("issuanceTime") or ""),
+            reverse=True,
+        )
+        for item in sorted_graph[:max_products_safe]:
+            product_id = str(item.get("id") or "").strip()
+            if not product_id:
+                continue
+            product_url = f"https://api.weather.gov/products/{product_id}"
+            product_status, product_payload = http_get_json(product_url, timeout_seconds)
+            scanned_products += 1
+            if product_status != 200 or not isinstance(product_payload, dict):
+                product_errors.append(f"product_fetch_failed:{product_id}:{product_status}")
+                continue
+            product_text = str(product_payload.get("productText") or "")
+            if not product_text:
+                continue
+            report_date = _parse_cli_report_target_date(product_text)
+            if report_date != target_stamp:
+                continue
+            cli_station_code = _parse_cli_station_code(product_text)
+            if cli_station_code and cli_station_code not in allowed_station_codes:
+                product_errors.append(f"station_code_mismatch:{product_id}:{cli_station_code}")
+                continue
+            tmax_f, tmin_f = _parse_cli_observed_high_low_f(product_text)
+            if tmax_f is None and tmin_f is None:
+                continue
+            sample: dict[str, Any] = {"date": target_stamp}
+            if tmax_f is not None:
+                sample["tmax_f"] = tmax_f
+            if tmin_f is not None:
+                sample["tmin_f"] = tmin_f
+            return {
+                "status": "ready",
+                "station_id": clean_station_id,
+                "target_date": target_stamp,
+                "data_source": "nws_cli_daily_climate_report",
+                "source_url": product_url,
+                "http_status": product_status,
+                "nws_product_id": product_id,
+                "nws_cli_station_code": cli_station_code,
+                "daily_sample": sample,
+                "scanned_products": scanned_products,
+                "location_candidates": location_candidates,
+            }
+
+    return {
+        "status": "no_final_report",
+        "station_id": clean_station_id,
+        "target_date": target_stamp,
+        "data_source": "nws_cli_daily_climate_report",
+        "source_url": "https://api.weather.gov/products/types/CLI/locations",
+        "http_status": 200,
+        "daily_sample": {},
+        "scanned_products": scanned_products,
+        "location_candidates": location_candidates,
+        "error": "No matching CLI daily climate report found for station/date.",
+        "errors": product_errors[:20],
+    }
+
+
+def fetch_ncei_station_daily_summary_for_date(
+    *,
+    station_id: str,
+    target_date: str,
+    timeout_seconds: float = 12.0,
+    cdo_token: str | None = None,
+    enable_nws_cli_lookup: bool = True,
+    nws_cli_max_products: int = 20,
+    http_get_json: JsonGetter = _http_get_json,
+    http_get_json_with_headers: JsonGetterWithHeaders = _http_get_json_with_headers,
+) -> dict[str, Any]:
+    clean_station_id = str(station_id or "").strip().upper()
+    if not clean_station_id:
+        return {
+            "status": "invalid_station",
+            "station_id": "",
+            "target_date": str(target_date or ""),
+            "error": "Missing station identifier.",
+        }
+
+    target_text = str(target_date or "").strip()
+    try:
+        target_dt = datetime.fromisoformat(target_text)
+    except ValueError:
+        return {
+            "status": "invalid_target_date",
+            "station_id": clean_station_id,
+            "target_date": target_text,
+            "error": "target_date must be YYYY-MM-DD.",
+        }
+    target_stamp = target_dt.date().isoformat()
+
+    nws_lookup_status = "not_attempted"
+    nws_lookup_error = ""
+    nws_lookup_http_status = 0
+    if enable_nws_cli_lookup:
+        try:
+            nws_payload = fetch_nws_cli_station_daily_summary_for_date(
+                station_id=clean_station_id,
+                target_date=target_stamp,
+                timeout_seconds=timeout_seconds,
+                max_products=nws_cli_max_products,
+                http_get_json=http_get_json,
+            )
+        except Exception as exc:
+            nws_payload = {
+                "status": "request_failed",
+                "station_id": clean_station_id,
+                "target_date": target_stamp,
+                "data_source": "nws_cli_daily_climate_report",
+                "source_url": "https://api.weather.gov/products/types/CLI/locations",
+                "http_status": _http_status_from_exception(exc) or 0,
+                "daily_sample": {},
+                "error": str(exc),
+            }
+        nws_lookup_status = str(nws_payload.get("status") or "unknown")
+        nws_lookup_error = str(nws_payload.get("error") or "")
+        nws_lookup_http_status = int(nws_payload.get("http_status") or 0)
+        if nws_lookup_status == "ready":
+            cdo_station_id = _resolve_cdo_station_id(clean_station_id)
+            if cdo_station_id:
+                nws_payload["cdo_station_id"] = cdo_station_id
+            return nws_payload
+
+    cdo_station_id = _resolve_cdo_station_id(clean_station_id)
+
+    token = str(
+        cdo_token
+        or os.getenv("BETBOT_NOAA_CDO_TOKEN")
+        or os.getenv("NOAA_CDO_TOKEN")
+        or os.getenv("NCEI_CDO_TOKEN")
+        or ""
+    ).strip()
+
+    cdo_status = 0
+    cdo_error = ""
+    source_url = "https://www.ncei.noaa.gov/cdo-web/api/v2/data"
+    if token and cdo_station_id:
+        cdo_params = [
+            ("datasetid", "GHCND"),
+            ("stationid", cdo_station_id),
+            ("startdate", target_stamp),
+            ("enddate", target_stamp),
+            ("units", "standard"),
+            ("limit", "1000"),
+            ("datatypeid", "TMAX"),
+            ("datatypeid", "TMIN"),
+            ("datatypeid", "PRCP"),
+        ]
+        cdo_url = f"{source_url}?{urlencode(cdo_params, doseq=True)}"
+        try:
+            cdo_status, cdo_payload = http_get_json_with_headers(cdo_url, timeout_seconds, {"token": token})
+        except Exception as exc:
+            inferred_status = _http_status_from_exception(exc)
+            cdo_status = inferred_status or 0
+            cdo_payload = {"error": str(exc)}
+
+        if cdo_status == 200 and isinstance(cdo_payload, dict):
+            results = cdo_payload.get("results")
+            sample: dict[str, Any] = {"date": target_stamp}
+            if isinstance(results, list):
+                for item in results:
+                    if not isinstance(item, dict):
+                        continue
+                    datatype = str(item.get("datatype") or "").strip().upper()
+                    value = item.get("value")
+                    if datatype == "TMAX":
+                        normalized = _normalize_cdo_temperature_f(value)
+                        if normalized is not None:
+                            sample["tmax_f"] = normalized
+                    elif datatype == "TMIN":
+                        normalized = _normalize_cdo_temperature_f(value)
+                        if normalized is not None:
+                            sample["tmin_f"] = normalized
+                    elif datatype == "PRCP":
+                        normalized = _normalize_cdo_precip_in(value)
+                        if normalized is not None:
+                            sample["prcp_in"] = normalized
+            if len(sample) > 1:
+                return {
+                    "status": "ready",
+                    "station_id": clean_station_id,
+                    "cdo_station_id": cdo_station_id,
+                    "target_date": target_stamp,
+                    "data_source": "cdo_api_v2",
+                    "source_url": source_url,
+                    "http_status": cdo_status,
+                    "daily_sample": sample,
+                    "nws_cli_lookup_status": nws_lookup_status,
+                    "nws_cli_lookup_error": nws_lookup_error,
+                    "nws_cli_http_status": nws_lookup_http_status if nws_lookup_http_status > 0 else None,
+                }
+            return {
+                "status": "no_final_report",
+                "station_id": clean_station_id,
+                "cdo_station_id": cdo_station_id,
+                "target_date": target_stamp,
+                "data_source": "cdo_api_v2",
+                "source_url": source_url,
+                "http_status": cdo_status,
+                "daily_sample": {},
+                "error": "No daily summary rows returned for station/date.",
+                "nws_cli_lookup_status": nws_lookup_status,
+                "nws_cli_lookup_error": nws_lookup_error,
+                "nws_cli_http_status": nws_lookup_http_status if nws_lookup_http_status > 0 else None,
+            }
+        cdo_error = f"CDO request failed (http_status={cdo_status})."
+    elif token and not cdo_station_id:
+        cdo_error = "No CDO station mapping is configured for this settlement station."
+    elif not token:
+        cdo_error = "NOAA/NCEI CDO token missing."
+
+    ads_source_url = "https://www.ncei.noaa.gov/access/services/data/v1"
+    station_for_ads = cdo_station_id.split(":", 1)[-1].strip() if cdo_station_id else clean_station_id
+    if not station_for_ads:
+        station_for_ads = cdo_station_id
+    ads_params = [
+        ("dataset", "daily-summaries"),
+        ("stations", station_for_ads),
+        ("startDate", target_stamp),
+        ("endDate", target_stamp),
+        ("dataTypes", "TMAX,TMIN,PRCP"),
+        ("format", "json"),
+        ("units", "standard"),
+        ("includeAttributes", "false"),
+        ("includeStationName", "false"),
+        ("includeStationLocation", "false"),
+    ]
+    ads_url = f"{ads_source_url}?{urlencode(ads_params, doseq=True)}"
+    try:
+        ads_status, ads_payload = http_get_json_with_headers(ads_url, timeout_seconds, None)
+    except Exception as exc:
+        inferred_status = _http_status_from_exception(exc)
+        ads_status = inferred_status or 0
+        ads_payload = {"error": str(exc)}
+    if ads_status == 200:
+        ads_rows: list[Any] | None = None
+        if isinstance(ads_payload, list):
+            ads_rows = ads_payload
+        elif isinstance(ads_payload, dict):
+            results = ads_payload.get("results")
+            if isinstance(results, list):
+                ads_rows = results
+            else:
+                data_field = ads_payload.get("data")
+                if isinstance(data_field, list):
+                    ads_rows = data_field
+        if isinstance(ads_rows, list):
+            month_value = int(target_stamp[5:7])
+            day_value = int(target_stamp[8:10])
+            daily_samples, _ = _extract_station_daily_samples_from_rows(
+                rows=ads_rows,
+                month=month_value,
+                day=day_value,
+            )
+            sample = next((row for row in daily_samples if str(row.get("date") or "") == target_stamp), None)
+            if isinstance(sample, dict) and sample:
+                return {
+                    "status": "ready",
+                    "station_id": clean_station_id,
+                    "cdo_station_id": cdo_station_id,
+                    "target_date": target_stamp,
+                    "data_source": "access_data_service_v1",
+                    "source_url": ads_source_url,
+                    "http_status": ads_status,
+                    "daily_sample": sample,
+                    "ads_station_id": station_for_ads,
+                    "nws_cli_lookup_status": nws_lookup_status,
+                    "nws_cli_lookup_error": nws_lookup_error,
+                    "nws_cli_http_status": nws_lookup_http_status if nws_lookup_http_status > 0 else None,
+                }
+            return {
+                "status": "no_final_report",
+                "station_id": clean_station_id,
+                "cdo_station_id": cdo_station_id,
+                "target_date": target_stamp,
+                "data_source": "access_data_service_v1",
+                "source_url": ads_source_url,
+                "http_status": ads_status,
+                "daily_sample": {},
+                "error": "No daily summary rows returned for station/date.",
+                "ads_station_id": station_for_ads,
+                "nws_cli_lookup_status": nws_lookup_status,
+                "nws_cli_lookup_error": nws_lookup_error,
+                "nws_cli_http_status": nws_lookup_http_status if nws_lookup_http_status > 0 else None,
+            }
+
+    return {
+        "status": "request_failed",
+        "station_id": clean_station_id,
+        "cdo_station_id": cdo_station_id,
+        "target_date": target_stamp,
+        "source_url": ads_source_url,
+        "http_status": ads_status,
+        "daily_sample": {},
+        "error": cdo_error or f"ADS request failed (http_status={ads_status}).",
+        "fallback_http_status": ads_status,
+        "ads_station_id": station_for_ads,
+        "nws_cli_lookup_status": nws_lookup_status,
+        "nws_cli_lookup_error": nws_lookup_error,
+        "nws_cli_http_status": nws_lookup_http_status if nws_lookup_http_status > 0 else None,
+    }

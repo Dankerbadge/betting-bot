@@ -8,7 +8,12 @@ import unittest
 from urllib.error import URLError
 
 from betbot.kalshi_nonsports_priors import PRIOR_FIELDNAMES
-from betbot.kalshi_weather_priors import run_kalshi_weather_priors, run_kalshi_weather_station_history_prewarm
+from betbot.kalshi_weather_priors import (
+    _infer_station_id,
+    _settlement_timezone_name,
+    run_kalshi_weather_priors,
+    run_kalshi_weather_station_history_prewarm,
+)
 
 
 HISTORY_FIELDNAMES = [
@@ -49,6 +54,41 @@ def _source_note_value(source_note: str, key: str) -> float | None:
 
 
 class KalshiWeatherPriorsTests(unittest.TestCase):
+    def test_infer_station_id_avoids_la_substring_false_positive(self) -> None:
+        row = {
+            "market_ticker": "KXHIGHOKC-26APR10-T82",
+            "event_title": "Oklahoma City high temperature",
+            "market_title": "Oklahoma City above 82F?",
+            "rules_primary": "",
+        }
+        self.assertEqual(_infer_station_id(row, ""), "KOKC")
+
+    def test_settlement_timezone_name_falls_back_to_station_timezone(self) -> None:
+        row = {
+            "market_ticker": "KXHIGHTSATX-26APR10-T83",
+            "event_title": "San Antonio high temperature",
+            "market_title": "San Antonio above 83F?",
+            "rules_primary": "",
+        }
+        settlement = {"settlement_station": "KSAT", "settlement_timezone": ""}
+        self.assertEqual(
+            _settlement_timezone_name(settlement, row),
+            "America/Chicago",
+        )
+
+    def test_settlement_timezone_name_avoids_la_substring_false_positive(self) -> None:
+        row = {
+            "market_ticker": "KXHIGHNOLA-26APR10-B83.5",
+            "event_title": "New Orleans high temperature",
+            "market_title": "New Orleans 83.5 or below?",
+            "rules_primary": "",
+        }
+        settlement = {"settlement_station": "", "settlement_timezone": ""}
+        self.assertEqual(
+            _settlement_timezone_name(settlement, row),
+            "America/Chicago",
+        )
+
     def test_run_kalshi_weather_priors_generates_and_upserts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
@@ -892,6 +932,132 @@ class KalshiWeatherPriorsTests(unittest.TestCase):
             self.assertLessEqual(stale_weight, 0.45)
             self.assertGreaterEqual(fresh_weight, 0.06)
             self.assertLessEqual(fresh_weight, 0.45)
+
+    def test_run_kalshi_weather_priors_ignores_non_finite_rain_pop_values(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            history_csv = base / "history.csv"
+            priors_csv = base / "priors.csv"
+            _write_csv(
+                history_csv,
+                HISTORY_FIELDNAMES,
+                [
+                    {
+                        "captured_at": "2026-04-01T12:00:00+00:00",
+                        "category": "Climate and Weather",
+                        "series_ticker": "KXRAINNYC",
+                        "event_ticker": "KXRAINNYC-26APR01",
+                        "market_ticker": "KXRAINNYC-26APR01",
+                        "event_title": "Will it rain in NYC today?",
+                        "market_title": "Will it rain in NYC today?",
+                        "rules_primary": "If measurable rain is recorded at station KJFK, this market resolves to Yes.",
+                        "close_time": "2026-04-01T23:59:00+00:00",
+                        "hours_to_close": "10",
+                        "yes_bid_dollars": "0.09",
+                        "yes_ask_dollars": "0.11",
+                        "spread_dollars": "0.02",
+                    },
+                ],
+            )
+            _write_csv(priors_csv, PRIOR_FIELDNAMES, [])
+
+            summary = run_kalshi_weather_priors(
+                priors_csv=str(priors_csv),
+                history_csv=str(history_csv),
+                output_dir=str(base),
+                station_forecast_fetcher=lambda **kwargs: {
+                    "status": "ready",
+                    "station_id": "KJFK",
+                    "forecast_updated_at": "2026-04-01T12:00:00+00:00",
+                    "periods": [
+                        {
+                            "startTime": "2026-04-01T13:00:00+00:00",
+                            "temperature": 58,
+                            "probabilityOfPrecipitation": {"value": "Infinity"},
+                        },
+                        {
+                            "startTime": "2026-04-01T14:00:00+00:00",
+                            "temperature": 60,
+                            "probabilityOfPrecipitation": {"value": 10},
+                        },
+                    ],
+                },
+                station_history_fetcher=lambda **kwargs: {"status": "disabled_missing_token"},
+                anomaly_series_fetcher=lambda **kwargs: {"status": "ready", "values": [0.0] * 24},
+                now=datetime(2026, 4, 1, 12, 5, tzinfo=timezone.utc),
+            )
+
+            self.assertEqual(summary["status"], "ready")
+            with Path(summary["output_csv"]).open("r", newline="", encoding="utf-8") as handle:
+                rows = [dict(row) for row in csv.DictReader(handle)]
+            self.assertEqual(len(rows), 1)
+            row = rows[0]
+            self.assertEqual(row["contract_family"], "daily_rain")
+            self.assertAlmostEqual(float(row["model_probability_raw"]), 0.1, places=3)
+            self.assertLess(float(row["fair_yes_probability"]), 0.2)
+
+    def test_run_kalshi_weather_priors_ignores_non_finite_temperature_values(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            history_csv = base / "history.csv"
+            priors_csv = base / "priors.csv"
+            _write_csv(
+                history_csv,
+                HISTORY_FIELDNAMES,
+                [
+                    {
+                        "captured_at": "2026-04-01T12:00:00+00:00",
+                        "category": "Climate and Weather",
+                        "series_ticker": "KXTEMPNYC",
+                        "event_ticker": "KXTEMPNYC-26APR01",
+                        "market_ticker": "KXTEMPNYC-26APR01",
+                        "event_title": "NYC high temperature today",
+                        "market_title": "Will NYC high temperature be at least 70?",
+                        "rules_primary": "If high temperature at station KJFK is at least 70, resolves Yes.",
+                        "close_time": "2026-04-01T23:59:00+00:00",
+                        "hours_to_close": "10",
+                        "yes_bid_dollars": "0.40",
+                        "yes_ask_dollars": "0.42",
+                        "spread_dollars": "0.02",
+                    },
+                ],
+            )
+            _write_csv(priors_csv, PRIOR_FIELDNAMES, [])
+
+            summary = run_kalshi_weather_priors(
+                priors_csv=str(priors_csv),
+                history_csv=str(history_csv),
+                output_dir=str(base),
+                station_forecast_fetcher=lambda **kwargs: {
+                    "status": "ready",
+                    "station_id": "KJFK",
+                    "forecast_updated_at": "2026-04-01T12:00:00+00:00",
+                    "periods": [
+                        {
+                            "startTime": "2026-04-01T13:00:00+00:00",
+                            "temperature": "NaN",
+                            "probabilityOfPrecipitation": {"value": 10},
+                        },
+                        {
+                            "startTime": "2026-04-01T14:00:00+00:00",
+                            "temperature": 80,
+                            "probabilityOfPrecipitation": {"value": 10},
+                        },
+                    ],
+                },
+                station_history_fetcher=lambda **kwargs: {"status": "disabled_missing_token"},
+                anomaly_series_fetcher=lambda **kwargs: {"status": "ready", "values": [0.0] * 24},
+                now=datetime(2026, 4, 1, 12, 5, tzinfo=timezone.utc),
+            )
+
+            self.assertEqual(summary["status"], "ready")
+            with Path(summary["output_csv"]).open("r", newline="", encoding="utf-8") as handle:
+                rows = [dict(row) for row in csv.DictReader(handle)]
+            self.assertEqual(len(rows), 1)
+            row = rows[0]
+            self.assertEqual(row["contract_family"], "daily_temperature")
+            self.assertGreater(float(row["model_probability_raw"]), 0.99)
+            self.assertGreater(float(row["fair_yes_probability"]), 0.85)
 
 
 if __name__ == "__main__":

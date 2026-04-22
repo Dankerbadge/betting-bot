@@ -8,8 +8,11 @@ import unittest
 from unittest.mock import patch
 
 from betbot.kalshi_weather_ingest import (
+    fetch_aviationweather_taf_temperature_envelopes,
     fetch_nws_active_alerts_for_point,
+    fetch_nws_cli_station_daily_summary_for_date,
     fetch_ncei_cdo_station_daily_history,
+    fetch_ncei_station_daily_summary_for_date,
     fetch_ncei_normals_station_day,
     fetch_noaa_mrms_qpe_latest_metadata,
     fetch_noaa_nbm_latest_snapshot,
@@ -160,6 +163,44 @@ class KalshiWeatherIngestTests(unittest.TestCase):
         self.assertEqual(payload["observations_count"], 1)
         self.assertEqual(payload["observations"][0]["text_description"], "Light rain")
         self.assertEqual(payload["observations"][0]["temperature_c"], 11.2)
+
+    def test_fetch_aviationweather_taf_temperature_envelopes_ready(self) -> None:
+        taf_xml = """
+        <response>
+          <data num_results=\"2\">
+            <TAF>
+              <station_id>KJFK</station_id>
+              <issue_time>2026-04-16T10:00:00Z</issue_time>
+              <raw_text>TAF KJFK 161000Z 1610/1712 21010KT P6SM FEW040 TX18/1619Z TN07/1709Z TEMPO 1618/1622 4SM TSRA</raw_text>
+            </TAF>
+            <TAF>
+              <station_id>KJFK</station_id>
+              <issue_time>2026-04-16T06:00:00Z</issue_time>
+              <raw_text>TAF KJFK 160600Z 1606/1712 22008KT P6SM FEW040 TX14/1618Z TN06/1708Z</raw_text>
+            </TAF>
+          </data>
+        </response>
+        """.strip().encode("utf-8")
+
+        def fake_http_get_bytes(url: str, timeout_seconds: float):
+            self.assertIn("tafs.cache.xml.gz", url)
+            import gzip
+
+            return (200, gzip.compress(taf_xml), {"etag": "taf-demo"})
+
+        payload = fetch_aviationweather_taf_temperature_envelopes(
+            station_ids=["KJFK", "KMDW"],
+            timeout_seconds=5.0,
+            http_get_bytes=fake_http_get_bytes,
+        )
+        self.assertEqual(payload["status"], "ready")
+        self.assertEqual(payload["taf_station_ready_count"], 1)
+        station = payload["station_envelopes"]["KJFK"]
+        self.assertEqual(station["taf_status"], "ready")
+        self.assertAlmostEqual(float(station["taf_upper_bound_f"]), 64.4, places=1)
+        self.assertAlmostEqual(float(station["taf_lower_bound_f"]), 44.6, places=1)
+        self.assertGreater(float(station["taf_volatility_score"]), 0.0)
+        self.assertEqual(payload["station_envelopes"]["KMDW"]["taf_status"], "missing_station")
 
     def test_fetch_nws_active_alerts_for_point_ready(self) -> None:
         def fake_http_get_json(url: str, timeout_seconds: float):
@@ -352,6 +393,32 @@ class KalshiWeatherIngestTests(unittest.TestCase):
         self.assertEqual(payload["end_year"], 1850)
         self.assertEqual(payload["end_month"], 3)
         self.assertEqual(payload["values"], [0.1, 0.2, 0.3])
+
+    def test_fetch_noaa_global_land_ocean_anomaly_series_filters_non_finite_values(self) -> None:
+        def fake_http_get_json(url: str, timeout_seconds: float):
+            self.assertIn("anomaly_globe-land_ocean.json", url)
+            return (200, [0.1, float("nan"), "Infinity", "-inf", 0.3])
+
+        payload = fetch_noaa_global_land_ocean_anomaly_series(
+            timeout_seconds=5.0,
+            http_get_json=fake_http_get_json,
+        )
+        self.assertEqual(payload["status"], "ready")
+        self.assertEqual(payload["end_year"], 1850)
+        self.assertEqual(payload["end_month"], 2)
+        self.assertEqual(payload["values"], [0.1, 0.3])
+
+    def test_fetch_noaa_global_land_ocean_anomaly_series_non_finite_only_returns_empty(self) -> None:
+        def fake_http_get_json(url: str, timeout_seconds: float):
+            self.assertIn("anomaly_globe-land_ocean.json", url)
+            return (200, [float("nan"), "inf", "-inf"])
+
+        payload = fetch_noaa_global_land_ocean_anomaly_series(
+            timeout_seconds=5.0,
+            http_get_json=fake_http_get_json,
+        )
+        self.assertEqual(payload["status"], "noaa_series_empty")
+        self.assertEqual(payload["http_status"], 200)
 
     def test_fetch_ncei_cdo_station_daily_history_ready(self) -> None:
         def fake_http_get_json_with_headers(url: str, timeout_seconds: float, headers: dict[str, str] | None):
@@ -559,6 +626,339 @@ class KalshiWeatherIngestTests(unittest.TestCase):
             self.assertTrue(second["cache_hit"])
             self.assertFalse(second["cache_fallback_used"])
             self.assertTrue(second["cache_fresh"])
+
+    def test_fetch_ncei_cdo_station_daily_history_surfaces_cache_write_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_dir = Path(tmp) / "cdo_cache"
+
+            def fake_http_get_json_with_headers(url: str, timeout_seconds: float, headers: dict[str, str] | None):
+                parsed = urlparse(url)
+                self.assertIn("/cdo-web/api/v2/data", parsed.path)
+                return (
+                    200,
+                    {
+                        "results": [
+                            {"datatype": "TMAX", "value": 66.0},
+                            {"datatype": "TMIN", "value": 51.0},
+                            {"datatype": "PRCP", "value": 0.08},
+                        ]
+                    },
+                )
+
+            with patch("betbot.kalshi_weather_ingest._write_cdo_cache_entry", side_effect=OSError("disk full")):
+                payload = fetch_ncei_cdo_station_daily_history(
+                    station_id="KJFK",
+                    month=3,
+                    day=29,
+                    lookback_years=3,
+                    timeout_seconds=5.0,
+                    cdo_token="demo-token",
+                    cache_dir=str(cache_dir),
+                    cache_max_age_hours=24.0,
+                    now=datetime(2026, 3, 30, 0, 0, tzinfo=timezone.utc),
+                    http_get_json_with_headers=fake_http_get_json_with_headers,
+                )
+
+            self.assertEqual(payload["status"], "ready")
+            self.assertEqual(payload.get("cache_write_error"), "disk full")
+
+    def test_fetch_ncei_station_daily_summary_for_date_uses_cdo_when_token_present(self) -> None:
+        def should_not_fetch_nws(_url: str, _timeout_seconds: float):
+            raise AssertionError("NWS lookup should be disabled in this CDO-only test")
+
+        def fake_http_get_json_with_headers(url: str, timeout_seconds: float, headers: dict[str, str] | None):
+            parsed = urlparse(url)
+            self.assertIn("/cdo-web/api/v2/data", parsed.path)
+            self.assertIsNotNone(headers)
+            self.assertEqual(headers.get("token"), "demo-token")
+            return (
+                200,
+                {
+                    "results": [
+                        {"datatype": "TMAX", "value": 87.0},
+                        {"datatype": "TMIN", "value": 61.0},
+                        {"datatype": "PRCP", "value": 0.12},
+                    ]
+                },
+            )
+
+        payload = fetch_ncei_station_daily_summary_for_date(
+            station_id="KJFK",
+            target_date="2026-04-10",
+            cdo_token="demo-token",
+            enable_nws_cli_lookup=False,
+            http_get_json=should_not_fetch_nws,
+            http_get_json_with_headers=fake_http_get_json_with_headers,
+        )
+        self.assertEqual(payload["status"], "ready")
+        self.assertEqual(payload["data_source"], "cdo_api_v2")
+        self.assertEqual(payload["daily_sample"]["tmax_f"], 87.0)
+
+    def test_fetch_ncei_station_daily_summary_for_date_falls_back_to_ads_without_token(self) -> None:
+        def should_not_fetch_nws(_url: str, _timeout_seconds: float):
+            raise AssertionError("NWS lookup should be disabled in this ADS-only test")
+
+        def fake_http_get_json_with_headers(url: str, timeout_seconds: float, headers: dict[str, str] | None):
+            parsed = urlparse(url)
+            self.assertIn("/access/services/data/v1", parsed.path)
+            self.assertIsNone(headers)
+            return (
+                200,
+                [
+                    {"DATE": "2026-04-10", "TMAX": "86", "TMIN": "58", "PRCP": "0.00"},
+                ],
+            )
+
+        with patch.dict(
+            "os.environ",
+            {
+                "BETBOT_NOAA_CDO_TOKEN": "",
+                "NOAA_CDO_TOKEN": "",
+                "NCEI_CDO_TOKEN": "",
+            },
+            clear=False,
+        ):
+            payload = fetch_ncei_station_daily_summary_for_date(
+                station_id="KJFK",
+                target_date="2026-04-10",
+                cdo_token="",
+                enable_nws_cli_lookup=False,
+                http_get_json=should_not_fetch_nws,
+                http_get_json_with_headers=fake_http_get_json_with_headers,
+            )
+        self.assertEqual(payload["status"], "ready")
+        self.assertEqual(payload["data_source"], "access_data_service_v1")
+        self.assertEqual(payload["daily_sample"]["tmax_f"], 86.0)
+
+    def test_fetch_ncei_station_daily_summary_for_date_prefers_nws_cli_report(self) -> None:
+        def fake_http_get_json(url: str, timeout_seconds: float):
+            parsed = urlparse(url)
+            if parsed.path.endswith("/products/types/CLI/locations/AUS"):
+                return (
+                    200,
+                    {
+                        "@graph": [
+                            {"id": "demo-product", "issuanceTime": "2026-04-11T22:40:00+00:00"},
+                        ]
+                    },
+                )
+            if parsed.path.endswith("/products/demo-product"):
+                return (
+                    200,
+                    {
+                        "productText": (
+                            "000\n"
+                            "CDUS44 KEWX 112240\n"
+                            "CLIAUS\n\n"
+                            "...THE AUSTIN CLIMATE SUMMARY FOR APRIL 10 2026...\n"
+                            "TEMPERATURE (F)\n"
+                            "  MAXIMUM         88   3:31 PM  95  1907\n"
+                            "  MINIMUM         61   6:43 AM  40  1988\n"
+                        )
+                    },
+                )
+            return (404, {})
+
+        def should_not_fetch_cdo_or_ads(_url: str, _timeout_seconds: float, _headers: dict[str, str] | None):
+            raise AssertionError("CDO/ADS fallback should not run when NWS CLI report is ready")
+
+        payload = fetch_ncei_station_daily_summary_for_date(
+            station_id="KAUS",
+            target_date="2026-04-10",
+            cdo_token="",
+            enable_nws_cli_lookup=True,
+            http_get_json=fake_http_get_json,
+            http_get_json_with_headers=should_not_fetch_cdo_or_ads,
+        )
+        self.assertEqual(payload["status"], "ready")
+        self.assertEqual(payload["data_source"], "nws_cli_daily_climate_report")
+        self.assertEqual(payload["daily_sample"]["tmax_f"], 88.0)
+        self.assertEqual(payload["daily_sample"]["tmin_f"], 61.0)
+
+    def test_fetch_nws_cli_station_daily_summary_for_date_rejects_station_code_mismatch(self) -> None:
+        def fake_http_get_json(url: str, timeout_seconds: float):
+            parsed = urlparse(url)
+            if parsed.path.endswith("/products/types/CLI/locations/KJFK"):
+                return (200, {"@graph": []})
+            if parsed.path.endswith("/products/types/CLI/locations/JFK"):
+                return (
+                    200,
+                    {
+                        "@graph": [
+                            {"id": "mismatch-product", "issuanceTime": "2026-04-11T22:40:00+00:00"},
+                        ]
+                    },
+                )
+            if parsed.path.endswith("/products/mismatch-product"):
+                return (
+                    200,
+                    {
+                        "productText": (
+                            "000\n"
+                            "CDUS41 KOKX 112240\n"
+                            "CLINEWR\n\n"
+                            "...THE NEWARK CLIMATE SUMMARY FOR APRIL 10 2026...\n"
+                            "TEMPERATURE (F)\n"
+                            "  MAXIMUM         76   4:11 PM  95  1988\n"
+                            "  MINIMUM         52   5:05 AM  40  1899\n"
+                        )
+                    },
+                )
+            return (404, {})
+
+        payload = fetch_nws_cli_station_daily_summary_for_date(
+            station_id="KJFK",
+            target_date="2026-04-10",
+            timeout_seconds=5.0,
+            http_get_json=fake_http_get_json,
+        )
+
+        self.assertEqual(payload["status"], "no_final_report")
+        self.assertTrue(
+            any(str(item).startswith("station_code_mismatch:mismatch-product:") for item in payload.get("errors", []))
+        )
+
+    def test_fetch_ncei_station_daily_summary_for_date_supports_nws_cli_location_override(self) -> None:
+        def fake_http_get_json(url: str, timeout_seconds: float):
+            parsed = urlparse(url)
+            if parsed.path.endswith("/products/types/CLI/locations/KDAL"):
+                return (200, {"@graph": []})
+            if parsed.path.endswith("/products/types/CLI/locations/DAL"):
+                return (200, {"@graph": []})
+            if parsed.path.endswith("/products/types/CLI/locations/DFW"):
+                return (
+                    200,
+                    {
+                        "@graph": [
+                            {"id": "dfw-product", "issuanceTime": "2026-04-11T22:40:00+00:00"},
+                        ]
+                    },
+                )
+            if parsed.path.endswith("/products/dfw-product"):
+                return (
+                    200,
+                    {
+                        "productText": (
+                            "000\n"
+                            "CDUS44 KFWD 112240\n"
+                            "CLIDFW\n\n"
+                            "...THE DALLAS CLIMATE SUMMARY FOR APRIL 10 2026...\n"
+                            "TEMPERATURE (F)\n"
+                            "  MAXIMUM         86   4:11 PM  95  1988\n"
+                            "  MINIMUM         66   5:05 AM  40  1899\n"
+                        )
+                    },
+                )
+            return (404, {})
+
+        def should_not_fetch_cdo_or_ads(_url: str, _timeout_seconds: float, _headers: dict[str, str] | None):
+            raise AssertionError("CDO/ADS fallback should not run when CLI location override resolves a report")
+
+        with patch.dict(
+            "os.environ",
+            {
+                "BETBOT_WEATHER_NWS_CLI_LOCATION_MAP": "KDAL=DFW",
+                "BETBOT_NOAA_CDO_TOKEN": "",
+                "NOAA_CDO_TOKEN": "",
+                "NCEI_CDO_TOKEN": "",
+            },
+            clear=False,
+        ):
+            payload = fetch_ncei_station_daily_summary_for_date(
+                station_id="KDAL",
+                target_date="2026-04-10",
+                cdo_token="",
+                enable_nws_cli_lookup=True,
+                http_get_json=fake_http_get_json,
+                http_get_json_with_headers=should_not_fetch_cdo_or_ads,
+            )
+
+        self.assertEqual(payload["status"], "ready")
+        self.assertEqual(payload["data_source"], "nws_cli_daily_climate_report")
+        self.assertEqual(payload["nws_cli_station_code"], "DFW")
+        self.assertIn("DFW", payload.get("location_candidates", []))
+        self.assertEqual(payload["daily_sample"]["tmax_f"], 86.0)
+        self.assertEqual(payload["daily_sample"]["tmin_f"], 66.0)
+
+    def test_fetch_ncei_station_daily_summary_for_date_continues_when_nws_cli_lookup_errors(self) -> None:
+        def failing_http_get_json(_url: str, _timeout_seconds: float):
+            raise TimeoutError("read operation timed out")
+
+        def fake_http_get_json_with_headers(url: str, timeout_seconds: float, headers: dict[str, str] | None):
+            parsed = urlparse(url)
+            self.assertIn("/access/services/data/v1", parsed.path)
+            self.assertIsNone(headers)
+            return (
+                200,
+                [
+                    {"DATE": "2026-04-10", "TMAX": "86", "TMIN": "58", "PRCP": "0.00"},
+                ],
+            )
+
+        with patch.dict(
+            "os.environ",
+            {
+                "BETBOT_NOAA_CDO_TOKEN": "",
+                "NOAA_CDO_TOKEN": "",
+                "NCEI_CDO_TOKEN": "",
+            },
+            clear=False,
+        ):
+            payload = fetch_ncei_station_daily_summary_for_date(
+                station_id="KJFK",
+                target_date="2026-04-10",
+                cdo_token="",
+                enable_nws_cli_lookup=True,
+                http_get_json=failing_http_get_json,
+                http_get_json_with_headers=fake_http_get_json_with_headers,
+            )
+
+        self.assertEqual(payload["status"], "ready")
+        self.assertEqual(payload["data_source"], "access_data_service_v1")
+        self.assertEqual(payload["daily_sample"]["tmax_f"], 86.0)
+        self.assertEqual(payload["nws_cli_lookup_status"], "request_failed")
+        self.assertIn("timed out", str(payload["nws_cli_lookup_error"]).lower())
+
+    def test_fetch_ncei_station_daily_summary_for_date_uses_ads_when_cdo_mapping_missing(self) -> None:
+        def should_not_fetch_nws(_url: str, _timeout_seconds: float):
+            raise AssertionError("NWS lookup should be disabled in this ADS fallback test")
+
+        def fake_http_get_json_with_headers(url: str, timeout_seconds: float, headers: dict[str, str] | None):
+            parsed = urlparse(url)
+            self.assertIn("/access/services/data/v1", parsed.path)
+            self.assertIsNone(headers)
+            query = parse_qs(parsed.query)
+            self.assertEqual(query.get("stations"), ["KAUS"])
+            return (
+                200,
+                [
+                    {"DATE": "2026-04-10", "TMAX": "89", "TMIN": "64", "PRCP": "0.00"},
+                ],
+            )
+
+        with patch.dict(
+            "os.environ",
+            {
+                "BETBOT_NOAA_CDO_TOKEN": "",
+                "NOAA_CDO_TOKEN": "",
+                "NCEI_CDO_TOKEN": "",
+            },
+            clear=False,
+        ):
+            payload = fetch_ncei_station_daily_summary_for_date(
+                station_id="KAUS",
+                target_date="2026-04-10",
+                cdo_token="",
+                enable_nws_cli_lookup=False,
+                http_get_json=should_not_fetch_nws,
+                http_get_json_with_headers=fake_http_get_json_with_headers,
+            )
+
+        self.assertEqual(payload["status"], "ready")
+        self.assertEqual(payload["data_source"], "access_data_service_v1")
+        self.assertEqual(payload["daily_sample"]["tmax_f"], 89.0)
+        self.assertEqual(payload.get("cdo_station_id"), "")
+        self.assertEqual(payload.get("ads_station_id"), "KAUS")
 
 
 if __name__ == "__main__":

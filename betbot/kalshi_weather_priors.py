@@ -29,7 +29,12 @@ from betbot.kalshi_weather_ingest import (
     fetch_nws_station_hourly_forecast,
     fetch_nws_station_recent_observations,
 )
-from betbot.kalshi_weather_settlement import build_weather_settlement_spec
+from betbot.kalshi_weather_settlement import (
+    build_weather_settlement_spec,
+    infer_settlement_station,
+    infer_settlement_timezone,
+    infer_timezone_from_station,
+)
 
 
 WeatherStationForecastFetcher = Callable[..., dict[str, Any]]
@@ -66,9 +71,9 @@ _CITY_STATION_FALLBACKS = {
     "denver": "KDEN",
     "phoenix": "KPHX",
     "los angeles": "KLAX",
-    "la ": "KLAX",
+    "la": "KLAX",
     "san francisco": "KSFO",
-    "sf ": "KSFO",
+    "sf": "KSFO",
     "seattle": "KSEA",
     "miami": "KMIA",
     "philadelphia": "KPHL",
@@ -81,6 +86,12 @@ _CITY_STATION_FALLBACKS = {
     "las vegas": "KLAS",
     "salt lake city": "KSLC",
     "portland": "KPDX",
+    "austin": "KAUS",
+    "san antonio": "KSAT",
+    "new orleans": "KMSY",
+    "nola": "KMSY",
+    "oklahoma city": "KOKC",
+    "okc": "KOKC",
 }
 
 WEATHER_PRIOR_EXTRA_FIELDS = [
@@ -186,15 +197,20 @@ def _classify_fetch_error(error: Any) -> str:
 
 
 def _parse_float(value: Any) -> float | None:
+    numeric: float | None = None
     if isinstance(value, (int, float)):
-        return float(value)
-    text = str(value or "").strip()
-    if not text:
+        numeric = float(value)
+    else:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        try:
+            numeric = float(text)
+        except ValueError:
+            return None
+    if numeric is None or not math.isfinite(numeric):
         return None
-    try:
-        return float(text)
-    except ValueError:
-        return None
+    return numeric
 
 
 def _normalize_string_set(values: tuple[str, ...] | list[str] | set[str] | None) -> set[str]:
@@ -559,6 +575,13 @@ def _infer_station_id(row: dict[str, str], settlement_station: str) -> str:
     station = str(settlement_station or "").strip().upper()
     if station:
         return station
+    inferred_station = infer_settlement_station(
+        str(row.get("rules_primary") or ""),
+        str(row.get("market_title") or ""),
+        str(row.get("event_title") or ""),
+    )
+    if inferred_station:
+        return inferred_station
     merged = " ".join(
         (
             str(row.get("market_ticker") or ""),
@@ -567,8 +590,8 @@ def _infer_station_id(row: dict[str, str], settlement_station: str) -> str:
             str(row.get("rules_primary") or ""),
         )
     ).lower()
-    for token, station_id in _CITY_STATION_FALLBACKS.items():
-        if token in merged:
+    for token, station_id in sorted(_CITY_STATION_FALLBACKS.items(), key=lambda item: len(item[0]), reverse=True):
+        if re.search(rf"\b{re.escape(token)}\b", merged):
             return station_id
     return ""
 
@@ -777,21 +800,20 @@ def _settlement_timezone_name(settlement: dict[str, Any], row: dict[str, Any]) -
     timezone_name = str(settlement.get("settlement_timezone") or "").strip()
     if timezone_name:
         return timezone_name
-    merged = " ".join(
-        (
-            str(row.get("event_title") or ""),
-            str(row.get("market_title") or ""),
-            str(row.get("market_ticker") or ""),
-        )
-    ).lower()
-    if any(token in merged for token in ("new york", "nyc", "boston", "washington", "dc", "miami", "atlanta", "philly", "philadelphia")):
-        return "America/New_York"
-    if any(token in merged for token in ("chicago", "dallas", "houston", "minneapolis")):
-        return "America/Chicago"
-    if any(token in merged for token in ("denver", "salt lake city")):
-        return "America/Denver"
-    if any(token in merged for token in ("los angeles", "la ", "san francisco", "sf ", "seattle", "portland", "las vegas")):
-        return "America/Los_Angeles"
+    station_id = _infer_station_id(
+        row,
+        str(settlement.get("settlement_station") or ""),
+    )
+    timezone_from_station = infer_timezone_from_station(station_id)
+    if timezone_from_station:
+        return timezone_from_station
+    timezone_from_titles = infer_settlement_timezone(
+        str(row.get("market_ticker") or ""),
+        str(row.get("market_title") or ""),
+        str(row.get("event_title") or ""),
+    )
+    if timezone_from_titles:
+        return timezone_from_titles
     return "America/New_York"
 
 
