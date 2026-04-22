@@ -535,18 +535,22 @@ fi
 
 latest_bankroll="$(ls -1t "$OUTPUT_DIR"/kalshi_temperature_bankroll_validation_*.json 2>/dev/null | head -n 1 || true)"
 if [[ -n "$latest_bankroll" && "$HAS_JQ" == "1" ]]; then
-  jq -r '
-    "bankroll_validation meaningful_deploy=\(.viability_summary.could_reference_bankroll_have_been_deployed_meaningfully // false) roi_ref=\(.viability_summary.what_return_would_have_been_produced_on_bankroll // 0) main_limit=\(.viability_summary.main_limiting_factor // "unknown")"
-  ' "$latest_bankroll"
-  jq -r '
-    "bankroll_breadth resolved_market_sides=\(.opportunity_breadth.resolved_unique_market_sides // 0) deployed_market_sides=\(.viability_summary.deployed_unique_market_side_calls // 0) resolved_families=\(.opportunity_breadth.resolved_unique_underlying_families // 0) repeated_entry_multiplier=\(.opportunity_breadth.repeated_entry_multiplier // 0)"
-  ' "$latest_bankroll"
-  jq -r '
-    "bankroll_hysa beats_hysa=\(.viability_summary.would_plausibly_beat_hysa_after_slippage_fees // false) excess_window=\(.viability_summary.excess_return_over_hysa_for_window // 0) hysa_window=\(.viability_summary.equivalent_window_hysa_return_on_reference_bankroll // 0)"
-  ' "$latest_bankroll"
-  jq -r '
-    "bankroll_concentration warning=\(.concentration_checks.concentration_warning // false) top_market_side_share=\(.concentration_checks.concentration_metrics.top_market_side_share // 0) duplicate_count=\(.concentration_checks.duplicate_count // 0) duplicate_warnings_truncated=\(.concentration_checks.duplicate_warning_stats.warnings_truncated // 0)"
-  ' "$latest_bankroll"
+  if jq -e . "$latest_bankroll" >/dev/null 2>&1; then
+    jq -r '
+      "bankroll_validation meaningful_deploy=\(.viability_summary.could_reference_bankroll_have_been_deployed_meaningfully // false) roi_ref=\(.viability_summary.what_return_would_have_been_produced_on_bankroll // 0) main_limit=\(.viability_summary.main_limiting_factor // "unknown")"
+    ' "$latest_bankroll"
+    jq -r '
+      "bankroll_breadth resolved_market_sides=\(.opportunity_breadth.resolved_unique_market_sides // 0) deployed_market_sides=\(.viability_summary.deployed_unique_market_side_calls // 0) resolved_families=\(.opportunity_breadth.resolved_unique_underlying_families // 0) repeated_entry_multiplier=\(.opportunity_breadth.repeated_entry_multiplier // 0)"
+    ' "$latest_bankroll"
+    jq -r '
+      "bankroll_hysa beats_hysa=\(.viability_summary.would_plausibly_beat_hysa_after_slippage_fees // false) excess_window=\(.viability_summary.excess_return_over_hysa_for_window // 0) hysa_window=\(.viability_summary.equivalent_window_hysa_return_on_reference_bankroll // 0)"
+    ' "$latest_bankroll"
+    jq -r '
+      "bankroll_concentration warning=\(.concentration_checks.concentration_warning // false) top_market_side_share=\(.concentration_checks.concentration_metrics.top_market_side_share // 0) duplicate_count=\(.concentration_checks.duplicate_count // 0) duplicate_warnings_truncated=\(.concentration_checks.duplicate_warning_stats.warnings_truncated // 0)"
+    ' "$latest_bankroll"
+  else
+    echo "bankroll_validation_latest -> PARSE_ERROR ($latest_bankroll)"
+  fi
 fi
 
 latest_tuning_14h="$(ls -1t "$CHECKPOINTS_DIR"/station_tuning_window_14h_*.json 2>/dev/null | head -n 1 || true)"
