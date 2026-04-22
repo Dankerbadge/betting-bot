@@ -1154,6 +1154,11 @@ if (( STRICT_MODE == 1 )); then
     echo "STRICT CHECK FAILED: decision-matrix lane state file required but missing ($DECISION_MATRIX_LANE_ALERT_STATE_FILE)" >&2
     exit 2
   fi
+  if [[ "$DECISION_MATRIX_LANE_STRICT_REQUIRE_STATE_FILE" == "1" && "${decision_matrix_lane_parse_error:-false}" == "true" ]]; then
+    echo
+    echo "STRICT CHECK FAILED: decision-matrix lane state file malformed ($DECISION_MATRIX_LANE_ALERT_STATE_FILE)" >&2
+    exit 2
+  fi
   if [[ "$strict_lane_threshold" =~ ^[0-9]+$ ]] && (( strict_lane_threshold > 0 )); then
     if [[ "$decision_matrix_lane_strict_status_match" == "true" && "$decision_matrix_lane_degraded_streak_count" =~ ^[0-9]+$ ]] && (( decision_matrix_lane_degraded_streak_count >= strict_lane_threshold )); then
       echo
