@@ -135,17 +135,36 @@ echo "services: shadow=$shadow_state alpha_summary_timer=$alpha_timer_state rout
 action_flags=()
 
 if [[ -f "$LIVE_STATUS_FILE" ]]; then
-  read -r live_line < <(python3 - "$LIVE_STATUS_FILE" <<'PY'
+  live_line="$(python3 - "$LIVE_STATUS_FILE" <<'PY'
 import json,sys
 p=json.load(open(sys.argv[1]))
 flags = p.get("trigger_flags") or {}
 fresh = p.get("freshness_plan") or {}
 scan = p.get("scan_budget") or {}
 latest = p.get("latest_cycle_metrics") or {}
+def _as_float(value: object, default: float = 0.0) -> float:
+  if isinstance(value, bool):
+    return float(int(value))
+  try:
+    return float(value)
+  except Exception:
+    return default
+def _as_bool(value: object, default: bool = False) -> bool:
+  if isinstance(value, bool):
+    return value
+  if isinstance(value, (int, float)):
+    return value != 0
+  if isinstance(value, str):
+    lowered = value.strip().lower()
+    if lowered in {"1", "true", "yes", "on"}:
+      return True
+    if lowered in {"0", "false", "no", "off", ""}:
+      return False
+  return default
 guardrail_status = str(fresh.get("approval_rate_guardrail_status") or "unknown")
-guardrail_eval = bool(fresh.get("approval_rate_guardrail_evaluated"))
-cycle_approval_rate = float(fresh.get("approval_rate", 0) or 0)
-cycle_stale_rate = float(fresh.get("metar_observation_stale_rate", 0) or 0)
+guardrail_eval = _as_bool(fresh.get("approval_rate_guardrail_evaluated"), False)
+cycle_approval_rate = _as_float(fresh.get("approval_rate", 0), 0.0)
+cycle_stale_rate = _as_float(fresh.get("metar_observation_stale_rate", 0), 0.0)
 guardrail_labels = {
   "within_band": "within band",
   "above_band": "above band",
@@ -167,7 +186,7 @@ print(
   f"latest_planned={latest.get('planned_orders',0)}"
 )
 PY
-)
+)"
   echo "$live_line"
 else
   echo "live: missing ($LIVE_STATUS_FILE)"
@@ -270,13 +289,27 @@ import json,sys
 p=json.load(open(sys.argv[1]))
 h=p.get('headline_metrics') or {}
 tv=p.get('trader_view') or {}
-deploy_conf = float(tv.get('confidence_score') or 0)
-selection_conf = float(tv.get('selection_confidence_score') or h.get('selection_confidence_score') or 0)
-projected = float(h.get('projected_pnl_on_reference_bankroll_dollars') or 0)
-approval_rate_12h = float(h.get('approval_rate') or 0)
-intents_total_12h = int(h.get('intents_total') or 0)
-intents_approved_12h = int(h.get('intents_approved') or 0)
-planned_12h = int(h.get('planned_orders') or 0)
+def _as_float(value: object, default: float = 0.0) -> float:
+  if isinstance(value, bool):
+    return float(int(value))
+  try:
+    return float(value)
+  except Exception:
+    return default
+def _as_int(value: object, default: int = 0) -> int:
+  if isinstance(value, bool):
+    return int(value)
+  try:
+    return int(float(value))
+  except Exception:
+    return default
+deploy_conf = _as_float(tv.get('confidence_score'), 0.0)
+selection_conf = _as_float(tv.get('selection_confidence_score') or h.get('selection_confidence_score'), 0.0)
+projected = _as_float(h.get('projected_pnl_on_reference_bankroll_dollars'), 0.0)
+approval_rate_12h = _as_float(h.get('approval_rate'), 0.0)
+intents_total_12h = _as_int(h.get('intents_total'), 0)
+intents_approved_12h = _as_int(h.get('intents_approved'), 0)
+planned_12h = _as_int(h.get('planned_orders'), 0)
 top_blocker = str(h.get('top_blocker_reason') or 'n/a').replace("_", " ")
 impact_basis = str(h.get('suggestion_impact_pool_basis_label') or 'n/a').replace("_", " ")
 print(
@@ -304,11 +337,23 @@ if [[ -f "$ROUTE_GUARD_FILE" ]]; then
   route_block="$(python3 - "$ROUTE_GUARD_FILE" <<'PY'
 import json,sys
 p=json.load(open(sys.argv[1]))
+def _as_int(value: object, default: int = 0) -> int:
+  if isinstance(value, bool):
+    return int(value)
+  try:
+    return int(float(value))
+  except Exception:
+    return default
 status=str(p.get('guard_status') or 'unknown')
-shared=int(p.get('shared_route_group_count') or 0)
+shared=_as_int(p.get('shared_route_group_count'), 0)
 keys=[]
 for rem in p.get('route_remediations') or []:
-  for k in rem.get('required_thread_env_keys') or []:
+  if not isinstance(rem, dict):
+    continue
+  thread_keys = rem.get('required_thread_env_keys')
+  if not isinstance(thread_keys, list):
+    continue
+  for k in thread_keys:
     if k not in keys:
       keys.append(k)
 print(f"discord_route_guard: status={status} shared_route_groups={shared} required_thread_keys={len(keys)}")
@@ -335,9 +380,23 @@ if [[ -f "$DISCORD_AUDIT_FILE" ]]; then
   audit_block="$(python3 - "$DISCORD_AUDIT_FILE" <<'PY'
 import json,sys
 p=json.load(open(sys.argv[1]))
-score=float(p.get("overall_score") or 0)
+def _as_float(value: object, default: float = 0.0) -> float:
+  if isinstance(value, bool):
+    return float(int(value))
+  try:
+    return float(value)
+  except Exception:
+    return default
+def _as_int(value: object, default: int = 0) -> int:
+  if isinstance(value, bool):
+    return int(value)
+  try:
+    return int(float(value))
+  except Exception:
+    return default
+score=_as_float(p.get("overall_score"), 0.0)
 streams=p.get("streams") if isinstance(p.get("streams"), list) else []
-worst=min((int(row.get("score") or 0) for row in streams), default=0)
+worst=min((_as_int(row.get("score"), 0) for row in streams if isinstance(row, dict)), default=0)
 print(f"discord_message_audit: overall={score:.1f}/100 worst_stream={worst}/100 streams={len(streams)}")
 if score < 90 or worst < 85:
     print("discord_message_audit_warning=readability_regression")

@@ -516,6 +516,45 @@ def test_quick_check_strict_fails_when_route_guard_status_is_not_green(tmp_path:
     assert "discord_route_guard_not_green" in result.stdout
 
 
+def test_quick_check_treats_string_false_guardrail_evaluated_as_not_evaluated(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    _write_json(
+        output_dir / "health" / "live_status_latest.json",
+        {
+            "status": "green",
+            "trigger_flags": {
+                "approvals_resumed": False,
+                "planned_orders_resumed": False,
+            },
+            "freshness_plan": {
+                "approval_rate_guardrail_status": "within_band",
+                "approval_rate_guardrail_evaluated": "false",
+                "approval_rate": 0.1,
+                "metar_observation_stale_rate": 0.0,
+            },
+            "scan_budget": {
+                "effective_max_markets": 100,
+            },
+            "latest_cycle_metrics": {
+                "intents_approved": 1,
+                "intents_total": 10,
+                "planned_orders": 1,
+            },
+        },
+    )
+
+    env_file = tmp_path / "quick.env"
+    _write_env_file(env_file=env_file, output_dir=output_dir)
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_quick_script(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 0
+    assert "guardrail=within band (sample small)" in result.stdout
+
+
 def test_quick_check_strict_allows_route_guard_status_green_with_surrounding_whitespace(
     tmp_path: Path,
 ) -> None:
@@ -539,6 +578,34 @@ def test_quick_check_strict_allows_route_guard_status_green_with_surrounding_whi
 
     assert result.returncode == 0
     assert "discord_route_guard_not_green" not in result.stdout
+
+
+def test_quick_check_strict_handles_malformed_route_guard_payload_without_crashing(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    _write_json(
+        output_dir / "health" / "discord_route_guard" / "discord_route_guard_latest.json",
+        {
+            "guard_status": "green",
+            "shared_route_group_count": "n/a",
+            "route_remediations": [
+                "not-a-dict",
+                {"required_thread_env_keys": "not-a-list"},
+                {"required_thread_env_keys": ["SHADOW_ALERT_WEBHOOK_THREAD_ID"]},
+            ],
+        },
+    )
+
+    env_file = tmp_path / "quick.env"
+    _write_env_file(env_file=env_file, output_dir=output_dir)
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_quick_script(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 0
+    assert "discord_route_guard: status=green shared_route_groups=0 required_thread_keys=1" in result.stdout
+    assert "quick_result: GREEN" in result.stdout
 
 
 def test_quick_check_prints_route_guard_missing_keys_hint_when_present(tmp_path: Path) -> None:
@@ -595,6 +662,32 @@ def test_quick_check_strict_fails_on_discord_message_readability_regression(tmp_
     result = _run_quick_script(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
 
     assert result.returncode == 2
+    assert "discord_message_readability_regression" in result.stdout
+
+
+def test_quick_check_strict_handles_non_numeric_discord_audit_scores(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    _write_json(
+        output_dir / "health" / "discord_message_audit" / "discord_message_audit_latest.json",
+        {
+            "overall_score": "n/a",
+            "streams": [
+                {"score": "bad"},
+                "invalid-row",
+            ],
+        },
+    )
+
+    env_file = tmp_path / "quick.env"
+    _write_env_file(env_file=env_file, output_dir=output_dir)
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_quick_script(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 2
+    assert "discord_message_audit: overall=0.0/100 worst_stream=0/100 streams=2" in result.stdout
     assert "discord_message_readability_regression" in result.stdout
 
 
@@ -657,6 +750,43 @@ def test_quick_check_strict_fails_on_confidence_pnl_divergence(tmp_path: Path) -
 
     assert result.returncode == 2
     assert "confidence_pnl_divergence" in result.stdout
+
+
+def test_quick_check_strict_handles_non_numeric_alpha_metrics_without_crashing(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    _write_json(
+        output_dir / "health" / "alpha_summary_latest.json",
+        {
+            "headline_metrics": {
+                "health_status": "GREEN",
+                "confidence_level": "HIGH",
+                "approval_rate": "n/a",
+                "intents_total": "n/a",
+                "intents_approved": "n/a",
+                "planned_orders": "n/a",
+                "top_blocker_reason": "none",
+                "suggestion_impact_pool_basis_label": "settled_projection",
+                "settled_unique_market_side_total": "n/a",
+                "projected_pnl_on_reference_bankroll_dollars": "n/a",
+            },
+            "trader_view": {
+                "confidence_score": "n/a",
+                "selection_confidence_score": "n/a",
+            },
+        },
+    )
+
+    env_file = tmp_path / "quick.env"
+    _write_env_file(env_file=env_file, output_dir=output_dir)
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_quick_script(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 0
+    assert "confidence_pnl_divergence" not in result.stdout
+    assert "quick_result: GREEN" in result.stdout
 
 
 def test_quick_check_strict_does_not_flag_confidence_divergence_when_projected_pnl_is_non_negative(
