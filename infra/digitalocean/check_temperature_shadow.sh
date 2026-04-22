@@ -177,6 +177,7 @@ alpha_summary_available="0"
 live_status_age_seconds="-1"
 alpha_summary_age_seconds="-1"
 auto_profile_age_seconds="-1"
+auto_profile_parse_error="false"
 discord_route_guard_age_seconds="-1"
 discord_route_guard_status="unknown"
 discord_route_guard_shared_route_group_count="0"
@@ -797,6 +798,12 @@ if [[ -n "$alpha_summary_auto_apply_profile_path" && "$alpha_summary_auto_apply_
   AUTO_PROFILE_PATH="$alpha_summary_auto_apply_profile_path"
 fi
 if [[ -f "$AUTO_PROFILE_PATH" ]]; then
+  if [[ "$HAS_JQ" == "1" ]]; then
+    if ! jq -e . "$AUTO_PROFILE_PATH" >/dev/null 2>&1; then
+      auto_profile_parse_error="true"
+      echo "auto_profile -> PARSE_ERROR ($AUTO_PROFILE_PATH)"
+    fi
+  fi
   if auto_profile_mtime="$(date -r "$AUTO_PROFILE_PATH" +%s 2>/dev/null)"; then
     now_epoch="$(date +%s)"
     if [[ "$auto_profile_mtime" =~ ^[0-9]+$ && "$now_epoch" =~ ^[0-9]+$ ]] && (( now_epoch >= auto_profile_mtime )); then
@@ -1196,6 +1203,11 @@ if (( STRICT_MODE == 1 )); then
     if [[ "$auto_profile_required_now" == "1" && ! -f "$AUTO_PROFILE_PATH" ]]; then
       echo
       echo "STRICT CHECK FAILED: auto profile required but missing ($AUTO_PROFILE_PATH)" >&2
+      exit 2
+    fi
+    if [[ "$auto_profile_required_now" == "1" && "${auto_profile_parse_error:-false}" == "true" ]]; then
+      echo
+      echo "STRICT CHECK FAILED: auto profile malformed (parse error) ($AUTO_PROFILE_PATH)" >&2
       exit 2
     fi
     if [[ "$auto_profile_required_now" == "1" && "$auto_profile_age_seconds" =~ ^[0-9]+$ ]] && [[ "$AUTO_PROFILE_STRICT_MAX_AGE_SECONDS" =~ ^[0-9]+$ ]] && (( auto_profile_age_seconds > AUTO_PROFILE_STRICT_MAX_AGE_SECONDS )); then
