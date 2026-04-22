@@ -215,6 +215,7 @@ This emits a concise alpha summary artifact and sends one Discord message every 
 - persistent trial balance check-in (`1d/7d/14d/21d/28d/3mo/6mo/1yr`) using existing reset/refill state
 - last settled selection visibility (unique market-side + unique order-instance) with if-live counterfactual PnL
 - duplicate shadow-order reuse pressure since reset (planned rows vs unique order instances vs duplicate-row ratio)
+- ops webhook heartbeat includes decision-matrix lane status (`strict`, `bootstrap`, or `bootstrap blocked`) with bootstrap expiry timing when available
 - 3–5 optimization suggestions based on blockers + alpha-gap context
 - guardrail recommendation sampling now prefers all in-window intents summaries/CSVs and falls back to latest-only only when window sampling is unavailable
 
@@ -282,6 +283,7 @@ This emits a rolling weekly blocker audit artifact and optional Discord message:
 - top non-approved reasons (count + share of blocked + share of intents)
 - largest blocker and recommended close action
 - top-5 action list so threshold changes stay tied to blocker closure
+- decision-matrix lane row (`strict`, `bootstrap`, or `bootstrap blocked`) with bootstrap expiry timing when available
 
 ```bash
 cd "$HOME/betting-bot"
@@ -449,11 +451,29 @@ Main env knobs in `/etc/betbot/temperature-shadow.env`:
 - `COLDMATH_ACTIONABLE_MIN_MATCHED_RATIO`
 - `COLDMATH_ACTIONABLE_REQUIRE_INGEST`
 - `COLDMATH_ACTIONABLE_REQUIRE_REPLICATION`
+- `COLDMATH_ACTIONABLE_ALLOW_MATRIX_BOOTSTRAP`
+- `COLDMATH_ACTIONABLE_MATRIX_BOOTSTRAP_MAX_HOURS`
+- `COLDMATH_ACTIONABLE_MATRIX_BOOTSTRAP_DISABLE_AT_SETTLED_OUTCOMES`
+- `COLDMATH_ACTIONABLE_MATRIX_BOOTSTRAP_STATE_FILE`
+- `COLDMATH_LANE_ALERT_ENABLED`
+- `COLDMATH_LANE_ALERT_NOTIFY_STATUS_CHANGE_ONLY`
+- `COLDMATH_LANE_ALERT_WEBHOOK_URL`
+- `COLDMATH_LANE_ALERT_WEBHOOK_THREAD_ID`
+- `COLDMATH_LANE_ALERT_WEBHOOK_TIMEOUT_SECONDS`
+- `COLDMATH_LANE_ALERT_WEBHOOK_USERNAME`
+- `COLDMATH_LANE_ALERT_MESSAGE_MODE`
+- `COLDMATH_LANE_ALERT_DEGRADED_STATUSES`
+- `COLDMATH_LANE_ALERT_DEGRADED_STREAK_THRESHOLD`
+- `COLDMATH_LANE_ALERT_DEGRADED_STREAK_NOTIFY_EVERY`
+- `COLDMATH_LANE_ALERT_STATE_FILE`
 
 Noise-control note:
 
 - the hardening cycle now emits `targeted_trading_support` in the health artifact
-- this section tracks pass/fail checks for snapshot strength, ingest alignment, and replication candidate depth
+- this section tracks pass/fail checks for snapshot strength, ingest alignment, replication candidate depth, and decision-matrix strict/bootstrap signals
+- bootstrap expiry guard disables bootstrap pass when elapsed window or settled-outcome threshold is reached
+- optional lane-transition alerting notifies on decision-matrix lane flips (`strict`, `bootstrap`, `bootstrap blocked`) with stateful dedupe
+- optional degraded-streak escalation notifies when `matrix_failed`/`bootstrap_blocked` persist for consecutive runs
 - tune `COLDMATH_ACTIONABLE_*` thresholds upward when you want stricter confidence/win-rate bias
 
 ## 8b) Recommended: Install Pipeline Recovery Watchdog
