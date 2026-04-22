@@ -513,9 +513,13 @@ fi
 
 latest_breadth_dashboard="$(ls -1t "$OUTPUT_DIR"/breadth_worker/breadth_worker_dashboard_latest.json 2>/dev/null | head -n 1 || true)"
 if [[ -n "$latest_breadth_dashboard" && "$HAS_JQ" == "1" ]]; then
-  jq -r '
-    "breadth_dashboard profiles=\(.profile_count // 0) union_market_sides_approved=\(.union_metrics.unique_market_sides_approved_rows // 0) union_market_tickers=\(.union_metrics.unique_market_tickers_all_rows // 0) consensus_candidates=\(.consensus.consensus_candidate_count // 0) parallelism=\(.adaptive_parallelism.current_parallelism // 0) p_load_milli=\(.adaptive_parallelism.load_per_vcpu_milli // 0) p_action=\(.adaptive_guidance.parallelism.action // "hold") max_markets=\(.adaptive_max_markets.current_max_markets // 0) m_load_milli=\(.adaptive_max_markets.load_per_vcpu_milli // 0) m_action=\(.adaptive_guidance.max_markets.action // "hold") target_pressure_level=\(.adaptive_max_markets.target_pressure.level // 0) target_pressure_reason=\(.adaptive_max_markets.target_pressure.reason // "targets_met") scan_secs=\(.adaptive_max_markets.last_constraint_scan_duration_seconds // 0)"
-  ' "$latest_breadth_dashboard"
+  if jq -e . "$latest_breadth_dashboard" >/dev/null 2>&1; then
+    jq -r '
+      "breadth_dashboard profiles=\(.profile_count // 0) union_market_sides_approved=\(.union_metrics.unique_market_sides_approved_rows // 0) union_market_tickers=\(.union_metrics.unique_market_tickers_all_rows // 0) consensus_candidates=\(.consensus.consensus_candidate_count // 0) parallelism=\(.adaptive_parallelism.current_parallelism // 0) p_load_milli=\(.adaptive_parallelism.load_per_vcpu_milli // 0) p_action=\(.adaptive_guidance.parallelism.action // "hold") max_markets=\(.adaptive_max_markets.current_max_markets // 0) m_load_milli=\(.adaptive_max_markets.load_per_vcpu_milli // 0) m_action=\(.adaptive_guidance.max_markets.action // "hold") target_pressure_level=\(.adaptive_max_markets.target_pressure.level // 0) target_pressure_reason=\(.adaptive_max_markets.target_pressure.reason // "targets_met") scan_secs=\(.adaptive_max_markets.last_constraint_scan_duration_seconds // 0)"
+    ' "$latest_breadth_dashboard"
+  else
+    echo "breadth_dashboard_latest -> PARSE_ERROR ($latest_breadth_dashboard)"
+  fi
 fi
 
 latest_settlement="$(ls -1t "$OUTPUT_DIR"/kalshi_temperature_settlement_state_*.json 2>/dev/null | head -n 1 || true)"
