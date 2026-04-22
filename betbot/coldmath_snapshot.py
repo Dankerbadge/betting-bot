@@ -60,6 +60,25 @@ POSITIONS_FIELDNAMES = [
     "negativeRisk",
 ]
 
+CLOSED_POSITIONS_FIELDNAMES = [
+    "conditionId",
+    "asset",
+    "size",
+    "avgPrice",
+    "title",
+    "slug",
+    "eventSlug",
+    "outcome",
+    "endDate",
+    "closedAt",
+    "cashPnl",
+    "realizedPnl",
+    "percentPnl",
+    "percentRealizedPnl",
+    "totalBought",
+    "source",
+]
+
 TRADES_FIELDNAMES = [
     "capturedAt",
     "queryScope",
@@ -296,6 +315,36 @@ def _normalize_activity_row(
         "transactionHash": _normalize_text(raw_row.get("transactionHash")),
         "conditionId": market["condition_id"],
         "asset": market["asset"],
+    }
+
+
+def _normalize_closed_position_row(
+    *,
+    raw_row: dict[str, Any],
+    source: str = "closed_positions_endpoint",
+) -> dict[str, str]:
+    return {
+        "conditionId": _normalize_text(raw_row.get("conditionId")),
+        "asset": _normalize_text(raw_row.get("asset")),
+        "size": _float_text(raw_row.get("size")),
+        "avgPrice": _float_text(raw_row.get("avgPrice")),
+        "title": _normalize_text(raw_row.get("title")),
+        "slug": _normalize_text(raw_row.get("slug")),
+        "eventSlug": _normalize_text(raw_row.get("eventSlug")),
+        "outcome": _normalize_text(raw_row.get("outcome")),
+        "endDate": _normalize_text(raw_row.get("endDate")),
+        "closedAt": _normalize_text(
+            raw_row.get("closedAt")
+            or raw_row.get("redeemedAt")
+            or raw_row.get("settledAt")
+            or raw_row.get("updatedAt")
+        ),
+        "cashPnl": _float_text(raw_row.get("cashPnl")),
+        "realizedPnl": _float_text(raw_row.get("realizedPnl")),
+        "percentPnl": _float_text(raw_row.get("percentPnl")),
+        "percentRealizedPnl": _float_text(raw_row.get("percentRealizedPnl")),
+        "totalBought": _float_text(raw_row.get("totalBought")),
+        "source": _normalize_text(source),
     }
 
 
@@ -783,6 +832,9 @@ def fetch_polymarket_wallet_snapshot(
     timeout_seconds: float = 20.0,
     positions_page_size: int = 500,
     positions_max_pages: int = 20,
+    refresh_closed_positions: bool = True,
+    closed_positions_page_size: int = 500,
+    closed_positions_max_pages: int = 20,
     refresh_trades: bool = True,
     refresh_activity: bool = True,
     include_taker_only_trades: bool = True,
@@ -884,6 +936,30 @@ def fetch_polymarket_wallet_snapshot(
 
         if len(payload) < page_size:
             break
+
+    closed_positions_rows: list[dict[str, str]] = []
+    closed_positions_fetch_payload: dict[str, Any] = {
+        "status": "skipped",
+        "rows": [],
+        "errors": [],
+    }
+    if refresh_closed_positions:
+        closed_positions_fetch_payload = _fetch_data_api_rows(
+            endpoint="closed-positions",
+            wallet_address=wallet,
+            base_url=base_url,
+            timeout_seconds=timeout_seconds,
+            page_size=closed_positions_page_size,
+            max_pages=closed_positions_max_pages,
+            http_get_json=http_get_json,
+        )
+        for error in closed_positions_fetch_payload.get("errors") or []:
+            errors.append(f"closed_positions::{_normalize_text(error)}")
+        for raw_row in closed_positions_fetch_payload.get("rows") or []:
+            if isinstance(raw_row, dict):
+                closed_positions_rows.append(
+                    _normalize_closed_position_row(raw_row=raw_row)
+                )
 
     positions_value = sum(_parse_float(row.get("currentValue")) or 0.0 for row in positions_rows)
     cash_balance: float | None = None
@@ -1065,8 +1141,15 @@ def fetch_polymarket_wallet_snapshot(
         "positions_pages_fetched": pages_fetched,
         "positions_page_size": page_size,
         "positions_max_pages": max_pages,
+        "closed_positions_endpoint_status": closed_positions_fetch_payload.get("http_status"),
+        "closed_positions_pages_fetched": closed_positions_fetch_payload.get(
+            "pages_fetched"
+        ),
+        "closed_positions_page_size": max(1, int(closed_positions_page_size)),
+        "closed_positions_max_pages": max(1, int(closed_positions_max_pages)),
         "equity_row": equity_row,
         "positions_rows": positions_rows,
+        "closed_positions_rows": closed_positions_rows,
         "trades_rows": trades_rows,
         "activity_rows": activity_rows,
         "ledger_events_rows": list(ledger_events_payload.get("rows") or []),
@@ -1082,6 +1165,7 @@ def write_coldmath_snapshot_csvs(
     snapshot_dir: str | Path,
     equity_row: dict[str, Any],
     positions_rows: list[dict[str, Any]],
+    closed_positions_rows: list[dict[str, Any]] | None = None,
     trades_rows: list[dict[str, Any]] | None = None,
     activity_rows: list[dict[str, Any]] | None = None,
     ledger_events_rows: list[dict[str, Any]] | None = None,
@@ -1101,6 +1185,19 @@ def write_coldmath_snapshot_csvs(
         writer.writeheader()
         for row in positions_rows:
             writer.writerow({field: _normalize_text(row.get(field)) for field in POSITIONS_FIELDNAMES})
+
+    closed_positions_path = snapshot_path / "closed_positions.csv"
+    if closed_positions_rows is not None:
+        with closed_positions_path.open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=CLOSED_POSITIONS_FIELDNAMES)
+            writer.writeheader()
+            for row in closed_positions_rows:
+                writer.writerow(
+                    {
+                        field: _normalize_text(row.get(field))
+                        for field in CLOSED_POSITIONS_FIELDNAMES
+                    }
+                )
 
     trades_path = snapshot_path / "trades.csv"
     if trades_rows is not None:
@@ -1137,6 +1234,8 @@ def write_coldmath_snapshot_csvs(
         written["trades_csv"] = str(trades_path)
     if activity_rows is not None:
         written["activity_csv"] = str(activity_path)
+    if closed_positions_rows is not None:
+        written["closed_positions_csv"] = str(closed_positions_path)
     if ledger_events_rows is not None:
         written["ledger_events_csv"] = str(ledger_events_path)
     return written
@@ -1146,6 +1245,7 @@ def summarize_coldmath_snapshot_files(
     *,
     equity_csv: str | Path,
     positions_csv: str | Path,
+    closed_positions_csv: str | Path | None = None,
     trades_csv: str | Path | None = None,
     activity_csv: str | Path | None = None,
     ledger_events_csv: str | Path | None = None,
@@ -1158,12 +1258,20 @@ def summarize_coldmath_snapshot_files(
 
     equity_path = Path(equity_csv)
     positions_path = Path(positions_csv)
+    closed_positions_path = (
+        Path(closed_positions_csv) if closed_positions_csv else None
+    )
     trades_path = Path(trades_csv) if trades_csv else None
     activity_path = Path(activity_csv) if activity_csv else None
     ledger_events_path = Path(ledger_events_csv) if ledger_events_csv else None
 
     equity_rows = _read_csv_rows(equity_path)
     positions_rows = _read_csv_rows(positions_path)
+    closed_positions_rows = (
+        _read_csv_rows(closed_positions_path)
+        if isinstance(closed_positions_path, Path)
+        else []
+    )
     trades_rows = _read_csv_rows(trades_path) if isinstance(trades_path, Path) else []
     activity_rows = _read_csv_rows(activity_path) if isinstance(activity_path, Path) else []
     ledger_events_rows = (
@@ -1242,6 +1350,48 @@ def summarize_coldmath_snapshot_files(
     )
     for row in top_positions:
         row.pop("sorting_notional", None)
+
+    closed_positions_realized_pnl_sum = 0.0
+    closed_positions_cash_pnl_sum = 0.0
+    closed_positions_with_realized_pnl = 0
+    closed_positions_timestamps: list[datetime] = []
+    top_closed_positions: list[dict[str, Any]] = []
+    for row in closed_positions_rows:
+        realized_pnl = _parse_float(row.get("realizedPnl"))
+        cash_pnl = _parse_float(row.get("cashPnl"))
+        if isinstance(realized_pnl, float):
+            closed_positions_realized_pnl_sum += realized_pnl
+            closed_positions_with_realized_pnl += 1
+        if isinstance(cash_pnl, float):
+            closed_positions_cash_pnl_sum += cash_pnl
+        closed_at = _parse_ts(row.get("closedAt"))
+        if isinstance(closed_at, datetime):
+            closed_positions_timestamps.append(closed_at)
+
+        top_closed_positions.append(
+            {
+                "condition_id": _normalize_text(row.get("conditionId")),
+                "asset": _normalize_text(row.get("asset")),
+                "event_slug": _normalize_text(row.get("eventSlug")),
+                "slug": _normalize_text(row.get("slug")),
+                "title": _normalize_text(row.get("title")),
+                "outcome": _normalize_text(row.get("outcome")),
+                "realized_pnl": (
+                    round(realized_pnl, 6) if isinstance(realized_pnl, float) else None
+                ),
+                "cash_pnl": round(cash_pnl, 6) if isinstance(cash_pnl, float) else None,
+                "closed_at": closed_at.isoformat() if isinstance(closed_at, datetime) else "",
+                "sorting_abs_realized": (
+                    abs(realized_pnl) if isinstance(realized_pnl, float) else 0.0
+                ),
+            }
+        )
+    top_closed_positions.sort(
+        key=lambda item: float(item.get("sorting_abs_realized") or 0.0),
+        reverse=True,
+    )
+    for row in top_closed_positions:
+        row.pop("sorting_abs_realized", None)
 
     family_behavior = summarize_family_behavior(positions_rows=positions_rows)
     if not ledger_events_rows and (trades_rows or activity_rows):
@@ -1335,6 +1485,34 @@ def summarize_coldmath_snapshot_files(
     else:
         ledger_status = "empty"
 
+    positions_value_delta: float | None = None
+    cash_plus_positions_minus_equity: float | None = None
+    if isinstance(positions_value, float):
+        positions_value_delta = positions_value - current_value_sum
+    if (
+        isinstance(cash_balance, float)
+        and isinstance(positions_value, float)
+        and isinstance(equity_value, float)
+    ):
+        cash_plus_positions_minus_equity = (cash_balance + positions_value) - equity_value
+
+    reconciliation_abs_threshold = 0.05
+    reconciliation_checks: list[tuple[str, float | None]] = [
+        ("positions_value_vs_current_value_sum", positions_value_delta),
+        ("cash_plus_positions_vs_equity", cash_plus_positions_minus_equity),
+    ]
+    failing_checks = [
+        name
+        for name, value in reconciliation_checks
+        if isinstance(value, float) and abs(value) > reconciliation_abs_threshold
+    ]
+    if failing_checks:
+        reconciliation_status = "drift"
+    elif any(isinstance(value, float) for _, value in reconciliation_checks):
+        reconciliation_status = "pass"
+    else:
+        reconciliation_status = "insufficient_data"
+
     if missing_files:
         status = "missing"
     elif stale_seconds is not None and stale_seconds_threshold > 0 and stale_seconds > stale_seconds_threshold:
@@ -1349,6 +1527,9 @@ def summarize_coldmath_snapshot_files(
         "wallet_address": _normalize_text(wallet_address).lower(),
         "equity_csv": str(equity_path),
         "positions_csv": str(positions_path),
+        "closed_positions_csv": (
+            str(closed_positions_path) if isinstance(closed_positions_path, Path) else ""
+        ),
         "trades_csv": str(trades_path) if isinstance(trades_path, Path) else "",
         "activity_csv": str(activity_path) if isinstance(activity_path, Path) else "",
         "ledger_events_csv": (
@@ -1358,6 +1539,7 @@ def summarize_coldmath_snapshot_files(
         "private_order_lifecycle_observable": False,
         "equity_rows": len(equity_rows),
         "positions_rows": len(positions_rows),
+        "closed_positions_rows": len(closed_positions_rows),
         "missing_files": missing_files,
         "valuation_time": valuation_time.isoformat() if isinstance(valuation_time, datetime) else "",
         "stale_seconds": stale_seconds,
@@ -1377,6 +1559,23 @@ def summarize_coldmath_snapshot_files(
         "current_value_sum": round(current_value_sum, 6),
         "top_positions_by_size": top_positions[:10],
         "family_behavior": family_behavior,
+        "closed_positions_realized_pnl_sum": round(closed_positions_realized_pnl_sum, 6),
+        "closed_positions_cash_pnl_sum": round(closed_positions_cash_pnl_sum, 6),
+        "closed_positions_with_realized_pnl": closed_positions_with_realized_pnl,
+        "closed_positions_closed_at_min": (
+            min(closed_positions_timestamps).isoformat() if closed_positions_timestamps else ""
+        ),
+        "closed_positions_closed_at_max": (
+            max(closed_positions_timestamps).isoformat() if closed_positions_timestamps else ""
+        ),
+        "top_closed_positions_by_realized_pnl": top_closed_positions[:10],
+        "portfolio_reconciliation": {
+            "status": reconciliation_status,
+            "abs_threshold": reconciliation_abs_threshold,
+            "positions_value_vs_current_value_sum": positions_value_delta,
+            "cash_plus_positions_vs_equity": cash_plus_positions_minus_equity,
+            "failing_checks": failing_checks,
+        },
         "ledger": {
             "status": ledger_status,
             "missing_files": ledger_missing_files,
@@ -1422,6 +1621,7 @@ def run_coldmath_snapshot_summary(
     snapshot_dir: str = "tmp/coldmath_snapshot",
     equity_csv: str | None = None,
     positions_csv: str | None = None,
+    closed_positions_csv: str | None = None,
     trades_csv: str | None = None,
     activity_csv: str | None = None,
     ledger_events_csv: str | None = None,
@@ -1438,6 +1638,9 @@ def run_coldmath_snapshot_summary(
     api_timeout_seconds: float = 20.0,
     positions_page_size: int = 500,
     positions_max_pages: int = 20,
+    refresh_closed_positions_from_api: bool = True,
+    closed_positions_page_size: int = 500,
+    closed_positions_max_pages: int = 20,
     trades_page_size: int = 500,
     trades_max_pages: int = 20,
     activity_page_size: int = 500,
@@ -1449,6 +1652,9 @@ def run_coldmath_snapshot_summary(
     snapshot_path = Path(snapshot_dir)
     effective_equity_csv = equity_csv or str(snapshot_path / "equity.csv")
     effective_positions_csv = positions_csv or str(snapshot_path / "positions.csv")
+    effective_closed_positions_csv = (
+        closed_positions_csv or str(snapshot_path / "closed_positions.csv")
+    )
     effective_trades_csv = trades_csv or str(snapshot_path / "trades.csv")
     effective_activity_csv = activity_csv or str(snapshot_path / "activity.csv")
     effective_ledger_events_csv = ledger_events_csv or str(snapshot_path / "ledger_events.csv")
@@ -1464,6 +1670,9 @@ def run_coldmath_snapshot_summary(
             timeout_seconds=api_timeout_seconds,
             positions_page_size=positions_page_size,
             positions_max_pages=positions_max_pages,
+            refresh_closed_positions=refresh_closed_positions_from_api,
+            closed_positions_page_size=closed_positions_page_size,
+            closed_positions_max_pages=closed_positions_max_pages,
             refresh_trades=refresh_trades_from_api,
             refresh_activity=refresh_activity_from_api,
             include_taker_only_trades=include_taker_only_trades,
@@ -1481,8 +1690,15 @@ def run_coldmath_snapshot_summary(
             "value_endpoint_status": api_snapshot.get("value_endpoint_status"),
             "positions_endpoint_status": api_snapshot.get("positions_endpoint_status"),
             "positions_pages_fetched": api_snapshot.get("positions_pages_fetched"),
+            "closed_positions_endpoint_status": api_snapshot.get(
+                "closed_positions_endpoint_status"
+            ),
+            "closed_positions_pages_fetched": api_snapshot.get(
+                "closed_positions_pages_fetched"
+            ),
             "errors": list(api_snapshot.get("errors") or []),
             "positions_rows": len(api_snapshot.get("positions_rows") or []),
+            "closed_positions_rows": len(api_snapshot.get("closed_positions_rows") or []),
             "ledger_fetch": dict(api_snapshot.get("ledger_fetch") or {}),
             "requested_wallet_address": api_snapshot.get("requested_wallet_address"),
             "normalized_wallet_address": api_snapshot.get("normalized_wallet_address"),
@@ -1498,6 +1714,7 @@ def run_coldmath_snapshot_summary(
         should_write_api_snapshot = api_snapshot.get("status") in {"ready", "partial"} and bool(
             api_snapshot.get("equity_row")
             or api_snapshot.get("positions_rows")
+            or api_snapshot.get("closed_positions_rows")
             or api_snapshot.get("trades_rows")
             or api_snapshot.get("activity_rows")
         )
@@ -1506,6 +1723,11 @@ def run_coldmath_snapshot_summary(
                 snapshot_dir=snapshot_path,
                 equity_row=dict(api_snapshot.get("equity_row") or {}),
                 positions_rows=list(api_snapshot.get("positions_rows") or []),
+                closed_positions_rows=(
+                    list(api_snapshot.get("closed_positions_rows") or [])
+                    if refresh_closed_positions_from_api
+                    else None
+                ),
                 trades_rows=(
                     list(api_snapshot.get("trades_rows") or [])
                     if refresh_trades_from_api
@@ -1524,6 +1746,8 @@ def run_coldmath_snapshot_summary(
             )
             effective_equity_csv = written["equity_csv"]
             effective_positions_csv = written["positions_csv"]
+            if "closed_positions_csv" in written:
+                effective_closed_positions_csv = written["closed_positions_csv"]
             if "trades_csv" in written:
                 effective_trades_csv = written["trades_csv"]
             if "activity_csv" in written:
@@ -1532,6 +1756,7 @@ def run_coldmath_snapshot_summary(
                 effective_ledger_events_csv = written["ledger_events_csv"]
             api_fetch_summary["equity_csv"] = effective_equity_csv
             api_fetch_summary["positions_csv"] = effective_positions_csv
+            api_fetch_summary["closed_positions_csv"] = effective_closed_positions_csv
             api_fetch_summary["trades_csv"] = effective_trades_csv
             api_fetch_summary["activity_csv"] = effective_activity_csv
             api_fetch_summary["ledger_events_csv"] = effective_ledger_events_csv
@@ -1544,6 +1769,7 @@ def run_coldmath_snapshot_summary(
     summary = summarize_coldmath_snapshot_files(
         equity_csv=effective_equity_csv,
         positions_csv=effective_positions_csv,
+        closed_positions_csv=effective_closed_positions_csv,
         trades_csv=effective_trades_csv,
         activity_csv=effective_activity_csv,
         ledger_events_csv=effective_ledger_events_csv,

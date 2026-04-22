@@ -100,6 +100,8 @@ class ColdmathSnapshotTests(unittest.TestCase):
                 _ = timeout_seconds
                 if "/value?" in url:
                     return (200, [{"user": "0xabc", "value": 150.0}])
+                if "/closed-positions?" in url:
+                    return (200, [])
                 if "/positions?" in url and "offset=0" in url:
                     return (
                         200,
@@ -146,8 +148,11 @@ class ColdmathSnapshotTests(unittest.TestCase):
             self.assertEqual(summary["status"], "ready")
             self.assertEqual(summary["api_fetch"]["status"], "ready")
             self.assertEqual(summary["positions_rows"], 2)
+            self.assertEqual(summary["closed_positions_rows"], 0)
+            self.assertEqual(summary["portfolio_reconciliation"]["status"], "pass")
             self.assertTrue((snapshot_dir / "equity.csv").exists())
             self.assertTrue((snapshot_dir / "positions.csv").exists())
+            self.assertTrue((snapshot_dir / "closed_positions.csv").exists())
             family_behavior = summary["family_behavior"]
             self.assertEqual(family_behavior["family_count"], 1)
             self.assertEqual(family_behavior["multi_strike_family_count"], 1)
@@ -168,6 +173,8 @@ class ColdmathSnapshotTests(unittest.TestCase):
                 requested_urls.append(url)
                 if "/value?" in url:
                     return (200, [{"user": "0xabc", "value": 200.0}])
+                if "/closed-positions?" in url:
+                    return (200, [])
                 if "/positions?" in url and "offset=0" in url:
                     return (200, [])
                 if "/trades?" in url and "takerOnly=true" in url:
@@ -283,6 +290,7 @@ class ColdmathSnapshotTests(unittest.TestCase):
             self.assertTrue((snapshot_dir / "trades.csv").exists())
             self.assertTrue((snapshot_dir / "activity.csv").exists())
             self.assertTrue((snapshot_dir / "ledger_events.csv").exists())
+            self.assertTrue((snapshot_dir / "closed_positions.csv").exists())
             self.assertTrue(any("takerOnly=true" in url for url in requested_urls))
             self.assertTrue(any("takerOnly=false" in url for url in requested_urls))
 
@@ -301,6 +309,8 @@ class ColdmathSnapshotTests(unittest.TestCase):
                     return (200, {"proxyWallet": "0xProxy"})
                 if "/value?" in url and "user=0xproxy" in url:
                     return (200, [{"user": "0xproxy", "value": 50.0}])
+                if "/closed-positions?" in url and "user=0xproxy" in url:
+                    return (200, [])
                 if "/positions?" in url and "user=0xproxy" in url:
                     return (200, [])
                 if "/trades?" in url and "user=0xproxy" in url:
@@ -322,6 +332,7 @@ class ColdmathSnapshotTests(unittest.TestCase):
             self.assertEqual(summary["requested_wallet_address"], "0xeoa")
             self.assertEqual(summary["normalized_wallet_address"], "0xproxy")
             self.assertEqual(summary["wallet_address"], "0xproxy")
+            self.assertEqual(summary["closed_positions_rows"], 0)
             self.assertEqual(summary["observability_mode"], "public_observed_ledger")
             self.assertFalse(summary["private_order_lifecycle_observable"])
             self.assertEqual(summary["profile_wallet_resolution"]["status"], "resolved")

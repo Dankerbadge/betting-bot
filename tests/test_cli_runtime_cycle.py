@@ -97,6 +97,7 @@ class CliRuntimeCycleTests(unittest.TestCase):
             "0x594edb9112f526fa6a80b8f858a6379c8a2c1c11",
         )
         self.assertEqual(kwargs["output_dir"], "outputs")
+        self.assertTrue(kwargs["refresh_closed_positions_from_api"])
         self.assertTrue(kwargs["refresh_trades_from_api"])
         self.assertTrue(kwargs["refresh_activity_from_api"])
         self.assertTrue(kwargs["include_taker_only_trades"])

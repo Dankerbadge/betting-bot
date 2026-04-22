@@ -226,6 +226,7 @@ class PolymarketMarketIngestTests(unittest.TestCase):
 
             self.assertTrue(mock_refresh.called)
             refresh_kwargs = mock_refresh.call_args.kwargs
+            self.assertTrue(refresh_kwargs["refresh_closed_positions_from_api"])
             self.assertTrue(refresh_kwargs["refresh_trades_from_api"])
             self.assertTrue(refresh_kwargs["refresh_activity_from_api"])
             self.assertTrue(refresh_kwargs["include_taker_only_trades"])

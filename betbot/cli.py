@@ -323,6 +323,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="Max positions pages pulled during ColdMath refresh",
     )
     runtime_cycle.add_argument(
+        "--coldmath-disable-closed-positions-refresh",
+        action="store_true",
+        help="Skip /closed-positions API pulls during ColdMath snapshot refresh",
+    )
+    runtime_cycle.add_argument(
+        "--coldmath-closed-positions-page-size",
+        type=int,
+        default=500,
+        help="Page size used for paginated ColdMath closed-positions API pulls",
+    )
+    runtime_cycle.add_argument(
+        "--coldmath-closed-positions-max-pages",
+        type=int,
+        default=20,
+        help="Maximum closed-positions pages to fetch when ColdMath API refresh is enabled",
+    )
+    runtime_cycle.add_argument(
         "--coldmath-disable-trades-refresh",
         action="store_true",
         help="Skip /trades API pulls during ColdMath snapshot refresh",
@@ -3143,6 +3160,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="Maximum positions pages to fetch when ColdMath API refresh is enabled",
     )
     polymarket_market_ingest.add_argument(
+        "--coldmath-disable-closed-positions-refresh",
+        action="store_true",
+        help="Skip /closed-positions API pulls during optional ColdMath snapshot refresh",
+    )
+    polymarket_market_ingest.add_argument(
+        "--coldmath-closed-positions-page-size",
+        type=int,
+        default=500,
+        help="Page size used for paginated ColdMath closed-positions API pulls",
+    )
+    polymarket_market_ingest.add_argument(
+        "--coldmath-closed-positions-max-pages",
+        type=int,
+        default=20,
+        help="Maximum closed-positions pages to fetch when ColdMath API refresh is enabled",
+    )
+    polymarket_market_ingest.add_argument(
         "--coldmath-disable-trades-refresh",
         action="store_true",
         help="Skip /trades API pulls during optional ColdMath snapshot refresh",
@@ -3244,6 +3278,23 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=20,
         help="Maximum paginated positions pages to fetch during API refresh",
+    )
+    coldmath_snapshot_summary.add_argument(
+        "--disable-closed-positions-refresh",
+        action="store_true",
+        help="Skip /closed-positions API pulls during snapshot refresh",
+    )
+    coldmath_snapshot_summary.add_argument(
+        "--closed-positions-page-size",
+        type=int,
+        default=500,
+        help="Page size used when fetching paginated wallet closed-positions",
+    )
+    coldmath_snapshot_summary.add_argument(
+        "--closed-positions-max-pages",
+        type=int,
+        default=20,
+        help="Maximum paginated closed-positions pages to fetch during API refresh",
     )
     coldmath_snapshot_summary.add_argument(
         "--disable-trades-refresh",
@@ -6370,6 +6421,9 @@ def main() -> None:
                 api_timeout_seconds=args.coldmath_api_timeout_seconds,
                 positions_page_size=args.coldmath_positions_page_size,
                 positions_max_pages=args.coldmath_positions_max_pages,
+                refresh_closed_positions_from_api=not args.coldmath_disable_closed_positions_refresh,
+                closed_positions_page_size=args.coldmath_closed_positions_page_size,
+                closed_positions_max_pages=args.coldmath_closed_positions_max_pages,
                 refresh_trades_from_api=not args.coldmath_disable_trades_refresh,
                 refresh_activity_from_api=not args.coldmath_disable_activity_refresh,
                 include_taker_only_trades=not args.coldmath_disable_taker_only_trades,
@@ -7054,6 +7108,9 @@ def main() -> None:
             coldmath_api_timeout_seconds=args.coldmath_api_timeout_seconds,
             coldmath_positions_page_size=args.coldmath_positions_page_size,
             coldmath_positions_max_pages=args.coldmath_positions_max_pages,
+            coldmath_refresh_closed_positions_from_api=not args.coldmath_disable_closed_positions_refresh,
+            coldmath_closed_positions_page_size=args.coldmath_closed_positions_page_size,
+            coldmath_closed_positions_max_pages=args.coldmath_closed_positions_max_pages,
             coldmath_refresh_trades_from_api=not args.coldmath_disable_trades_refresh,
             coldmath_refresh_activity_from_api=not args.coldmath_disable_activity_refresh,
             coldmath_include_taker_only_trades=not args.coldmath_disable_taker_only_trades,
@@ -7076,6 +7133,9 @@ def main() -> None:
             api_timeout_seconds=args.api_timeout_seconds,
             positions_page_size=args.positions_page_size,
             positions_max_pages=args.positions_max_pages,
+            refresh_closed_positions_from_api=not args.disable_closed_positions_refresh,
+            closed_positions_page_size=args.closed_positions_page_size,
+            closed_positions_max_pages=args.closed_positions_max_pages,
             refresh_trades_from_api=not args.disable_trades_refresh,
             refresh_activity_from_api=not args.disable_activity_refresh,
             include_taker_only_trades=not args.disable_taker_only_trades,
