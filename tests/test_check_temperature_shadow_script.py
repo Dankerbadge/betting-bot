@@ -1536,6 +1536,122 @@ def test_shadow_check_strict_passes_when_auto_profile_released_in_this_run_and_f
     assert "STRICT CHECK FAILED: auto profile required" not in result.stderr
 
 
+def test_shadow_check_strict_passes_when_auto_profile_released_via_apply_reason_prefix_and_file_missing(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    auto_profile_path = tmp_path / "approval_gate_profile_auto.json"
+    _write_json(
+        output_dir / "health" / "alpha_summary_latest.json",
+        {
+            "health": {"status": "GREEN", "reason_text": ""},
+            "headline_metrics": {
+                "health_status": "GREEN",
+                "live_recommendation": "no_go_shadow_only",
+                "approval_rate": 0.1,
+                "deployment_confidence_score": 10.0,
+                "approval_auto_apply_payload_consistent": True,
+                "message_quality_overall_pass": True,
+                "trader_view_payload_consistent": True,
+                "quality_gate_source": "manual",
+                "quality_gate_auto_applied": False,
+                "quality_gate_min_probability_confidence": "",
+                "quality_gate_min_expected_edge_net": "",
+            },
+            "approval_auto_apply": {
+                "enabled": True,
+                "should_apply": False,
+                "applied_in_this_run": False,
+                "released_in_this_run": False,
+                "apply_reason": "released_profile_manual_override",
+            },
+            "trader_view": {
+                "mode": "shadow_only",
+                "decision_now": "stay_shadow_only",
+                "live_recommendation": "no_go_shadow_only",
+                "approval_rate": 0.1,
+                "confidence_score": 10.0,
+            },
+        },
+    )
+
+    env_file = tmp_path / "shadow.env"
+    _write_env_file(
+        env_file=env_file,
+        output_dir=output_dir,
+        extra_lines=(
+            "APPROVAL_GATE_PROFILE_AUTO_ENABLED=1",
+            f"APPROVAL_GATE_PROFILE_AUTO_PATH={auto_profile_path}",
+        ),
+    )
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_shadow_check(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 0
+    assert "STRICT CHECK FAILED: auto profile required" not in result.stderr
+
+
+def test_shadow_check_strict_fails_when_auto_profile_applied_in_run_but_file_missing(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    auto_profile_path = tmp_path / "approval_gate_profile_auto.json"
+    _write_json(
+        output_dir / "health" / "alpha_summary_latest.json",
+        {
+            "health": {"status": "GREEN", "reason_text": ""},
+            "headline_metrics": {
+                "health_status": "GREEN",
+                "live_recommendation": "no_go_shadow_only",
+                "approval_rate": 0.1,
+                "deployment_confidence_score": 10.0,
+                "approval_auto_apply_payload_consistent": True,
+                "message_quality_overall_pass": True,
+                "trader_view_payload_consistent": True,
+                "quality_gate_source": "manual",
+                "quality_gate_auto_applied": False,
+                "quality_gate_min_probability_confidence": 0.62,
+                "quality_gate_min_expected_edge_net": 0.01,
+            },
+            "approval_auto_apply": {
+                "enabled": True,
+                "should_apply": False,
+                "applied_in_this_run": True,
+                "released_in_this_run": False,
+                "apply_reason": "auto_profile_enforced",
+            },
+            "trader_view": {
+                "mode": "shadow_only",
+                "decision_now": "stay_shadow_only",
+                "live_recommendation": "no_go_shadow_only",
+                "approval_rate": 0.1,
+                "confidence_score": 10.0,
+            },
+        },
+    )
+
+    env_file = tmp_path / "shadow.env"
+    _write_env_file(
+        env_file=env_file,
+        output_dir=output_dir,
+        extra_lines=(
+            "APPROVAL_GATE_PROFILE_AUTO_ENABLED=1",
+            f"APPROVAL_GATE_PROFILE_AUTO_PATH={auto_profile_path}",
+        ),
+    )
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_shadow_check(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 2
+    assert "STRICT CHECK FAILED: auto profile required but missing" in result.stderr
+
+
 def test_shadow_check_strict_passes_when_auto_profile_expected_but_not_currently_required(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[1]
     output_dir = tmp_path / "out"
