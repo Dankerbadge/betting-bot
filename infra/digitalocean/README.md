@@ -802,6 +802,7 @@ bash infra/digitalocean/check_temperature_shadow_quick.sh --strict --env /etc/be
 - `live_status settlement_refresh_plan`: active settlement-pressure plan values (`pressure_active`, effective refresh seconds/top_n)
 - `alpha_focus_14h settled_quality`: default prediction headline on unique market-side outcomes (`rows_audit_only` printed separately)
 - `blocker_audit_latest`: weekly largest blocker + close action
+- `decision_matrix_lane_alert_state`: current lane status + degraded streak count/threshold + notify reason
 
 `check_temperature_shadow_quick.sh` is the short-form companion for operators:
 
@@ -813,6 +814,14 @@ bash infra/digitalocean/check_temperature_shadow_quick.sh --strict --env /etc/be
   - settled basis + projected bankroll pnl
 - discord route/thread-map readiness (`guard status`, `missing required thread keys`)
 - explicit `confidence_pnl_divergence` warning when deploy confidence is high but projected bankroll PnL is negative
+- decision-matrix degraded streak visibility + strict warning flag (`decision_matrix_lane_degraded_streak`)
+
+Strict degraded-lane knobs (both health checks):
+
+- `DECISION_MATRIX_LANE_ALERT_STATE_FILE` (defaults to `$OUTPUT_DIR/health/.decision_matrix_lane_alert_state.json`)
+- `DECISION_MATRIX_LANE_STRICT_DEGRADED_STATUSES` (default `matrix_failed,bootstrap_blocked`)
+- `DECISION_MATRIX_LANE_STRICT_DEGRADED_THRESHOLD` (default `6`, `0` disables strict degraded-lane fail)
+- `DECISION_MATRIX_LANE_STRICT_REQUIRE_STATE_FILE` (`1` fails strict checks when state file is missing)
 
 ## 11) Operational Notes
 
