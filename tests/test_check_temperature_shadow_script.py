@@ -339,6 +339,83 @@ def test_shadow_check_strict_allows_non_green_route_guard_when_collision_gate_di
     assert "STRICT CHECK FAILED: discord-route-guard indicates non-green route separation" not in result.stderr
 
 
+def test_shadow_check_strict_fails_on_non_green_route_guard_with_legacy_collision_gate(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    _write_json(
+        output_dir / "health" / "discord_route_guard" / "discord_route_guard_latest.json",
+        {
+            "guard_status": "yellow",
+            "shared_route_group_count": 2,
+            "route_remediations": [
+                {
+                    "route_hint": "shadow_alert",
+                    "required_thread_env_keys": [
+                        "SHADOW_ALERT_WEBHOOK_THREAD_ID",
+                        "HEALTH_ALERTS_WEBHOOK_THREAD_ID",
+                    ],
+                }
+            ],
+        },
+    )
+
+    env_file = tmp_path / "shadow.env"
+    _write_env_file(
+        env_file=env_file,
+        output_dir=output_dir,
+        extra_lines=(
+            "DISCORD_ROUTE_GUARD_TIMER_EXPECTED=1",
+            "unset DISCORD_ROUTE_GUARD_STRICT_FAIL_ON_COLLISION",
+            "DISCORD_ROUTE_GUARD_FAIL_ON_COLLISION=1",
+        ),
+    )
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_shadow_check(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 2
+    assert "STRICT CHECK FAILED: discord-route-guard indicates non-green route separation" in result.stderr
+    assert "STRICT CHECK REMEDIATION: route_hint=shadow_alert required_thread_env_keys=HEALTH_ALERTS_WEBHOOK_THREAD_ID,SHADOW_ALERT_WEBHOOK_THREAD_ID" in result.stderr
+
+
+def test_shadow_check_strict_fails_on_non_green_route_guard_when_collision_gate_uses_expected_default(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    _write_json(
+        output_dir / "health" / "discord_route_guard" / "discord_route_guard_latest.json",
+        {
+            "guard_status": "yellow",
+            "shared_route_group_count": 1,
+            "route_remediations": [
+                {
+                    "route_hint": "ops_summary",
+                    "required_thread_env_keys": ["ALPHA_SUMMARY_WEBHOOK_OPS_THREAD_ID"],
+                }
+            ],
+        },
+    )
+
+    env_file = tmp_path / "shadow.env"
+    _write_env_file(
+        env_file=env_file,
+        output_dir=output_dir,
+        extra_lines=(
+            "DISCORD_ROUTE_GUARD_TIMER_EXPECTED=1",
+            "unset DISCORD_ROUTE_GUARD_STRICT_FAIL_ON_COLLISION",
+            "unset DISCORD_ROUTE_GUARD_FAIL_ON_COLLISION",
+        ),
+    )
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_shadow_check(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 2
+    assert "STRICT CHECK FAILED: discord-route-guard indicates non-green route separation" in result.stderr
+    assert "STRICT CHECK REMEDIATION: route_hint=ops_summary required_thread_env_keys=ALPHA_SUMMARY_WEBHOOK_OPS_THREAD_ID" in result.stderr
+
+
 def test_shadow_check_strict_fails_when_route_guard_artifact_is_stale_and_expected(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[1]
     output_dir = tmp_path / "out"
