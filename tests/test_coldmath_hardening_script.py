@@ -399,3 +399,156 @@ def test_coldmath_hardening_blocks_bootstrap_lane_when_settled_outcomes_threshol
     assert "settled_outcomes_reached_disable_threshold" in list(
         bootstrap_state_payload.get("bootstrap_guard_reasons") or []
     )
+
+
+def test_coldmath_hardening_blocks_bootstrap_lane_when_bootstrap_window_expires(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    state_file = tmp_path / "lane_state.json"
+    bootstrap_state_file = tmp_path / "bootstrap_guard_state.json"
+    fake_module_root = tmp_path / "fake_module_root"
+    _write_fake_betbot_cli(fake_module_root)
+    _write_decision_matrix_fixture(
+        output_dir,
+        {
+            "status": "ready",
+            "matrix_health_status": "red",
+            "matrix_score": 20,
+            "supports_consistency_and_profitability": False,
+            "supports_bootstrap_progression": True,
+            "critical_blockers_count": 2,
+            "observed_metrics": {
+                "settled_outcomes": 3,
+            },
+        },
+    )
+    bootstrap_state_file.write_text(
+        json.dumps(
+            {
+                "status": "active",
+                "first_seen_epoch": 1,
+                "last_seen_epoch": 1,
+                "first_seen_at": "1970-01-01T00:00:01+00:00",
+                "last_seen_at": "1970-01-01T00:00:01+00:00",
+                "bootstrap_guard_reasons": [],
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    env_file = tmp_path / "coldmath_hardening.env"
+    _write_env_file(
+        env_file=env_file,
+        betbot_root=root,
+        output_dir=output_dir,
+        webhook_url="",
+        state_file=state_file,
+        degraded_streak_threshold=2,
+        degraded_streak_notify_every=2,
+    )
+    with env_file.open("a", encoding="utf-8") as handle:
+        handle.write("COLDMATH_LANE_ALERT_ENABLED=0\n")
+        handle.write("COLDMATH_ACTIONABLE_ALLOW_MATRIX_BOOTSTRAP=1\n")
+        handle.write("COLDMATH_ACTIONABLE_MATRIX_BOOTSTRAP_MAX_HOURS=1\n")
+        handle.write("COLDMATH_ACTIONABLE_MATRIX_BOOTSTRAP_DISABLE_AT_SETTLED_OUTCOMES=1000\n")
+        handle.write(f"COLDMATH_ACTIONABLE_MATRIX_BOOTSTRAP_STATE_FILE={bootstrap_state_file}\n")
+
+    _run_hardening_script(root=root, env_file=env_file, fake_module_root=fake_module_root)
+
+    payload = _load_coldmath_hardening_latest(output_dir)
+    targeted = payload.get("targeted_trading_support")
+    assert isinstance(targeted, dict)
+    lane = targeted.get("decision_matrix_lane")
+    assert isinstance(lane, dict)
+    checks = targeted.get("checks")
+    assert isinstance(checks, dict)
+    observed = targeted.get("observed")
+    assert isinstance(observed, dict)
+
+    assert targeted.get("supports_targeted_trading") is False
+    assert lane.get("status") == "bootstrap_blocked"
+    assert "bootstrap blocked" in str(lane.get("summary_line") or "").lower()
+    assert checks.get("decision_matrix_bootstrap_signal_raw") is True
+    assert checks.get("decision_matrix_bootstrap_signal") is False
+    assert observed.get("decision_matrix_bootstrap_guard_status") == "blocked"
+    assert "bootstrap_window_expired" in list(
+        observed.get("decision_matrix_bootstrap_guard_reasons") or []
+    )
+
+    assert bootstrap_state_file.exists()
+    bootstrap_state_payload = json.loads(bootstrap_state_file.read_text(encoding="utf-8"))
+    assert bootstrap_state_payload.get("status") == "blocked"
+    assert "bootstrap_window_expired" in list(
+        bootstrap_state_payload.get("bootstrap_guard_reasons") or []
+    )
+
+
+def test_coldmath_hardening_resets_bootstrap_state_when_strict_lane_recovers(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    state_file = tmp_path / "lane_state.json"
+    bootstrap_state_file = tmp_path / "bootstrap_guard_state.json"
+    fake_module_root = tmp_path / "fake_module_root"
+    _write_fake_betbot_cli(fake_module_root)
+    _write_decision_matrix_fixture(
+        output_dir,
+        {
+            "status": "ready",
+            "matrix_health_status": "green",
+            "matrix_score": 95,
+            "supports_consistency_and_profitability": True,
+            "supports_bootstrap_progression": False,
+            "critical_blockers_count": 0,
+            "observed_metrics": {
+                "settled_outcomes": 50,
+            },
+        },
+    )
+    bootstrap_state_file.write_text(
+        json.dumps(
+            {
+                "status": "active",
+                "first_seen_epoch": 12345,
+                "last_seen_epoch": 12345,
+                "bootstrap_guard_reasons": [],
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    env_file = tmp_path / "coldmath_hardening.env"
+    _write_env_file(
+        env_file=env_file,
+        betbot_root=root,
+        output_dir=output_dir,
+        webhook_url="",
+        state_file=state_file,
+        degraded_streak_threshold=2,
+        degraded_streak_notify_every=2,
+    )
+    with env_file.open("a", encoding="utf-8") as handle:
+        handle.write("COLDMATH_LANE_ALERT_ENABLED=0\n")
+        handle.write("COLDMATH_ACTIONABLE_ALLOW_MATRIX_BOOTSTRAP=1\n")
+        handle.write("COLDMATH_ACTIONABLE_MIN_MATRIX_SCORE=75\n")
+        handle.write("COLDMATH_ACTIONABLE_ALLOWED_MATRIX_STATUSES=green,yellow\n")
+        handle.write("COLDMATH_ACTIONABLE_REQUIRE_MATRIX_SUPPORTS=1\n")
+        handle.write(f"COLDMATH_ACTIONABLE_MATRIX_BOOTSTRAP_STATE_FILE={bootstrap_state_file}\n")
+
+    _run_hardening_script(root=root, env_file=env_file, fake_module_root=fake_module_root)
+
+    payload = _load_coldmath_hardening_latest(output_dir)
+    targeted = payload.get("targeted_trading_support")
+    assert isinstance(targeted, dict)
+    lane = targeted.get("decision_matrix_lane")
+    assert isinstance(lane, dict)
+    observed = targeted.get("observed")
+    assert isinstance(observed, dict)
+
+    assert targeted.get("supports_targeted_trading") is True
+    assert lane.get("status") == "strict"
+    assert observed.get("decision_matrix_bootstrap_guard_status") == "strict_signal_ready"
+    assert bootstrap_state_file.exists() is False
