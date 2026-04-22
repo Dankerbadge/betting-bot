@@ -1647,6 +1647,38 @@ def test_shadow_check_strict_skips_route_guard_timer_gate_when_timer_not_install
     assert "STRICT CHECK FAILED: discord-route-guard indicates non-green route separation" not in result.stderr
 
 
+def test_shadow_check_strict_enforces_route_guard_timer_gate_when_expectation_explicit_even_if_timer_not_installed(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+
+    env_file = tmp_path / "shadow.env"
+    _write_env_file(
+        env_file=env_file,
+        output_dir=output_dir,
+        extra_lines=(
+            "DISCORD_ROUTE_GUARD_TIMER_EXPECTED=1",
+            "DISCORD_ROUTE_GUARD_STRICT_FAIL_ON_COLLISION=0",
+        ),
+    )
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_shadow_check(
+        script_path=script_path,
+        env_file=env_file,
+        tool_dir=tool_dir,
+        extra_env={
+            "MOCK_SYSTEMCTL_CAT_MISSING_UNITS": "betbot-temperature-discord-route-guard.timer",
+            "MOCK_DISCORD_ROUTE_GUARD_TIMER_ACTIVE": "inactive",
+        },
+    )
+
+    assert result.returncode == 2
+    assert "STRICT CHECK FAILED: discord-route-guard timer expected but not active" in result.stderr
+
+
 def test_shadow_check_strict_warns_when_live_status_is_yellow(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[1]
     output_dir = tmp_path / "out"
