@@ -108,6 +108,14 @@ normalize_binary_flag() {
   esac
 }
 
+normalize_status_token() {
+  local raw="${1:-}"
+  printf '%s' "${raw:-unknown}" \
+    | tr '[:upper:]' '[:lower:]' \
+    | tr -d '\r' \
+    | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'
+}
+
 if ! [[ "$LIVE_STATUS_STRICT_MAX_AGE_SECONDS" =~ ^[0-9]+$ ]]; then
   LIVE_STATUS_STRICT_MAX_AGE_SECONDS=300
 fi
@@ -425,7 +433,7 @@ if [[ -f "$HEALTH_STATUS_FILE" ]]; then
     fi
   fi
   if (( HAS_JQ == 1 )); then
-    overall_status="$(jq -r '.status // "unknown"' "$HEALTH_STATUS_FILE" | tr '[:upper:]' '[:lower:]')"
+    overall_status="$(jq -r '.status // "unknown"' "$HEALTH_STATUS_FILE")"
     jq -r '
     "live_status status=\(.status // "unknown") approvals_resumed=\(.trigger_flags.approvals_resumed // false) planned_orders_resumed=\(.trigger_flags.planned_orders_resumed // false) shadow_resolved_first=\(.trigger_flags.shadow_resolved_first // false) shadow_basis=\(.trigger_flags.resolved_shadow_basis // "none") shadow_basis_value_14h=\(.trigger_flags.resolved_shadow_basis_value_14h // 0) effective_max_markets=\(.scan_budget.effective_max_markets // "n/a") next_max_markets=\(.scan_budget.next_max_markets // "n/a") adaptive_action=\(.scan_budget.adaptive_decision_action // "hold") adaptive_reason=\(.scan_budget.adaptive_decision_reason // "n/a") scan_cap_bound_with_headroom=\(.scan_budget.scan_cap_bound_with_headroom // false) load_per_vcpu=\(.scan_budget.load_per_vcpu // "n/a") intents_total_hint=\(.scan_budget.intents_total_hint // "n/a") settlement_pressure_active=\(.settlement_refresh_plan.pressure_active // false) settlement_blocked_rows_rolling=\(.settlement_refresh_plan.settlement_finalization_blocked_count // 0) settlement_blocked_underlyings=\(.settlement_refresh_plan.settlement_finalization_blocked_underlyings // 0) settlement_pending_count=\(.settlement_refresh_plan.pending_final_report_count // 0) settlement_unresolved_now=\(((.settlement_refresh_plan.settlement_finalization_blocked_underlyings // 0) + (.settlement_refresh_plan.pending_final_report_count // 0))) settlement_blocked_rate_rolling=\(.settlement_refresh_plan.settlement_finalization_blocked_rate // 0) settlement_blocked_rate_actionable=\(if (.settlement_refresh_plan.pressure_active // false) then (.settlement_refresh_plan.settlement_finalization_blocked_rate // 0) else 0 end) settlement_refresh_seconds=\(.settlement_refresh_plan.refresh_seconds_effective // 0) settlement_top_n=\(.settlement_refresh_plan.top_n_effective // 0) freshness_pressure_active=\(.freshness_plan.pressure_active // false) stale_count=\(.freshness_plan.metar_observation_stale_count // 0) stale_rate=\(.freshness_plan.metar_observation_stale_rate // 0) approval_rate=\(.freshness_plan.approval_rate // 0) range_possible_count=\(.freshness_plan.yes_range_still_possible_count // 0) range_possible_rate=\(.freshness_plan.yes_range_still_possible_rate // 0) range_possible_rate_effective=\(.freshness_plan.yes_range_still_possible_rate_effective // 0) metar_timeout=\(.freshness_plan.metar_timeout_seconds_effective // 0) metar_retries=\(.freshness_plan.metar_retry_attempts_effective // 0) interval_gap_effective=\(.interval_gap_control.effective_max_yes_possible_gap_for_yes_side // 0) interval_gap_next=\(.interval_gap_control.next_max_yes_possible_gap_for_yes_side // 0) interval_gap_action=\(.interval_gap_control.adaptive_action // "hold") interval_gap_reason=\(.interval_gap_control.adaptive_reason // "n/a") interval_gap_range_rate_effective=\(.interval_gap_control.range_possible_rate_effective // 0) replan_cooldown_effective=\(.replan_cooldown.effective_minutes // 0) replan_cooldown_next=\(.replan_cooldown.next_minutes // 0) replan_min_backstop=\(.replan_cooldown.min_orders_backstop_effective // 0) replan_next_min_backstop=\(.replan_cooldown.next_min_orders_backstop // 0) replan_stagnation_cycles=\(.replan_cooldown.stagnation_cycles // 0) replan_action=\(.replan_cooldown.adaptive_action // "hold") replan_reason=\(.replan_cooldown.adaptive_reason // "n/a") replan_blocked=\(.replan_cooldown.blocked_count // 0)/\(.replan_cooldown.input_count // 0) replan_blocked_ratio=\(.replan_cooldown.blocked_ratio // 0) replan_override_ratio=\(.replan_cooldown.override_ratio // 0) replan_backstop=\(.replan_cooldown.backstop_released_count // 0) replan_unique_market_sides=\(.replan_cooldown.unique_market_sides // 0) replan_unique_underlyings=\(.replan_cooldown.unique_underlyings // 0) attempts_metar=\(.command_execution.metar_attempts // 0) attempts_settlement=\(.command_execution.settlement_attempts // 0) attempts_shadow=\(.command_execution.shadow_attempts // 0)"
     ' "$HEALTH_STATUS_FILE"
@@ -438,7 +446,7 @@ if [[ -f "$HEALTH_STATUS_FILE" ]]; then
 else
   echo "live_status -> MISSING ($HEALTH_STATUS_FILE)"
 fi
-overall_status="$(printf '%s' "${overall_status:-unknown}" | tr '[:upper:]' '[:lower:]')"
+overall_status="$(normalize_status_token "${overall_status:-unknown}")"
 
 latest_readiness="$(ls -1t "$OUTPUT_DIR"/kalshi_temperature_live_readiness_*.json 2>/dev/null | head -n 1 || true)"
 if [[ -n "$latest_readiness" && "$HAS_JQ" == "1" ]]; then
@@ -639,7 +647,7 @@ if [[ -f "$alpha_summary_latest_health" && "$HAS_JQ" == "1" ]]; then
       alpha_summary_age_seconds="$(( now_epoch - alpha_summary_mtime ))"
     fi
   fi
-  alpha_summary_health_status="$(jq -r '.health.status // .headline_metrics.health_status // "unknown"' "$alpha_summary_latest_health" | tr '[:upper:]' '[:lower:]')"
+  alpha_summary_health_status="$(jq -r '.health.status // .headline_metrics.health_status // "unknown"' "$alpha_summary_latest_health")"
   alpha_summary_health_reason="$(jq -r '.health.reason_text // .headline_metrics.health_reason_text // ""' "$alpha_summary_latest_health")"
   alpha_summary_payload_consistent="$(jq -r '
     if ((.headline_metrics | type) == "object") and (.headline_metrics | has("approval_auto_apply_payload_consistent")) then
@@ -709,7 +717,7 @@ if [[ -f "$alpha_summary_latest_health" && "$HAS_JQ" == "1" ]]; then
     "alpha_summary_live_readiness recommendation=\(.headline_metrics.live_recommendation // "n/a") small_live=\(.headline_metrics.ready_for_small_live_pilot // false) scaled_live=\(.headline_metrics.ready_for_scaled_live // false) earliest=\(.headline_metrics.earliest_passing_horizon // "n/a") confidence_score=\(.headline_metrics.deployment_confidence_score // "n/a") uncapped_score=\(.headline_metrics.deployment_confidence_score_uncapped // "n/a") band=\(.headline_metrics.deployment_confidence_band // "n/a") pilot_gap=\(.headline_metrics.pilot_gap_effective_points // "n/a") pilot_checks=\(.headline_metrics.pilot_checks_passed // "n/a")/\(.headline_metrics.pilot_checks_total // "n/a") pilot_open=\(.headline_metrics.pilot_checks_open // "n/a") pilot_flips=\(.headline_metrics.pilot_minimum_flips_needed // "n/a") pilot_top_open=\(.headline_metrics.pilot_top_open_reason // "n/a") cap_reason=\(.headline_metrics.deployment_confidence_cap_reason // "none") top_blocker=\(.headline_metrics.top_live_readiness_blocker_reason // "n/a") 1d=\(.live_readiness_horizons."1d".readiness_status // "n/a")/\(.live_readiness_horizons."1d".gates.gate_score // "n/a") 14d=\(.live_readiness_horizons."14d".readiness_status // "n/a")/\(.live_readiness_horizons."14d".gates.gate_score // "n/a") 28d=\(.live_readiness_horizons."28d".readiness_status // "n/a")/\(.live_readiness_horizons."28d".gates.gate_score // "n/a") 1yr=\(.live_readiness_horizons."1yr".readiness_status // "n/a")/\(.live_readiness_horizons."1yr".gates.gate_score // "n/a")"
   ' "$alpha_summary_latest_health"
 fi
-alpha_summary_health_status="$(printf '%s' "${alpha_summary_health_status:-unknown}" | tr '[:upper:]' '[:lower:]')"
+alpha_summary_health_status="$(normalize_status_token "${alpha_summary_health_status:-unknown}")"
 alpha_summary_health_reason="$(printf '%s' "${alpha_summary_health_reason:-}" | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g' | sed 's/^ //; s/ $//')"
 alpha_summary_payload_consistent="$(printf '%s' "${alpha_summary_payload_consistent:-unknown}" | tr '[:upper:]' '[:lower:]')"
 alpha_summary_message_quality_pass="$(printf '%s' "${alpha_summary_message_quality_pass:-unknown}" | tr '[:upper:]' '[:lower:]')"
@@ -766,7 +774,7 @@ latest_discord_route_guard="$(ls -1t "$OUTPUT_DIR"/health/discord_route_guard/di
 if [[ -n "$latest_discord_route_guard" && "$HAS_JQ" == "1" ]]; then
   discord_route_guard_age_seconds="$(( $(date +%s) - $(date -r "$latest_discord_route_guard" +%s) ))"
   discord_route_guard_status="$(jq -r '.guard_status // "unknown"' "$latest_discord_route_guard" 2>/dev/null || echo "unknown")"
-  discord_route_guard_status="$(printf '%s' "${discord_route_guard_status:-unknown}" | tr '[:upper:]' '[:lower:]')"
+  discord_route_guard_status="$(normalize_status_token "${discord_route_guard_status:-unknown}")"
   discord_route_guard_shared_route_group_count="$(jq -r '.shared_route_group_count // 0' "$latest_discord_route_guard" 2>/dev/null || echo "0")"
   discord_route_guard_route_hint="$(jq -r '.route_remediations[0].route_hint // .shared_route_groups[0].route_hint // ""' "$latest_discord_route_guard" 2>/dev/null || true)"
   discord_route_guard_required_thread_keys="$(jq -r '[.route_remediations[]?.required_thread_env_keys[]?] | unique | join(",")' "$latest_discord_route_guard" 2>/dev/null || true)"
