@@ -78,6 +78,14 @@ class KalshiWeatherSettlementTests(unittest.TestCase):
         self.assertEqual(end, "23:59")
         self.assertEqual(source, "rules_text")
 
+    def test_infer_observation_window_local_parses_meridiem_punctuation(self) -> None:
+        start, end, source = infer_observation_window_local(
+            "Observation period is between 12:00 a.m. ET and 11:59 p.m. ET."
+        )
+        self.assertEqual(start, "00:00")
+        self.assertEqual(end, "23:59")
+        self.assertEqual(source, "rules_text")
+
     def test_build_weather_settlement_spec_contains_core_fields(self) -> None:
         spec = build_weather_settlement_spec(
             {

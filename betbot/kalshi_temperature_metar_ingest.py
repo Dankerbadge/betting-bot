@@ -384,7 +384,20 @@ def run_kalshi_temperature_metar_ingest(
         existing = latest_by_station.get(station_id)
         existing_time = _parse_iso_datetime(existing.get("observation_time_utc")) if isinstance(existing, dict) else None
         current_time = _parse_iso_datetime(observed_utc)
-        if current_time is not None and (existing_time is None or current_time >= existing_time):
+        should_update_latest = False
+        if current_time is not None:
+            if existing_time is None or current_time > existing_time:
+                should_update_latest = True
+            elif existing_time is not None and current_time == existing_time:
+                # Fail closed on duplicate timestamp downgrades: do not allow a
+                # malformed/no-temp duplicate to clobber a valid latest temp.
+                existing_has_temp = isinstance(existing.get("temp_c"), (int, float)) if isinstance(existing, dict) else False
+                current_has_temp = isinstance(temp_c, (int, float))
+                if existing_has_temp and not current_has_temp:
+                    should_update_latest = False
+                else:
+                    should_update_latest = True
+        if should_update_latest:
             previous_observation_time = (
                 _normalize_text(existing.get("observation_time_utc")) if isinstance(existing, dict) else ""
             )

@@ -212,6 +212,53 @@ class KalshiWeatherIntradayTests(unittest.TestCase):
         )
         self.assertIn("future_timestamp_at_index_1", snapshot["parse_warnings"])
 
+    def test_build_intraday_temperature_snapshot_filters_invalid_temperature_values(self) -> None:
+        def fake_http_get_json(url: str, timeout_seconds: float):
+            self.assertIn("/stations/KJFK/observations", url)
+            return (
+                200,
+                {
+                    "features": [
+                        {
+                            "properties": {
+                                "timestamp": "2026-04-08T13:10:00+00:00",
+                                "temperature": {"value": "bad"},
+                            }
+                        },
+                        {
+                            "properties": {
+                                "timestamp": "2026-04-08T14:10:00+00:00",
+                                "temperature": {"value": float("nan")},
+                            }
+                        },
+                        {
+                            "properties": {
+                                "timestamp": "2026-04-08T15:10:00+00:00",
+                                "temperature": {"value": 20.0},
+                            }
+                        },
+                    ]
+                },
+            )
+
+        snapshot = build_intraday_temperature_snapshot(
+            station_id="KJFK",
+            target_date_local="2026-04-08",
+            timezone_name="America/New_York",
+            http_get_json=fake_http_get_json,
+        )
+
+        self.assertEqual(snapshot["status"], "ready")
+        self.assertEqual(snapshot["observations_for_date"], 1)
+        self.assertEqual(snapshot["max_temperature_c"], 20.0)
+        self.assertEqual(snapshot["min_temperature_c"], 20.0)
+        self.assertEqual(
+            [item["timestamp"] for item in snapshot["observations"]],
+            ["2026-04-08T15:10:00+00:00"],
+        )
+        self.assertIn("invalid_temperature_c_at_index_0", snapshot["parse_warnings"])
+        self.assertIn("invalid_temperature_c_at_index_1", snapshot["parse_warnings"])
+
     def test_quantize_temperature_nearest_half_away_from_zero(self) -> None:
         self.assertEqual(quantize_temperature(21.5), 22.0)
         self.assertEqual(quantize_temperature(-1.5), -2.0)

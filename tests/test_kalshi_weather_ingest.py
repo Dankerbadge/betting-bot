@@ -692,6 +692,45 @@ class KalshiWeatherIngestTests(unittest.TestCase):
             self.assertFalse(second["cache_fallback_used"])
             self.assertTrue(second["cache_fresh"])
 
+    def test_fetch_ncei_cdo_station_daily_history_ignores_cache_without_timestamp(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_dir = Path(tmp) / "cdo_cache"
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            cache_file = cache_dir / "KJFK_03_29_3_2025.json"
+            cache_file.write_text(
+                (
+                    '{\n'
+                    '  "payload": {\n'
+                    '    "status": "ready",\n'
+                    '    "station_id": "KJFK",\n'
+                    '    "daily_samples": [{"year": 2025, "date": "2025-03-29", "tmax_f": 66.0, "tmin_f": 51.0}],\n'
+                    '    "sample_years": 1\n'
+                    "  }\n"
+                    "}\n"
+                ),
+                encoding="utf-8",
+            )
+
+            payload = fetch_ncei_cdo_station_daily_history(
+                station_id="KJFK",
+                month=3,
+                day=29,
+                lookback_years=3,
+                timeout_seconds=5.0,
+                cdo_token="",
+                cache_dir=str(cache_dir),
+                cache_max_age_hours=24.0,
+                enable_access_data_service_fallback=False,
+                now=datetime(2026, 3, 30, 0, 10, tzinfo=timezone.utc),
+                http_get_json_with_headers=lambda *_: (_ for _ in ()).throw(
+                    AssertionError("network should not be called in this path")
+                ),
+            )
+
+            self.assertEqual(payload["status"], "disabled_missing_token")
+            self.assertFalse(payload["cache_hit"])
+            self.assertFalse(payload["cache_fallback_used"])
+
     def test_fetch_ncei_cdo_station_daily_history_surfaces_cache_write_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             cache_dir = Path(tmp) / "cdo_cache"

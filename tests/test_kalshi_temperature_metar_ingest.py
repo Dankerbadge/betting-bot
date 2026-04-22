@@ -337,6 +337,55 @@ class KalshiTemperatureMetarIngestTests(unittest.TestCase):
             self.assertEqual(max_by_day["KJFK|2026-04-08"], 20.0)
             self.assertEqual(min_by_day["KJFK|2026-04-08"], 20.0)
 
+    def test_run_ingest_duplicate_timestamp_invalid_temp_does_not_clobber_latest_valid_temp(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            output_dir = Path(tmp_dir)
+            specs_csv = output_dir / "specs.csv"
+            specs_csv.write_text(
+                "settlement_station,settlement_timezone\nKJFK,America/New_York\n",
+                encoding="utf-8",
+            )
+            blob = _build_metar_cache_blob(
+                [
+                    {
+                        "station_id": "KJFK",
+                        "report_type": "METAR",
+                        "observation_time": "2026-04-08T14:00:00Z",
+                        "temp_c": "20.0",
+                        "raw_text": "KJFK 081400Z ...",
+                    },
+                    {
+                        "station_id": "KJFK",
+                        "report_type": "SPECI",
+                        "observation_time": "2026-04-08T14:00:00Z",
+                        "temp_c": "NaN",
+                        "raw_text": "SPECI KJFK 081400Z ...",
+                    },
+                ]
+            )
+
+            def fake_http_get_bytes(url: str, timeout_seconds: float):
+                self.assertIn("metars.cache.csv.gz", url)
+                return (200, blob, {"etag": "same-ts-invalid-dup"})
+
+            summary = run_kalshi_temperature_metar_ingest(
+                output_dir=str(output_dir),
+                specs_csv=str(specs_csv),
+                http_get_bytes=fake_http_get_bytes,
+                now=datetime(2026, 4, 8, 14, 30, tzinfo=timezone.utc),
+            )
+
+            self.assertEqual(summary["status"], "ready_partial")
+            self.assertEqual(summary["parse_errors_count"], 1)
+            self.assertEqual(summary["station_updates"], 1)
+
+            state_payload = json.loads(Path(summary["state_file"]).read_text(encoding="utf-8"))
+            latest = state_payload["latest_observation_by_station"]["KJFK"]
+            self.assertEqual(latest["observation_time_utc"], "2026-04-08T14:00:00+00:00")
+            self.assertEqual(latest["temp_c"], 20.0)
+            self.assertEqual(latest["report_type"], "METAR")
+            self.assertNotIn("previous_observation_time_utc", latest)
+
 
 if __name__ == "__main__":
     unittest.main()

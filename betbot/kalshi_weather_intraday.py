@@ -280,10 +280,14 @@ def build_intraday_temperature_snapshot(
         local_timestamp = timestamp.astimezone(zone)
 
         temperature_c = observation.get("temperature_c")
-        if not isinstance(temperature_c, (float, int)):
+        if isinstance(temperature_c, bool):
+            all_errors.append(f"invalid_temperature_c_at_index_{index}")
             continue
 
-        temp_c = float(temperature_c)
+        temp_c = _float_or_none(temperature_c)
+        if temp_c is None:
+            all_errors.append(f"invalid_temperature_c_at_index_{index}")
+            continue
         temp_f = celsius_to_fahrenheit(temp_c)
         observations_for_date_raw.append(
             (

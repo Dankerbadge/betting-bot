@@ -363,6 +363,8 @@ def _load_cdo_cache_entry(path: Path) -> tuple[dict[str, Any] | None, datetime |
     if not isinstance(payload, dict):
         return (None, None)
     cached_at = _parse_iso_datetime(payload.get("cached_at"))
+    if cached_at is None:
+        return (None, None)
     cached_payload = payload.get("payload")
     if not isinstance(cached_payload, dict):
         return (None, cached_at)

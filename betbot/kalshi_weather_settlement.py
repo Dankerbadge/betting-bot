@@ -273,6 +273,8 @@ def _parse_clock_text(value: str) -> tuple[int, int] | None:
     text = str(value or "").strip().lower()
     if not text:
         return None
+    text = re.sub(r"\ba\.?m\.?\b", "am", text)
+    text = re.sub(r"\bp\.?m\.?\b", "pm", text)
     match = re.search(r"\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b", text)
     if not match:
         return None
@@ -303,7 +305,7 @@ def infer_observation_window_local(rules_primary: str) -> tuple[str, str, str]:
     if not text:
         return ("", "", "unknown")
     lowered = text.lower()
-    clock_token = r"[0-9]{1,2}(?::[0-9]{2})?\s*(?:am|pm)?"
+    clock_token = r"[0-9]{1,2}(?::[0-9]{2})?\s*(?:a\.?m\.?|p\.?m\.?)?"
     # Support common settlement phrasing that inserts timezone/local-time
     # qualifiers between the clock value and the range connector.
     clock_qualifier = (
@@ -322,7 +324,7 @@ def infer_observation_window_local(rules_primary: str) -> tuple[str, str, str]:
             return (_format_clock_text(*start), _format_clock_text(*end), "rules_text")
 
     deadline = re.search(
-        r"(?:before|by|until)\s+([0-9]{1,2}(?::[0-9]{2})?\s*(?:am|pm)?)",
+        r"(?:before|by|until)\s+([0-9]{1,2}(?::[0-9]{2})?\s*(?:a\.?m\.?|p\.?m\.?)?)",
         lowered,
     )
     if deadline:
