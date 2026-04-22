@@ -190,6 +190,28 @@ def _normalize_cdo_precip_in(value: Any) -> float | None:
     return round(raw, 4)
 
 
+def _sanitize_temperature_bounds_for_sample(
+    *,
+    sample: dict[str, Any],
+    errors: list[dict[str, Any]],
+    error_context: dict[str, Any],
+) -> None:
+    tmax_value = sample.get("tmax_f")
+    tmin_value = sample.get("tmin_f")
+    if not isinstance(tmax_value, (int, float)) or not isinstance(tmin_value, (int, float)):
+        return
+    tmax_f = float(tmax_value)
+    tmin_f = float(tmin_value)
+    if not math.isfinite(tmax_f) or not math.isfinite(tmin_f) or tmin_f > tmax_f:
+        sample.pop("tmax_f", None)
+        sample.pop("tmin_f", None)
+        error_payload = dict(error_context)
+        error_payload["error"] = "invalid_temperature_range"
+        error_payload["tmax_f"] = round(tmax_f, 3) if math.isfinite(tmax_f) else "non_finite"
+        error_payload["tmin_f"] = round(tmin_f, 3) if math.isfinite(tmin_f) else "non_finite"
+        errors.append(error_payload)
+
+
 def _extract_station_daily_samples_from_rows(
     *,
     rows: list[Any],
@@ -235,6 +257,11 @@ def _extract_station_daily_samples_from_rows(
             sample["tmin_f"] = tmin_normalized
         if prcp_normalized is not None:
             sample["prcp_in"] = prcp_normalized
+        _sanitize_temperature_bounds_for_sample(
+            sample=sample,
+            errors=parse_errors,
+            error_context={"index": index, "year": year, "date": sample["date"]},
+        )
 
     daily_samples = [
         sample
@@ -1752,6 +1779,11 @@ def fetch_ncei_cdo_station_daily_history(
                 normalized = _normalize_cdo_precip_in(value)
                 if normalized is not None:
                     sample["prcp_in"] = normalized
+        _sanitize_temperature_bounds_for_sample(
+            sample=sample,
+            errors=errors,
+            error_context={"year": year, "date": date_stamp},
+        )
         if len(sample) > 2:
             daily_samples.append(sample)
 
@@ -2064,6 +2096,7 @@ def fetch_ncei_station_daily_summary_for_date(
         if cdo_status == 200 and isinstance(cdo_payload, dict):
             results = cdo_payload.get("results")
             sample: dict[str, Any] = {"date": target_stamp}
+            sample_errors: list[dict[str, Any]] = []
             if isinstance(results, list):
                 for item in results:
                     if not isinstance(item, dict):
@@ -2082,9 +2115,14 @@ def fetch_ncei_station_daily_summary_for_date(
                         normalized = _normalize_cdo_precip_in(value)
                         if normalized is not None:
                             sample["prcp_in"] = normalized
+            _sanitize_temperature_bounds_for_sample(
+                sample=sample,
+                errors=sample_errors,
+                error_context={"date": target_stamp},
+            )
             if len(sample) > 1:
                 return {
-                    "status": "ready",
+                    "status": "ready" if not sample_errors else "ready_partial",
                     "station_id": clean_station_id,
                     "cdo_station_id": cdo_station_id,
                     "target_date": target_stamp,
@@ -2092,6 +2130,7 @@ def fetch_ncei_station_daily_summary_for_date(
                     "source_url": source_url,
                     "http_status": cdo_status,
                     "daily_sample": sample,
+                    "errors": sample_errors,
                     "nws_cli_lookup_status": nws_lookup_status,
                     "nws_cli_lookup_error": nws_lookup_error,
                     "nws_cli_http_status": nws_lookup_http_status if nws_lookup_http_status > 0 else None,
@@ -2105,7 +2144,12 @@ def fetch_ncei_station_daily_summary_for_date(
                 "source_url": source_url,
                 "http_status": cdo_status,
                 "daily_sample": {},
-                "error": "No daily summary rows returned for station/date.",
+                "error": (
+                    "No daily summary rows returned for station/date."
+                    if not sample_errors
+                    else "Daily summary rows failed temperature validation."
+                ),
+                "errors": sample_errors,
                 "nws_cli_lookup_status": nws_lookup_status,
                 "nws_cli_lookup_error": nws_lookup_error,
                 "nws_cli_http_status": nws_lookup_http_status if nws_lookup_http_status > 0 else None,

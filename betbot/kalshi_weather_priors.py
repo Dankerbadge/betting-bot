@@ -54,6 +54,8 @@ _DEFAULT_ALLOWED_FAMILIES = (
 )
 _DEFAULT_HISTORICAL_LOOKBACK_YEARS = 15
 _DEFAULT_STATION_HISTORY_CACHE_MAX_AGE_HOURS = 24.0
+_MIN_VALID_TEMPERATURE_F = -120.0
+_MAX_VALID_TEMPERATURE_F = 140.0
 _MIN_SAMPLE_YEARS_BY_DAILY_FAMILY = {
     "daily_rain": 8,
     "daily_temperature": 10,
@@ -211,6 +213,13 @@ def _parse_float(value: Any) -> float | None:
     if numeric is None or not math.isfinite(numeric):
         return None
     return numeric
+
+
+def _is_valid_temperature_f(value: Any) -> bool:
+    numeric = _parse_float(value)
+    if numeric is None:
+        return False
+    return _MIN_VALID_TEMPERATURE_F <= numeric <= _MAX_VALID_TEMPERATURE_F
 
 
 def _normalize_string_set(values: tuple[str, ...] | list[str] | set[str] | None) -> set[str]:
@@ -888,7 +897,13 @@ def _climatology_temperature_series(
         raw = history_payload.get("daily_mean_values_f")
     if not isinstance(raw, list):
         return []
-    return [float(value) for value in raw if isinstance(value, (int, float))]
+    cleaned: list[float] = []
+    for value in raw:
+        numeric = _parse_float(value)
+        if numeric is None or not _is_valid_temperature_f(numeric):
+            continue
+        cleaned.append(float(numeric))
+    return cleaned
 
 
 def _blend_temperature_model(

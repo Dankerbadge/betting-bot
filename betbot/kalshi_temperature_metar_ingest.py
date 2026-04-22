@@ -32,6 +32,11 @@ OBSERVATION_FIELDNAMES = [
     "payload_hash",
 ]
 
+# Guard against unit/parse corruption (e.g., Fahrenheit-in-C fields) from
+# poisoning station-day extrema and downstream weather pattern signals.
+MIN_VALID_METAR_TEMP_C = -100.0
+MAX_VALID_METAR_TEMP_C = 60.0
+
 
 def _normalize_text(value: Any) -> str:
     return str(value or "").strip()
@@ -163,6 +168,8 @@ def parse_metar_cache_csv_gz(blob_gz: bytes) -> dict[str, Any]:
                 parsed_temp = float(temp_text)
                 if not math.isfinite(parsed_temp):
                     raise ValueError("non_finite_temp_c")
+                if parsed_temp < MIN_VALID_METAR_TEMP_C or parsed_temp > MAX_VALID_METAR_TEMP_C:
+                    raise ValueError("out_of_range_temp_c")
                 temp_c = parsed_temp
             except (TypeError, ValueError):
                 errors.append(f"row_{index}:invalid_temp_c")

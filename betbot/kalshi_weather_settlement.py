@@ -303,9 +303,16 @@ def infer_observation_window_local(rules_primary: str) -> tuple[str, str, str]:
     if not text:
         return ("", "", "unknown")
     lowered = text.lower()
+    clock_token = r"[0-9]{1,2}(?::[0-9]{2})?\s*(?:am|pm)?"
+    # Support common settlement phrasing that inserts timezone/local-time
+    # qualifiers between the clock value and the range connector.
+    clock_qualifier = (
+        r"(?:\s*(?:local(?:\s+time)?|eastern(?:\s+time)?|central(?:\s+time)?|"
+        r"mountain(?:\s+time)?|pacific(?:\s+time)?|[ecmp]dt|[ecmp]st|[ecmp]t))?"
+    )
 
     explicit_range = re.search(
-        r"(?:between|from)\s+([0-9]{1,2}(?::[0-9]{2})?\s*(?:am|pm)?)\s*(?:and|to|-)\s*([0-9]{1,2}(?::[0-9]{2})?\s*(?:am|pm)?)",
+        rf"(?:between|from)\s+({clock_token}){clock_qualifier}\s*(?:and|to|-)\s*({clock_token}){clock_qualifier}",
         lowered,
     )
     if explicit_range:

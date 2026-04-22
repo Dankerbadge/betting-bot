@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import unittest
 
 from betbot.kalshi_weather_intraday import (
@@ -171,6 +172,45 @@ class KalshiWeatherIntradayTests(unittest.TestCase):
                 "2026-04-08T18:40:00+00:00",
             ],
         )
+
+    def test_build_intraday_temperature_snapshot_drops_future_timestamp_observations(self) -> None:
+        def fake_http_get_json(url: str, timeout_seconds: float):
+            self.assertIn("/stations/KJFK/observations", url)
+            return (
+                200,
+                {
+                    "features": [
+                        {
+                            "properties": {
+                                "timestamp": "2026-04-08T14:10:00+00:00",
+                                "temperature": {"value": 18.2},
+                            }
+                        },
+                        {
+                            "properties": {
+                                "timestamp": "2026-04-08T18:40:00+00:00",
+                                "temperature": {"value": 20.0},
+                            }
+                        },
+                    ]
+                },
+            )
+
+        snapshot = build_intraday_temperature_snapshot(
+            station_id="KJFK",
+            target_date_local="2026-04-08",
+            timezone_name="America/New_York",
+            http_get_json=fake_http_get_json,
+            now_utc=datetime(2026, 4, 8, 15, 0, tzinfo=timezone.utc),
+        )
+
+        self.assertEqual(snapshot["status"], "ready")
+        self.assertEqual(snapshot["observations_for_date"], 1)
+        self.assertEqual(
+            [item["timestamp"] for item in snapshot["observations"]],
+            ["2026-04-08T14:10:00+00:00"],
+        )
+        self.assertIn("future_timestamp_at_index_1", snapshot["parse_warnings"])
 
     def test_quantize_temperature_nearest_half_away_from_zero(self) -> None:
         self.assertEqual(quantize_temperature(21.5), 22.0)

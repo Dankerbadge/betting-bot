@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 import math
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
@@ -185,6 +185,7 @@ def build_intraday_temperature_snapshot(
     http_get_json: JsonGetter | None = None,
     metar_state: dict[str, Any] | None = None,
     allow_nws_fallback: bool = True,
+    now_utc: datetime | None = None,
 ) -> dict[str, Any]:
     station_normalized = str(station_id or "").strip().upper()
     target_date_text = str(target_date_local or "")
@@ -210,6 +211,14 @@ def build_intraday_temperature_snapshot(
             "timezone_name": timezone_text,
             "error": "Invalid timezone name.",
         }
+
+    reference_now_utc = now_utc
+    if reference_now_utc is None:
+        reference_now_utc = datetime.now(timezone.utc)
+    elif reference_now_utc.tzinfo is None:
+        reference_now_utc = reference_now_utc.replace(tzinfo=timezone.utc)
+    else:
+        reference_now_utc = reference_now_utc.astimezone(timezone.utc)
 
     if isinstance(metar_state, dict):
         metar_snapshot = _build_metar_state_snapshot(
@@ -260,6 +269,9 @@ def build_intraday_temperature_snapshot(
         timestamp = _parse_iso_datetime(str(observation.get("timestamp") or ""))
         if timestamp is None:
             all_errors.append(f"invalid_timestamp_at_index_{index}")
+            continue
+        if timestamp.astimezone(timezone.utc) > reference_now_utc:
+            all_errors.append(f"future_timestamp_at_index_{index}")
             continue
 
         local_standard_date = _local_standard_date(timestamp, zone)

@@ -467,6 +467,71 @@ class KalshiWeatherIngestTests(unittest.TestCase):
         self.assertEqual(payload["tmin_values_f"], [53.0, 49.0])
         self.assertAlmostEqual(payload["rain_day_frequency"], 0.5)
 
+    def test_fetch_ncei_cdo_station_daily_history_filters_invalid_temperature_range(self) -> None:
+        def fake_http_get_json_with_headers(url: str, timeout_seconds: float, headers: dict[str, str] | None):
+            self.assertEqual(headers, {"token": "demo-token"})
+            parsed = urlparse(url)
+            params = parse_qs(parsed.query)
+            startdate = params.get("startdate", [""])[0]
+            if startdate == "2023-03-29":
+                return (
+                    200,
+                    {
+                        "results": [
+                            {"datatype": "TMAX", "value": 67.0},
+                            {"datatype": "TMIN", "value": 51.0},
+                            {"datatype": "PRCP", "value": 0.0},
+                        ]
+                    },
+                )
+            if startdate == "2024-03-29":
+                return (
+                    200,
+                    {
+                        "results": [
+                            {"datatype": "TMAX", "value": 49.0},
+                            {"datatype": "TMIN", "value": 61.0},
+                            {"datatype": "PRCP", "value": 0.04},
+                        ]
+                    },
+                )
+            if startdate == "2025-03-29":
+                return (
+                    200,
+                    {
+                        "results": [
+                            {"datatype": "TMAX", "value": 72.0},
+                            {"datatype": "TMIN", "value": 54.0},
+                            {"datatype": "PRCP", "value": 0.1},
+                        ]
+                    },
+                )
+            return (200, {"results": []})
+
+        payload = fetch_ncei_cdo_station_daily_history(
+            station_id="KJFK",
+            month=3,
+            day=29,
+            lookback_years=3,
+            timeout_seconds=5.0,
+            cdo_token="demo-token",
+            now=datetime(2026, 3, 30, 0, 0, tzinfo=timezone.utc),
+            http_get_json_with_headers=fake_http_get_json_with_headers,
+        )
+
+        self.assertEqual(payload["status"], "ready_partial")
+        self.assertEqual(payload["sample_years"], 3)
+        self.assertEqual(payload["sample_years_tmax"], 2)
+        self.assertEqual(payload["sample_years_tmin"], 2)
+        self.assertEqual(payload["tmax_values_f"], [67.0, 72.0])
+        self.assertEqual(payload["tmin_values_f"], [51.0, 54.0])
+        self.assertTrue(any(str(err.get("error")) == "invalid_temperature_range" for err in payload["errors"]))
+        sample_2024 = next(
+            sample for sample in payload["daily_samples"] if int(sample.get("year", 0)) == 2024
+        )
+        self.assertNotIn("tmax_f", sample_2024)
+        self.assertNotIn("tmin_f", sample_2024)
+
     def test_fetch_ncei_cdo_station_daily_history_retries_rate_limited_exception(self) -> None:
         calls_by_date: dict[str, int] = {}
 

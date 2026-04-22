@@ -70,6 +70,14 @@ class KalshiWeatherSettlementTests(unittest.TestCase):
         self.assertEqual(end, "23:59")
         self.assertEqual(source, "rules_text")
 
+    def test_infer_observation_window_local_parses_range_with_timezone_tokens(self) -> None:
+        start, end, source = infer_observation_window_local(
+            "Observation period is between 12:00 AM ET and 11:59 PM ET."
+        )
+        self.assertEqual(start, "00:00")
+        self.assertEqual(end, "23:59")
+        self.assertEqual(source, "rules_text")
+
     def test_build_weather_settlement_spec_contains_core_fields(self) -> None:
         spec = build_weather_settlement_spec(
             {

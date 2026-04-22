@@ -209,6 +209,42 @@ class KalshiTemperatureMetarIngestTests(unittest.TestCase):
         self.assertIsNone(parsed["rows"][1]["temp_c"])
         self.assertEqual(parsed["rows"][2]["temp_c"], 21.0)
 
+    def test_parse_metar_cache_csv_gz_rejects_out_of_range_temperature_values(self) -> None:
+        blob = _build_metar_cache_blob(
+            [
+                {
+                    "station_id": "KJFK",
+                    "report_type": "METAR",
+                    "observation_time": "2026-04-08T14:00:00Z",
+                    "temp_c": "-120.0",
+                    "raw_text": "KJFK 081400Z ...",
+                },
+                {
+                    "station_id": "KJFK",
+                    "report_type": "METAR",
+                    "observation_time": "2026-04-08T15:00:00Z",
+                    "temp_c": "85.0",
+                    "raw_text": "KJFK 081500Z ...",
+                },
+                {
+                    "station_id": "KJFK",
+                    "report_type": "METAR",
+                    "observation_time": "2026-04-08T16:00:00Z",
+                    "temp_c": "21.0",
+                    "raw_text": "KJFK 081600Z ...",
+                },
+            ]
+        )
+        parsed = parse_metar_cache_csv_gz(blob)
+        self.assertEqual(parsed["status"], "ready_partial")
+        self.assertEqual(len(parsed["rows"]), 3)
+        self.assertEqual(len(parsed["errors"]), 2)
+        self.assertIn("row_0:invalid_temp_c", parsed["errors"])
+        self.assertIn("row_1:invalid_temp_c", parsed["errors"])
+        self.assertIsNone(parsed["rows"][0]["temp_c"])
+        self.assertIsNone(parsed["rows"][1]["temp_c"])
+        self.assertEqual(parsed["rows"][2]["temp_c"], 21.0)
+
     def test_run_ingest_ignores_non_finite_temperature_for_station_day_extremes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             output_dir = Path(tmp_dir)
@@ -239,6 +275,52 @@ class KalshiTemperatureMetarIngestTests(unittest.TestCase):
             def fake_http_get_bytes(url: str, timeout_seconds: float):
                 self.assertIn("metars.cache.csv.gz", url)
                 return (200, blob, {"etag": "finite-only"})
+
+            summary = run_kalshi_temperature_metar_ingest(
+                output_dir=str(output_dir),
+                specs_csv=str(specs_csv),
+                http_get_bytes=fake_http_get_bytes,
+                now=datetime(2026, 4, 8, 16, 30, tzinfo=timezone.utc),
+            )
+
+            self.assertEqual(summary["status"], "ready_partial")
+            self.assertEqual(summary["parse_errors_count"], 1)
+            state_payload = json.loads(Path(summary["state_file"]).read_text(encoding="utf-8"))
+            max_by_day = state_payload["max_temp_c_by_station_local_day"]
+            min_by_day = state_payload["min_temp_c_by_station_local_day"]
+            self.assertEqual(max_by_day["KJFK|2026-04-08"], 20.0)
+            self.assertEqual(min_by_day["KJFK|2026-04-08"], 20.0)
+
+    def test_run_ingest_ignores_out_of_range_temperature_for_station_day_extremes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            output_dir = Path(tmp_dir)
+            specs_csv = output_dir / "specs.csv"
+            specs_csv.write_text(
+                "settlement_station,settlement_timezone\nKJFK,America/New_York\n",
+                encoding="utf-8",
+            )
+            blob = _build_metar_cache_blob(
+                [
+                    {
+                        "station_id": "KJFK",
+                        "report_type": "METAR",
+                        "observation_time": "2026-04-08T14:00:00Z",
+                        "temp_c": "20.0",
+                        "raw_text": "KJFK 081400Z ...",
+                    },
+                    {
+                        "station_id": "KJFK",
+                        "report_type": "SPECI",
+                        "observation_time": "2026-04-08T16:00:00Z",
+                        "temp_c": "85.0",
+                        "raw_text": "KJFK 081600Z ...",
+                    },
+                ]
+            )
+
+            def fake_http_get_bytes(url: str, timeout_seconds: float):
+                self.assertIn("metars.cache.csv.gz", url)
+                return (200, blob, {"etag": "finite-range-only"})
 
             summary = run_kalshi_temperature_metar_ingest(
                 output_dir=str(output_dir),
