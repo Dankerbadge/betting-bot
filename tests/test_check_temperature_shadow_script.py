@@ -406,6 +406,30 @@ def test_shadow_check_strict_fails_when_lane_state_required_but_missing(tmp_path
     assert "STRICT CHECK FAILED: decision-matrix lane state file required but missing" in result.stderr
 
 
+def test_shadow_check_strict_fails_when_lane_state_required_but_missing_with_true_flag(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+
+    env_file = tmp_path / "shadow.env"
+    _write_env_file(
+        env_file=env_file,
+        output_dir=output_dir,
+        extra_lines=(
+            "DECISION_MATRIX_LANE_STRICT_REQUIRE_STATE_FILE=true",
+        ),
+    )
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_shadow_check(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 2
+    assert "decision_matrix_lane_alert_state -> MISSING" in result.stdout
+    assert "STRICT CHECK FAILED: decision-matrix lane state file required but missing" in result.stderr
+
+
 def test_shadow_check_strict_fails_on_non_green_route_guard_when_collision_gate_enabled(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[1]
     output_dir = tmp_path / "out"
@@ -2464,6 +2488,34 @@ def test_shadow_check_strict_fails_when_alpha_worker_expected_but_not_active(tmp
     assert "STRICT CHECK FAILED: alpha worker service expected but not active" in result.stderr
 
 
+def test_shadow_check_strict_fails_when_alpha_worker_expected_is_true_but_not_active(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+
+    env_file = tmp_path / "shadow.env"
+    _write_env_file(
+        env_file=env_file,
+        output_dir=output_dir,
+        extra_lines=(
+            "ALPHA_WORKER_ENABLED=true",
+        ),
+    )
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_shadow_check(
+        script_path=script_path,
+        env_file=env_file,
+        tool_dir=tool_dir,
+        extra_env={
+            "MOCK_ALPHA_WORKER_ACTIVE": "inactive",
+        },
+    )
+
+    assert result.returncode == 2
+    assert "STRICT CHECK FAILED: alpha worker service expected but not active" in result.stderr
+
+
 def test_shadow_check_strict_fails_when_breadth_worker_expected_but_not_active(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[1]
     output_dir = tmp_path / "out"
@@ -2476,6 +2528,36 @@ def test_shadow_check_strict_fails_when_breadth_worker_expected_but_not_active(t
         output_dir=output_dir,
         extra_lines=(
             "BREADTH_WORKER_ENABLED=1",
+        ),
+    )
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_shadow_check(
+        script_path=script_path,
+        env_file=env_file,
+        tool_dir=tool_dir,
+        extra_env={
+            "MOCK_BREADTH_WORKER_ACTIVE": "inactive",
+        },
+    )
+
+    assert result.returncode == 2
+    assert "STRICT CHECK FAILED: breadth worker service expected but not active" in result.stderr
+
+
+def test_shadow_check_strict_fails_when_breadth_worker_expected_is_true_but_not_active(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+
+    env_file = tmp_path / "shadow.env"
+    _write_env_file(
+        env_file=env_file,
+        output_dir=output_dir,
+        extra_lines=(
+            "BREADTH_WORKER_ENABLED=true",
         ),
     )
     script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
@@ -2699,6 +2781,36 @@ def test_shadow_check_strict_fails_when_stale_metrics_timer_expected_but_not_act
         output_dir=output_dir,
         extra_lines=(
             "STALE_METRICS_DRILL_TIMER_EXPECTED=1",
+        ),
+    )
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_shadow_check(
+        script_path=script_path,
+        env_file=env_file,
+        tool_dir=tool_dir,
+        extra_env={
+            "MOCK_STALE_METRICS_DRILL_TIMER_ACTIVE": "inactive",
+        },
+    )
+
+    assert result.returncode == 2
+    assert "STRICT CHECK FAILED: stale-metrics drill timer expected but not active" in result.stderr
+
+
+def test_shadow_check_strict_fails_when_stale_metrics_timer_expected_is_true_but_not_active(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+
+    env_file = tmp_path / "shadow.env"
+    _write_env_file(
+        env_file=env_file,
+        output_dir=output_dir,
+        extra_lines=(
+            "STALE_METRICS_DRILL_TIMER_EXPECTED=true",
         ),
     )
     script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
