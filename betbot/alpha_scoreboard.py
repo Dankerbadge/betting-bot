@@ -88,7 +88,7 @@ def _latest_plan_projection(plan_summary: dict[str, Any]) -> dict[str, float | i
             cost = _parse_float(row.get("estimated_entry_cost_dollars"))
             ev_net = _parse_float(row.get("expected_value_net_dollars"))
             ev_day_net = _parse_float(row.get("expected_value_per_day_net_dollars"))
-            if cost is None or ev_net is None:
+            if cost is None or ev_net is None or cost <= 0.0:
                 continue
             total_cost += cost
             total_ev_net += ev_net

@@ -33,12 +33,16 @@ def normalize_implied_probabilities(decimal_odds: list[float]) -> list[float]:
 
     implied = []
     for odd in decimal_odds:
-        if odd <= 1.0:
-            raise ValueError("All odds must be > 1.0")
-        implied.append(1.0 / odd)
+        try:
+            odd_value = float(odd)
+        except (TypeError, ValueError):
+            raise ValueError("All odds must be finite and > 1.0") from None
+        if not isfinite(odd_value) or odd_value <= 1.0:
+            raise ValueError("All odds must be finite and > 1.0")
+        implied.append(1.0 / odd_value)
 
     total = sum(implied)
-    if total <= 0:
+    if not isfinite(total) or total <= 0:
         raise ValueError("Invalid implied probability total")
     if len(implied) == 1:
         return [1.0]

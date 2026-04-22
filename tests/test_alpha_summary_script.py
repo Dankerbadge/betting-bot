@@ -879,5 +879,56 @@ def test_alpha_summary_flags_critical_parse_error_and_caps_confidence(tmp_path: 
     assert float(cap_value) <= 35.0
 
 
+def test_alpha_summary_caps_confidence_when_live_status_is_derived_fallback(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    out_dir = tmp_path / "out"
+    checkpoints_dir = out_dir / "checkpoints"
+    health_dir = out_dir / "health"
+    checkpoints_dir.mkdir(parents=True, exist_ok=True)
+    health_dir.mkdir(parents=True, exist_ok=True)
+
+    # Force fallback candidates to be unusable so the script derives live status
+    # from the rolling window payload instead of trusting stale/malformed files.
+    (checkpoints_dir / "live_status_latest.json").write_text("{\n", encoding="utf-8")
+    (health_dir / "live_status_latest.json").write_text("{\n", encoding="utf-8")
+    missing_live_status_path = out_dir / "missing_live_status.json"
+
+    env_file = tmp_path / "alpha_summary.env"
+    env_file.write_text(
+        "\n".join(
+            [
+                f'BETBOT_ROOT="{root}"',
+                f'OUTPUT_DIR="{out_dir}"',
+                f'ALPHA_SUMMARY_LIVE_STATUS_FILE="{missing_live_status_path}"',
+                "ALPHA_SUMMARY_SEND_WEBHOOK=0",
+                "ALPHA_SUMMARY_DISCORD_MODE=concise",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    script = root / "infra" / "digitalocean" / "run_temperature_alpha_summary.sh"
+    subprocess.run(
+        ["/bin/bash", str(script), str(env_file)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    payload = json.loads((out_dir / "health" / "alpha_summary_latest.json").read_text(encoding="utf-8"))
+    source_files = payload.get("source_files", {}) or {}
+    assert source_files.get("live_status_primary_load_status") == "file_missing"
+    assert source_files.get("live_status_effective_load_status") == "derived_window_summary"
+
+    headline = payload.get("headline_metrics", {}) or {}
+    assert headline.get("deployment_confidence_cap_applied") is True
+    cap_reason_tokens = str(headline.get("deployment_confidence_cap_reason") or "").split("+")
+    assert "live_status_untrusted" in cap_reason_tokens
+    cap_value = headline.get("deployment_confidence_cap_value")
+    assert isinstance(cap_value, (int, float))
+    assert float(cap_value) <= 45.0
+
+
 def _normalize_path(value: object) -> str:
     return str(value or "").replace("\\\\", "/")

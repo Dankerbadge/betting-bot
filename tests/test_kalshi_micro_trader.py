@@ -184,6 +184,68 @@ class KalshiMicroTraderTests(unittest.TestCase):
             self.assertEqual(summary["gate_status"], "invalid_gate_pass")
             self.assertIn("Invalid gate_pass value", summary["gate_blockers"][0])
 
+    def test_run_kalshi_micro_trader_holds_on_inconsistent_gate_status(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+
+            def fail_execute(**kwargs):
+                raise AssertionError("execute_runner should not be called on inconsistent gate status")
+
+            summary = run_kalshi_micro_trader(
+                env_file="data/research/account_onboarding.local.env",
+                output_dir=str(base),
+                capture_runner=lambda **kwargs: {
+                    "status": "ready",
+                    "history_csv": str(base / "history.csv"),
+                    "scan_summary_file": str(base / "capture.json"),
+                },
+                gate_runner=lambda **kwargs: {
+                    "gate_pass": True,
+                    "gate_status": "needs_funding",
+                    "gate_score": 42.0,
+                    "gate_blockers": [],
+                    "output_file": str(base / "gate.json"),
+                },
+                execute_runner=fail_execute,
+                now=datetime(2026, 3, 27, 21, 0, tzinfo=timezone.utc),
+            )
+
+            self.assertEqual(summary["status"], "hold")
+            self.assertFalse(summary["gate_pass"])
+            self.assertEqual(summary["gate_status"], "inconsistent_gate_state")
+            self.assertIn("Inconsistent gate state", summary["gate_blockers"][0])
+
+    def test_run_kalshi_micro_trader_holds_on_inconsistent_gate_blockers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+
+            def fail_execute(**kwargs):
+                raise AssertionError("execute_runner should not be called on inconsistent gate blockers")
+
+            summary = run_kalshi_micro_trader(
+                env_file="data/research/account_onboarding.local.env",
+                output_dir=str(base),
+                capture_runner=lambda **kwargs: {
+                    "status": "ready",
+                    "history_csv": str(base / "history.csv"),
+                    "scan_summary_file": str(base / "capture.json"),
+                },
+                gate_runner=lambda **kwargs: {
+                    "gate_pass": True,
+                    "gate_status": "pass",
+                    "gate_score": 42.0,
+                    "gate_blockers": ["No candidate clears the $0.05 Yes-bid floor."],
+                    "output_file": str(base / "gate.json"),
+                },
+                execute_runner=fail_execute,
+                now=datetime(2026, 3, 27, 21, 0, tzinfo=timezone.utc),
+            )
+
+            self.assertEqual(summary["status"], "hold")
+            self.assertFalse(summary["gate_pass"])
+            self.assertEqual(summary["gate_status"], "inconsistent_gate_state")
+            self.assertIn("Inconsistent gate state", summary["gate_blockers"][0])
+
 
 if __name__ == "__main__":
     unittest.main()

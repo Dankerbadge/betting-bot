@@ -4776,6 +4776,41 @@ if hysa_cap_condition:
     else:
         deployment_confidence_cap_detail = hysa_detail
 
+live_status_untrusted = live_status_effective_load_status in {
+    "derived_window_summary",
+    "path_missing",
+    "file_missing",
+    "parse_error",
+    "non_object",
+}
+if live_status_untrusted:
+    live_status_cap = 45.0
+    if deployment_confidence_score > live_status_cap:
+        deployment_confidence_score = float(live_status_cap)
+        deployment_confidence_cap_applied = True
+    deployment_confidence_band = "SHADOW_ONLY"
+    if not _normalize(deployment_confidence_cap_reason):
+        deployment_confidence_guidance = (
+            "Live status is fallback-derived or invalid; keep shadow-only until a valid live_status artifact is restored."
+        )
+    if not _normalize(deployment_confidence_cap_reason):
+        deployment_confidence_cap_reason = "live_status_untrusted"
+    elif "live_status_untrusted" not in deployment_confidence_cap_reason.split("+"):
+        deployment_confidence_cap_reason = f"{deployment_confidence_cap_reason}+live_status_untrusted"
+    if not isinstance(deployment_confidence_cap_value, float) or live_status_cap < deployment_confidence_cap_value:
+        deployment_confidence_cap_value = float(live_status_cap)
+    live_status_detail = (
+        f"live_status_primary={live_status_primary_load_status}; "
+        f"live_status_effective={live_status_effective_load_status}"
+    )
+    if _normalize(deployment_confidence_cap_detail):
+        if live_status_detail not in deployment_confidence_cap_detail:
+            deployment_confidence_cap_detail = (
+                f"{deployment_confidence_cap_detail}; {live_status_detail}"
+            )
+    else:
+        deployment_confidence_cap_detail = live_status_detail
+
 if critical_artifact_parse_error_keys:
     parse_error_cap = 35.0
     if deployment_confidence_score > parse_error_cap:

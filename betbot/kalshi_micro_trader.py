@@ -36,6 +36,10 @@ def _coerce_gate_pass(value: Any) -> tuple[bool, bool]:
     return False, False
 
 
+def _normalize_gate_status(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
 def run_kalshi_micro_trader(
     *,
     env_file: str,
@@ -126,6 +130,19 @@ def run_kalshi_micro_trader(
         gate_pass = False
         gate_status = "invalid_gate_pass"
         gate_blockers.insert(0, f"Invalid gate_pass value: {gate_summary.get('gate_pass')!r}")
+    elif gate_pass:
+        # Fail closed on contradictory gate output so execution never proceeds on mixed signals.
+        normalized_gate_status = _normalize_gate_status(gate_status)
+        if normalized_gate_status != "pass":
+            gate_pass = False
+            gate_status = "inconsistent_gate_state"
+            gate_blockers.insert(
+                0, f"Inconsistent gate state: gate_pass=true with gate_status={gate_summary.get('gate_status')!r}."
+            )
+        elif gate_blockers:
+            gate_pass = False
+            gate_status = "inconsistent_gate_state"
+            gate_blockers.insert(0, "Inconsistent gate state: gate_pass=true with non-empty gate_blockers.")
 
     summary = {
         "captured_at": captured_at.isoformat(),

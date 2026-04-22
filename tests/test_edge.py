@@ -31,6 +31,12 @@ class EdgeTests(unittest.TestCase):
         self.assertAlmostEqual(probs[0], 0.703505, places=6)
         self.assertAlmostEqual(probs[1], 0.296495, places=6)
 
+    def test_normalize_implied_probabilities_rejects_non_finite_odds(self) -> None:
+        with self.assertRaisesRegex(ValueError, "finite and > 1.0"):
+            normalize_implied_probabilities([1.9, float("nan")])
+        with self.assertRaisesRegex(ValueError, "finite and > 1.0"):
+            normalize_implied_probabilities([1.9, float("inf")])
+
     def test_stale_quote_penalty_caps_at_max_penalty(self) -> None:
         self.assertEqual(stale_quote_penalty(0), 0.0)
         self.assertAlmostEqual(stale_quote_penalty(900), 0.01, places=6)
