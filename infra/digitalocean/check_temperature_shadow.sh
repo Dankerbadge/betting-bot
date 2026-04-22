@@ -184,6 +184,7 @@ decision_matrix_lane_degraded_streak_threshold="0"
 decision_matrix_lane_degraded_streak_notify_every="0"
 decision_matrix_lane_last_notify_reason="none"
 decision_matrix_lane_strict_status_match="false"
+decision_matrix_lane_parse_error="false"
 HAS_JQ=1
 if ! command -v jq >/dev/null 2>&1; then
   HAS_JQ=0
@@ -915,10 +916,13 @@ strict_statuses = {
     if item.strip()
 }
 try:
+    parse_error = False
     payload = json.loads(path.read_text(encoding="utf-8"))
 except Exception:
+    parse_error = True
     payload = {}
 if not isinstance(payload, dict):
+    parse_error = True
     payload = {}
 status = _normalize(payload.get("last_lane_status")) or "unknown"
 degraded_streak_count = payload.get("degraded_streak_count")
@@ -944,6 +948,7 @@ print(f"degraded_streak_threshold={streak_threshold}")
 print(f"degraded_streak_notify_every={streak_notify_every}")
 print(f"last_notify_reason={last_notify_reason}")
 print(f"strict_status_match={'true' if strict_status_match else 'false'}")
+print(f"parse_error={'true' if parse_error else 'false'}")
 PY
 )"
   while IFS='=' read -r key value; do
@@ -954,8 +959,12 @@ PY
       degraded_streak_notify_every) decision_matrix_lane_degraded_streak_notify_every="$value" ;;
       last_notify_reason) decision_matrix_lane_last_notify_reason="$value" ;;
       strict_status_match) decision_matrix_lane_strict_status_match="$value" ;;
+      parse_error) decision_matrix_lane_parse_error="$value" ;;
     esac
   done <<< "$lane_state_vars"
+  if [[ "${decision_matrix_lane_parse_error:-false}" == "true" ]]; then
+    echo "decision_matrix_lane_alert_state -> PARSE_ERROR ($DECISION_MATRIX_LANE_ALERT_STATE_FILE)"
+  fi
   echo "decision_matrix_lane_alert_state status=${decision_matrix_lane_status:-unknown} degraded_streak=${decision_matrix_lane_degraded_streak_count:-0} threshold=${decision_matrix_lane_degraded_streak_threshold:-0} every=${decision_matrix_lane_degraded_streak_notify_every:-0} strict_statuses=${decision_matrix_lane_strict_statuses_normalized:-n/a} strict_match=${decision_matrix_lane_strict_status_match:-false} notify_reason=${decision_matrix_lane_last_notify_reason:-none} age_sec=${decision_matrix_lane_state_age_seconds:-n/a}"
 else
   echo "decision_matrix_lane_alert_state -> MISSING ($DECISION_MATRIX_LANE_ALERT_STATE_FILE)"
