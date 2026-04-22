@@ -433,6 +433,53 @@ def test_shadow_check_strict_warns_when_alpha_summary_health_is_yellow(tmp_path:
     assert "STRICT CHECK WARNING: alpha summary health is yellow" in result.stderr
 
 
+def test_shadow_check_strict_fails_when_alpha_summary_health_is_red(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    _write_json(
+        output_dir / "health" / "alpha_summary_latest.json",
+        {
+            "health": {
+                "status": "RED",
+                "reason_text": "critical signal mismatch",
+            },
+            "headline_metrics": {
+                "health_status": "RED",
+                "live_recommendation": "no_go_shadow_only",
+                "approval_rate": 0.1,
+                "deployment_confidence_score": 10.0,
+                "approval_auto_apply_payload_consistent": True,
+                "message_quality_overall_pass": True,
+                "trader_view_payload_consistent": True,
+            },
+            "approval_auto_apply": {
+                "enabled": False,
+                "should_apply": False,
+                "applied_in_this_run": False,
+                "released_in_this_run": False,
+                "apply_reason": "none",
+            },
+            "trader_view": {
+                "mode": "shadow_only",
+                "decision_now": "stay_shadow_only",
+                "live_recommendation": "no_go_shadow_only",
+                "approval_rate": 0.1,
+                "confidence_score": 10.0,
+            },
+        },
+    )
+
+    env_file = tmp_path / "shadow.env"
+    _write_env_file(env_file=env_file, output_dir=output_dir)
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_shadow_check(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 2
+    assert "STRICT CHECK FAILED: alpha summary health is red" in result.stderr
+
+
 def test_shadow_check_strict_fails_when_alpha_summary_payload_consistency_is_false(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[1]
     output_dir = tmp_path / "out"
@@ -619,3 +666,43 @@ def test_shadow_check_strict_fails_when_alpha_summary_trader_view_consistency_ch
 
     assert result.returncode == 2
     assert "STRICT CHECK FAILED: alpha summary trader_view consistency check failed" in result.stderr
+
+
+def test_shadow_check_strict_fails_when_alpha_summary_trader_view_block_is_missing(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    _write_json(
+        output_dir / "health" / "alpha_summary_latest.json",
+        {
+            "health": {
+                "status": "GREEN",
+                "reason_text": "",
+            },
+            "headline_metrics": {
+                "health_status": "GREEN",
+                "live_recommendation": "no_go_shadow_only",
+                "approval_rate": 0.1,
+                "deployment_confidence_score": 10.0,
+                "approval_auto_apply_payload_consistent": True,
+                "message_quality_overall_pass": True,
+                "trader_view_payload_consistent": True,
+            },
+            "approval_auto_apply": {
+                "enabled": False,
+                "should_apply": False,
+                "applied_in_this_run": False,
+                "released_in_this_run": False,
+                "apply_reason": "none",
+            },
+        },
+    )
+
+    env_file = tmp_path / "shadow.env"
+    _write_env_file(env_file=env_file, output_dir=output_dir)
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_shadow_check(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 2
+    assert "STRICT CHECK FAILED: alpha summary trader_view block missing" in result.stderr
