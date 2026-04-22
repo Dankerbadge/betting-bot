@@ -48,6 +48,69 @@ def _local_standard_date(timestamp: datetime, zone: ZoneInfo) -> str:
     return local_timestamp.date().isoformat()
 
 
+def _evaluate_observation_freshness(
+    *,
+    latest_observation_time_utc: str,
+    reference_now_utc: datetime,
+    max_observation_age_seconds: float | None,
+) -> dict[str, Any]:
+    latest_text = str(latest_observation_time_utc or "").strip()
+    parsed_latest = _parse_iso_datetime(latest_text)
+    if parsed_latest is None:
+        return {
+            "freshness_status": "unknown",
+            "freshness_reason": (
+                "missing_latest_observation_timestamp"
+                if not latest_text
+                else "invalid_latest_observation_timestamp"
+            ),
+            "latest_observation_age_seconds": None,
+            "max_observation_age_seconds": max_observation_age_seconds,
+        }
+
+    observed_utc = parsed_latest.astimezone(timezone.utc)
+    age_seconds = (reference_now_utc - observed_utc).total_seconds()
+    if age_seconds < 0.0:
+        return {
+            "freshness_status": "unknown",
+            "freshness_reason": "latest_observation_in_future",
+            "latest_observation_age_seconds": round(age_seconds, 3),
+            "max_observation_age_seconds": max_observation_age_seconds,
+        }
+
+    if max_observation_age_seconds is None:
+        return {
+            "freshness_status": "unchecked",
+            "freshness_reason": "freshness_guard_disabled",
+            "latest_observation_age_seconds": round(age_seconds, 3),
+            "max_observation_age_seconds": None,
+        }
+
+    max_age = _float_or_none(max_observation_age_seconds)
+    if max_age is None or max_age <= 0.0:
+        return {
+            "freshness_status": "unknown",
+            "freshness_reason": "invalid_max_observation_age_seconds",
+            "latest_observation_age_seconds": round(age_seconds, 3),
+            "max_observation_age_seconds": max_observation_age_seconds,
+        }
+
+    if age_seconds <= max_age:
+        return {
+            "freshness_status": "fresh",
+            "freshness_reason": "max_age_within_limit",
+            "latest_observation_age_seconds": round(age_seconds, 3),
+            "max_observation_age_seconds": round(max_age, 3),
+        }
+
+    return {
+        "freshness_status": "stale",
+        "freshness_reason": "max_age_exceeded",
+        "latest_observation_age_seconds": round(age_seconds, 3),
+        "max_observation_age_seconds": round(max_age, 3),
+    }
+
+
 def _build_metar_state_snapshot(
     *,
     station_id: str,
@@ -186,6 +249,8 @@ def build_intraday_temperature_snapshot(
     metar_state: dict[str, Any] | None = None,
     allow_nws_fallback: bool = True,
     now_utc: datetime | None = None,
+    max_observation_age_seconds: float | None = None,
+    require_fresh_observation: bool = False,
 ) -> dict[str, Any]:
     station_normalized = str(station_id or "").strip().upper()
     target_date_text = str(target_date_local or "")
@@ -232,8 +297,33 @@ def build_intraday_temperature_snapshot(
             metar_state=metar_state,
         )
         if metar_snapshot is not None:
+            metar_snapshot.update(
+                _evaluate_observation_freshness(
+                    latest_observation_time_utc=str(metar_snapshot.get("latest_observation_time_utc") or ""),
+                    reference_now_utc=reference_now_utc,
+                    max_observation_age_seconds=max_observation_age_seconds,
+                )
+            )
             has_observations = int(metar_snapshot.get("observations_for_date") or 0) > 0
-            if has_observations or not allow_nws_fallback:
+            metar_is_fresh = str(metar_snapshot.get("freshness_status") or "") == "fresh"
+            if require_fresh_observation and not metar_is_fresh:
+                if allow_nws_fallback:
+                    warnings = metar_snapshot.get("parse_warnings")
+                    if not isinstance(warnings, list):
+                        warnings = []
+                    warnings.append(
+                        f"metar_state_freshness_guard_failed:{metar_snapshot.get('freshness_reason')}"
+                    )
+                    metar_snapshot["parse_warnings"] = warnings
+                else:
+                    failed = dict(metar_snapshot)
+                    failed["status"] = "observations_stale"
+                    failed["error"] = "Latest station observation failed freshness guard."
+                    return failed
+            should_return_metar = has_observations or not allow_nws_fallback
+            if require_fresh_observation and not metar_is_fresh and allow_nws_fallback:
+                should_return_metar = False
+            if should_return_metar:
                 return metar_snapshot
 
     fetch_kwargs: dict[str, Any] = {
@@ -303,6 +393,15 @@ def build_intraday_temperature_snapshot(
 
     observations_for_date_raw.sort(key=lambda item: item[0])
     observations_for_date = [item[1] for item in observations_for_date_raw]
+    latest_observation_time_utc = observations_for_date[-1]["timestamp"] if observations_for_date else ""
+    freshness = _evaluate_observation_freshness(
+        latest_observation_time_utc=latest_observation_time_utc,
+        reference_now_utc=reference_now_utc,
+        max_observation_age_seconds=max_observation_age_seconds,
+    )
+    freshness_status = str(freshness.get("freshness_status") or "")
+    if require_fresh_observation and freshness_status != "fresh":
+        all_errors.append(f"freshness_guard_failed:{freshness.get('freshness_reason')}")
 
     max_temp_c = max((item["temperature_c"] for item in observations_for_date), default=None)
     max_temp_f = max((item["temperature_f"] for item in observations_for_date), default=None)
@@ -335,8 +434,12 @@ def build_intraday_temperature_snapshot(
             rounding_mode=rounding_mode,
         )
 
+    status = "ready"
+    if require_fresh_observation and freshness_status != "fresh":
+        status = "observations_stale"
+
     return {
-        "status": "ready",
+        "status": status,
         "station_id": station_normalized,
         "target_date_local": target_date.isoformat(),
         "timezone_name": timezone_text,
@@ -356,6 +459,16 @@ def build_intraday_temperature_snapshot(
         "min_temperature_settlement_quantized": min_settlement_quantized,
         "parse_warnings": all_errors,
         "snapshot_source": "nws_station_observations",
+        "latest_observation_time_utc": latest_observation_time_utc,
+        "freshness_status": freshness.get("freshness_status"),
+        "freshness_reason": freshness.get("freshness_reason"),
+        "latest_observation_age_seconds": freshness.get("latest_observation_age_seconds"),
+        "max_observation_age_seconds": freshness.get("max_observation_age_seconds"),
+        "error": (
+            "Latest station observation failed freshness guard."
+            if status != "ready"
+            else ""
+        ),
     }
 
 def classify_temperature_outcomes(

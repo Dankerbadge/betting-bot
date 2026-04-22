@@ -273,8 +273,21 @@ def _parse_clock_text(value: str) -> tuple[int, int] | None:
     text = str(value or "").strip().lower()
     if not text:
         return None
+    text = re.sub(r"^[\s,;:]+|[\s,;:]+$", "", text)
+    if text == "midnight":
+        return (0, 0)
+    if text == "noon":
+        return (12, 0)
     text = re.sub(r"\ba\.?m\.?\b", "am", text)
     text = re.sub(r"\bp\.?m\.?\b", "pm", text)
+    compact_match = re.fullmatch(r"(\d{3,4})", text)
+    if compact_match:
+        digits = compact_match.group(1)
+        hour_raw = int(digits[:-2])
+        minute_raw = int(digits[-2:])
+        if 0 <= hour_raw <= 23 and 0 <= minute_raw <= 59:
+            return (hour_raw, minute_raw)
+        return None
     match = re.search(r"\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b", text)
     if not match:
         return None
@@ -305,7 +318,7 @@ def infer_observation_window_local(rules_primary: str) -> tuple[str, str, str]:
     if not text:
         return ("", "", "unknown")
     lowered = text.lower()
-    clock_token = r"[0-9]{1,2}(?::[0-9]{2})?\s*(?:a\.?m\.?|p\.?m\.?)?"
+    clock_token = r"(?:midnight|noon|[0-9]{3,4}|[0-9]{1,2}(?::[0-9]{2})?\s*(?:a\.?m\.?|p\.?m\.?)?)"
     # Support common settlement phrasing that inserts timezone/local-time
     # qualifiers between the clock value and the range connector.
     clock_qualifier = (
@@ -314,7 +327,11 @@ def infer_observation_window_local(rules_primary: str) -> tuple[str, str, str]:
     )
 
     explicit_range = re.search(
-        rf"(?:between|from)\s+({clock_token}){clock_qualifier}\s*(?:and|to|-)\s*({clock_token}){clock_qualifier}",
+        (
+            rf"(?:between|from)\s+({clock_token}){clock_qualifier}"
+            rf"\s*,?\s*(?:and|to|through|thru|until|[-–—])\s*,?\s*"
+            rf"({clock_token}){clock_qualifier}"
+        ),
         lowered,
     )
     if explicit_range:
@@ -324,7 +341,7 @@ def infer_observation_window_local(rules_primary: str) -> tuple[str, str, str]:
             return (_format_clock_text(*start), _format_clock_text(*end), "rules_text")
 
     deadline = re.search(
-        r"(?:before|by|until)\s+([0-9]{1,2}(?::[0-9]{2})?\s*(?:a\.?m\.?|p\.?m\.?)?)",
+        r"(?:before|by|until)\s+((?:midnight|noon|[0-9]{1,2}(?::[0-9]{2})?\s*(?:a\.?m\.?|p\.?m\.?)?|[0-9]{3,4}))",
         lowered,
     )
     if deadline:

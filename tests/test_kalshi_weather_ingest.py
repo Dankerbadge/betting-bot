@@ -163,6 +163,96 @@ class KalshiWeatherIngestTests(unittest.TestCase):
         self.assertEqual(payload["observations_count"], 1)
         self.assertEqual(payload["observations"][0]["text_description"], "Light rain")
         self.assertEqual(payload["observations"][0]["temperature_c"], 11.2)
+        self.assertEqual(payload["filtered_observations_count"], 0)
+        self.assertEqual(payload["parse_warnings"], [])
+
+    def test_fetch_nws_station_recent_observations_filters_invalid_and_future_timestamps(self) -> None:
+        def fake_http_get_json(url: str, timeout_seconds: float):
+            self.assertIn("/stations/KJFK/observations", url)
+            return (
+                200,
+                {
+                    "features": [
+                        {
+                            "properties": {
+                                "timestamp": "2026-03-29T14:00:00+00:00",
+                                "textDescription": "Valid obs",
+                                "temperature": {"value": 10.0},
+                            }
+                        },
+                        {
+                            "properties": {
+                                "timestamp": "2026-03-30T03:00:00+00:00",
+                                "textDescription": "Future obs",
+                                "temperature": {"value": 11.0},
+                            }
+                        },
+                        {
+                            "properties": {
+                                "timestamp": "not-a-time",
+                                "textDescription": "Malformed obs",
+                                "temperature": {"value": 12.0},
+                            }
+                        },
+                    ]
+                },
+            )
+
+        payload = fetch_nws_station_recent_observations(
+            station_id="KJFK",
+            timeout_seconds=5.0,
+            now_utc=datetime(2026, 3, 29, 14, 0, tzinfo=timezone.utc),
+            http_get_json=fake_http_get_json,
+        )
+        self.assertEqual(payload["status"], "ready")
+        self.assertEqual(payload["observations_count"], 1)
+        self.assertEqual(payload["filtered_observations_count"], 2)
+        warning_errors = [str(item.get("error")) for item in payload["parse_warnings"]]
+        self.assertIn("future_timestamp", warning_errors)
+        self.assertIn("invalid_timestamp", warning_errors)
+
+    def test_fetch_nws_station_recent_observations_sanitizes_out_of_range_metrics(self) -> None:
+        def fake_http_get_json(url: str, timeout_seconds: float):
+            self.assertIn("/stations/KJFK/observations", url)
+            return (
+                200,
+                {
+                    "features": [
+                        {
+                            "properties": {
+                                "timestamp": "2026-03-29T14:00:00+00:00",
+                                "textDescription": "Poisoned values",
+                                "temperature": {"value": float("nan")},
+                                "dewpoint": {"value": 101.0},
+                                "relativeHumidity": {"value": 120.0},
+                                "precipitationLastHour": {"value": -1.0},
+                                "windSpeed": {"value": float("inf")},
+                            }
+                        }
+                    ]
+                },
+            )
+
+        payload = fetch_nws_station_recent_observations(
+            station_id="KJFK",
+            timeout_seconds=5.0,
+            now_utc=datetime(2026, 3, 29, 14, 0, tzinfo=timezone.utc),
+            http_get_json=fake_http_get_json,
+        )
+        self.assertEqual(payload["status"], "ready")
+        self.assertEqual(payload["observations_count"], 1)
+        observation = payload["observations"][0]
+        self.assertIsNone(observation["temperature_c"])
+        self.assertIsNone(observation["dewpoint_c"])
+        self.assertIsNone(observation["relative_humidity_pct"])
+        self.assertIsNone(observation["precipitation_last_hour_mm"])
+        self.assertIsNone(observation["wind_speed_mps"])
+        warning_fields = {str(item.get("field")) for item in payload["parse_warnings"]}
+        self.assertIn("temperature_c", warning_fields)
+        self.assertIn("dewpoint_c", warning_fields)
+        self.assertIn("relative_humidity_pct", warning_fields)
+        self.assertIn("precipitation_last_hour_mm", warning_fields)
+        self.assertIn("wind_speed_mps", warning_fields)
 
     def test_fetch_aviationweather_taf_temperature_envelopes_ready(self) -> None:
         taf_xml = """

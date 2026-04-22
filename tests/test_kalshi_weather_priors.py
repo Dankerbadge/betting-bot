@@ -1128,6 +1128,207 @@ class KalshiWeatherPriorsTests(unittest.TestCase):
             self.assertGreater(float(row["model_probability_raw"]), 0.99)
             self.assertGreater(float(row["fair_yes_probability"]), 0.85)
 
+    def test_run_kalshi_weather_priors_ignores_future_nws_observations(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            history_csv = base / "history.csv"
+            priors_csv = base / "priors.csv"
+            _write_csv(
+                history_csv,
+                HISTORY_FIELDNAMES,
+                [
+                    {
+                        "captured_at": "2026-04-01T12:00:00+00:00",
+                        "category": "Climate and Weather",
+                        "series_ticker": "KXRAINNYC",
+                        "event_ticker": "KXRAINNYC-26APR01",
+                        "market_ticker": "KXRAINNYC-26APR01",
+                        "event_title": "Will it rain in NYC today?",
+                        "market_title": "Will it rain in NYC today?",
+                        "rules_primary": "If measurable rain is recorded at station KJFK, this market resolves to Yes.",
+                        "close_time": "2026-04-01T23:59:00+00:00",
+                        "hours_to_close": "10",
+                        "yes_bid_dollars": "0.09",
+                        "yes_ask_dollars": "0.11",
+                        "spread_dollars": "0.02",
+                    },
+                ],
+            )
+            _write_csv(priors_csv, PRIOR_FIELDNAMES, [])
+
+            def fake_station_forecast_fetcher(*, station_id: str, timeout_seconds: float):
+                return {
+                    "status": "ready",
+                    "station_id": station_id,
+                    "forecast_updated_at": "2026-04-01T12:00:00+00:00",
+                    "periods": [
+                        {
+                            "startTime": "2026-04-01T13:00:00+00:00",
+                            "temperature": 58,
+                            "probabilityOfPrecipitation": {"value": 10},
+                        },
+                        {
+                            "startTime": "2026-04-01T14:00:00+00:00",
+                            "temperature": 60,
+                            "probabilityOfPrecipitation": {"value": 10},
+                        },
+                    ],
+                }
+
+            baseline_summary = run_kalshi_weather_priors(
+                priors_csv=str(priors_csv),
+                history_csv=str(history_csv),
+                output_dir=str(base),
+                station_forecast_fetcher=fake_station_forecast_fetcher,
+                station_history_fetcher=lambda **kwargs: {"status": "disabled_missing_token"},
+                anomaly_series_fetcher=lambda **kwargs: {"status": "ready", "values": [0.0] * 24},
+                include_nws_observations=True,
+                now=datetime(2026, 4, 1, 12, 5, tzinfo=timezone.utc),
+            )
+            self.assertEqual(baseline_summary["status"], "ready")
+            with Path(baseline_summary["output_csv"]).open("r", newline="", encoding="utf-8") as handle:
+                baseline_row = next(csv.DictReader(handle))
+
+            def fake_station_observations_fetcher(*, station_id: str, timeout_seconds: float, limit: int):
+                return {
+                    "status": "ready",
+                    "station_id": station_id,
+                    "observations": [
+                        {
+                            "timestamp": "2026-04-01T13:05:00+00:00",
+                            "text_description": "Heavy rain",
+                            "temperature_c": 11.0,
+                            "dewpoint_c": 10.0,
+                            "relative_humidity_pct": 92.0,
+                            "precipitation_last_hour_mm": 25.0,
+                            "wind_speed_mps": 6.0,
+                        }
+                    ],
+                }
+
+            summary = run_kalshi_weather_priors(
+                priors_csv=str(priors_csv),
+                history_csv=str(history_csv),
+                output_dir=str(base),
+                station_forecast_fetcher=fake_station_forecast_fetcher,
+                station_observations_fetcher=fake_station_observations_fetcher,
+                station_history_fetcher=lambda **kwargs: {"status": "disabled_missing_token"},
+                anomaly_series_fetcher=lambda **kwargs: {"status": "ready", "values": [0.0] * 24},
+                include_nws_observations=True,
+                now=datetime(2026, 4, 1, 12, 5, tzinfo=timezone.utc),
+            )
+
+            self.assertEqual(summary["status"], "ready")
+            with Path(summary["output_csv"]).open("r", newline="", encoding="utf-8") as handle:
+                row = next(csv.DictReader(handle))
+            self.assertAlmostEqual(float(row["model_probability_raw"]), float(baseline_row["model_probability_raw"]), places=6)
+            self.assertAlmostEqual(float(row["confidence"]), float(baseline_row["confidence"]), places=6)
+            self.assertIn("nws_observations_recent_count=0", row["source_note"])
+            self.assertIn("nws_observations_parse_warning_count=1", row["source_note"])
+
+    def test_run_kalshi_weather_priors_drops_implausible_nws_observation_metrics(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            history_csv = base / "history.csv"
+            priors_csv = base / "priors.csv"
+            _write_csv(
+                history_csv,
+                HISTORY_FIELDNAMES,
+                [
+                    {
+                        "captured_at": "2026-04-01T12:00:00+00:00",
+                        "category": "Climate and Weather",
+                        "series_ticker": "KXTEMPNYC",
+                        "event_ticker": "KXTEMPNYC-26APR01",
+                        "market_ticker": "KXTEMPNYC-26APR01",
+                        "event_title": "NYC high temperature today",
+                        "market_title": "Will NYC high temperature be at least 70?",
+                        "rules_primary": "If high temperature at station KJFK is at least 70, resolves Yes.",
+                        "close_time": "2026-04-01T23:59:00+00:00",
+                        "hours_to_close": "10",
+                        "yes_bid_dollars": "0.40",
+                        "yes_ask_dollars": "0.42",
+                        "spread_dollars": "0.02",
+                    },
+                ],
+            )
+            _write_csv(priors_csv, PRIOR_FIELDNAMES, [])
+
+            def fake_station_forecast_fetcher(*, station_id: str, timeout_seconds: float):
+                return {
+                    "status": "ready",
+                    "station_id": station_id,
+                    "forecast_updated_at": "2026-04-01T12:00:00+00:00",
+                    "periods": [
+                        {
+                            "startTime": "2026-04-01T13:00:00+00:00",
+                            "temperature": 64,
+                            "probabilityOfPrecipitation": {"value": 10},
+                        },
+                        {
+                            "startTime": "2026-04-01T14:00:00+00:00",
+                            "temperature": 65,
+                            "probabilityOfPrecipitation": {"value": 10},
+                        },
+                        {
+                            "startTime": "2026-04-01T15:00:00+00:00",
+                            "temperature": 66,
+                            "probabilityOfPrecipitation": {"value": 10},
+                        },
+                    ],
+                }
+
+            baseline_summary = run_kalshi_weather_priors(
+                priors_csv=str(priors_csv),
+                history_csv=str(history_csv),
+                output_dir=str(base),
+                station_forecast_fetcher=fake_station_forecast_fetcher,
+                station_history_fetcher=lambda **kwargs: {"status": "disabled_missing_token"},
+                anomaly_series_fetcher=lambda **kwargs: {"status": "ready", "values": [0.0] * 24},
+                include_nws_observations=True,
+                now=datetime(2026, 4, 1, 12, 5, tzinfo=timezone.utc),
+            )
+            self.assertEqual(baseline_summary["status"], "ready")
+            with Path(baseline_summary["output_csv"]).open("r", newline="", encoding="utf-8") as handle:
+                baseline_row = next(csv.DictReader(handle))
+
+            def fake_station_observations_fetcher(*, station_id: str, timeout_seconds: float, limit: int):
+                return {
+                    "status": "ready",
+                    "station_id": station_id,
+                    "observations": [
+                        {
+                            "timestamp": "2026-04-01T12:04:00+00:00",
+                            "text_description": "Clear",
+                            "temperature_c": 80.0,
+                            "dewpoint_c": 120.0,
+                            "relative_humidity_pct": 200.0,
+                            "precipitation_last_hour_mm": 0.0,
+                            "wind_speed_mps": 300.0,
+                        }
+                    ],
+                }
+
+            summary = run_kalshi_weather_priors(
+                priors_csv=str(priors_csv),
+                history_csv=str(history_csv),
+                output_dir=str(base),
+                station_forecast_fetcher=fake_station_forecast_fetcher,
+                station_observations_fetcher=fake_station_observations_fetcher,
+                station_history_fetcher=lambda **kwargs: {"status": "disabled_missing_token"},
+                anomaly_series_fetcher=lambda **kwargs: {"status": "ready", "values": [0.0] * 24},
+                include_nws_observations=True,
+                now=datetime(2026, 4, 1, 12, 5, tzinfo=timezone.utc),
+            )
+
+            self.assertEqual(summary["status"], "ready")
+            with Path(summary["output_csv"]).open("r", newline="", encoding="utf-8") as handle:
+                row = next(csv.DictReader(handle))
+            self.assertAlmostEqual(float(row["model_probability_raw"]), float(baseline_row["model_probability_raw"]), places=6)
+            self.assertAlmostEqual(float(row["confidence"]), float(baseline_row["confidence"]), places=6)
+            self.assertIn("nws_observations_recent_count=0", row["source_note"])
+            self.assertIn("nws_observations_parse_warning_count=1", row["source_note"])
+
     def test_run_kalshi_weather_priors_ignores_implausible_climatology_temperature_outliers(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)

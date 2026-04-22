@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import gzip
 import json
 import math
@@ -876,6 +876,7 @@ def fetch_nws_station_recent_observations(
     station_id: str,
     limit: int = 24,
     timeout_seconds: float = 12.0,
+    now_utc: datetime | None = None,
     http_get_json: JsonGetter = _http_get_json,
 ) -> dict[str, Any]:
     clean_station_id = str(station_id or "").strip().upper()
@@ -901,45 +902,129 @@ def fetch_nws_station_recent_observations(
     if not isinstance(features, list):
         features = []
     observations: list[dict[str, Any]] = []
-    for feature in features:
+    parse_warnings: list[dict[str, Any]] = []
+    current_utc = now_utc.astimezone(timezone.utc) if isinstance(now_utc, datetime) else datetime.now(timezone.utc)
+    future_grace = current_utc + timedelta(minutes=5)
+
+    def _read_numeric_value(
+        *,
+        properties: dict[str, Any],
+        source_field: str,
+        output_field: str,
+        index: int,
+        min_value: float | None = None,
+        max_value: float | None = None,
+    ) -> float | None:
+        container = properties.get(source_field)
+        if not isinstance(container, dict):
+            return None
+        raw_value = container.get("value")
+        if not isinstance(raw_value, (int, float)):
+            return None
+        value = float(raw_value)
+        if not math.isfinite(value):
+            parse_warnings.append(
+                {
+                    "index": index,
+                    "field": output_field,
+                    "error": "non_finite_value",
+                }
+            )
+            return None
+        if min_value is not None and value < min_value:
+            parse_warnings.append(
+                {
+                    "index": index,
+                    "field": output_field,
+                    "error": "out_of_range_low",
+                    "value": value,
+                    "min_value": float(min_value),
+                }
+            )
+            return None
+        if max_value is not None and value > max_value:
+            parse_warnings.append(
+                {
+                    "index": index,
+                    "field": output_field,
+                    "error": "out_of_range_high",
+                    "value": value,
+                    "max_value": float(max_value),
+                }
+            )
+            return None
+        return value
+
+    for feature_index, feature in enumerate(features):
         if not isinstance(feature, dict):
             continue
         properties = feature.get("properties")
         if not isinstance(properties, dict):
             continue
+        index = feature_index
+        timestamp_text = str(properties.get("timestamp") or "").strip()
+        if not timestamp_text:
+            parse_warnings.append({"index": index, "field": "timestamp", "error": "missing_timestamp"})
+            continue
+        parsed_timestamp = _parse_iso_datetime(timestamp_text)
+        if parsed_timestamp is None:
+            parse_warnings.append(
+                {"index": index, "field": "timestamp", "error": "invalid_timestamp", "value": timestamp_text}
+            )
+            continue
+        if parsed_timestamp > future_grace:
+            parse_warnings.append(
+                {
+                    "index": index,
+                    "field": "timestamp",
+                    "error": "future_timestamp",
+                    "value": timestamp_text,
+                }
+            )
+            continue
         observations.append(
             {
-                "timestamp": str(properties.get("timestamp") or "").strip(),
+                "timestamp": timestamp_text,
                 "text_description": str(properties.get("textDescription") or "").strip(),
-                "temperature_c": (
-                    float(properties.get("temperature", {}).get("value"))
-                    if isinstance(properties.get("temperature"), dict)
-                    and isinstance(properties.get("temperature", {}).get("value"), (int, float))
-                    else None
+                "temperature_c": _read_numeric_value(
+                    properties=properties,
+                    source_field="temperature",
+                    output_field="temperature_c",
+                    index=index,
+                    min_value=-100.0,
+                    max_value=60.0,
                 ),
-                "dewpoint_c": (
-                    float(properties.get("dewpoint", {}).get("value"))
-                    if isinstance(properties.get("dewpoint"), dict)
-                    and isinstance(properties.get("dewpoint", {}).get("value"), (int, float))
-                    else None
+                "dewpoint_c": _read_numeric_value(
+                    properties=properties,
+                    source_field="dewpoint",
+                    output_field="dewpoint_c",
+                    index=index,
+                    min_value=-100.0,
+                    max_value=60.0,
                 ),
-                "relative_humidity_pct": (
-                    float(properties.get("relativeHumidity", {}).get("value"))
-                    if isinstance(properties.get("relativeHumidity"), dict)
-                    and isinstance(properties.get("relativeHumidity", {}).get("value"), (int, float))
-                    else None
+                "relative_humidity_pct": _read_numeric_value(
+                    properties=properties,
+                    source_field="relativeHumidity",
+                    output_field="relative_humidity_pct",
+                    index=index,
+                    min_value=0.0,
+                    max_value=100.0,
                 ),
-                "precipitation_last_hour_mm": (
-                    float(properties.get("precipitationLastHour", {}).get("value"))
-                    if isinstance(properties.get("precipitationLastHour"), dict)
-                    and isinstance(properties.get("precipitationLastHour", {}).get("value"), (int, float))
-                    else None
+                "precipitation_last_hour_mm": _read_numeric_value(
+                    properties=properties,
+                    source_field="precipitationLastHour",
+                    output_field="precipitation_last_hour_mm",
+                    index=index,
+                    min_value=0.0,
+                    max_value=400.0,
                 ),
-                "wind_speed_mps": (
-                    float(properties.get("windSpeed", {}).get("value"))
-                    if isinstance(properties.get("windSpeed"), dict)
-                    and isinstance(properties.get("windSpeed", {}).get("value"), (int, float))
-                    else None
+                "wind_speed_mps": _read_numeric_value(
+                    properties=properties,
+                    source_field="windSpeed",
+                    output_field="wind_speed_mps",
+                    index=index,
+                    min_value=0.0,
+                    max_value=150.0,
                 ),
             }
         )
@@ -951,6 +1036,8 @@ def fetch_nws_station_recent_observations(
         "http_status_observations": status,
         "observations_count": len(observations),
         "observations": observations,
+        "filtered_observations_count": max(0, len(features) - len(observations)),
+        "parse_warnings": parse_warnings,
     }
 
 

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import csv
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import gzip
 import hashlib
 import io
@@ -36,6 +36,11 @@ OBSERVATION_FIELDNAMES = [
 # poisoning station-day extrema and downstream weather pattern signals.
 MIN_VALID_METAR_TEMP_C = -100.0
 MAX_VALID_METAR_TEMP_C = 60.0
+
+# Recency sanity bounds for state/extrema updates. Keep generous to remain
+# backward-compatible with normal feed latency while blocking stale/future drift.
+MAX_FUTURE_OBSERVATION_SKEW_MINUTES = 15.0
+MAX_STALE_OBSERVATION_AGE_HOURS = 72.0
 
 
 def _normalize_text(value: Any) -> str:
@@ -326,6 +331,7 @@ def run_kalshi_temperature_metar_ingest(
     parsed = parse_metar_cache_csv_gz(blob_gz)
     parsed_rows = parsed.get("rows") if isinstance(parsed.get("rows"), list) else []
     parse_errors = parsed.get("errors") if isinstance(parsed.get("errors"), list) else []
+    processing_errors: list[str] = []
 
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -358,14 +364,34 @@ def run_kalshi_temperature_metar_ingest(
 
     observation_rows: list[dict[str, Any]] = []
     new_station_updates = 0
-    for row in parsed_rows:
+    for row_index, row in enumerate(parsed_rows):
         if not isinstance(row, dict):
             continue
         station_id = _normalize_text(row.get("station_id")).upper()
         observed_utc = _normalize_text(row.get("observation_time_utc"))
         temp_c = row.get("temp_c")
-        timezone_name = station_timezone_map.get(station_id, "UTC")
+        existing = latest_by_station.get(station_id)
+        existing_timezone_name = _normalize_text(existing.get("timezone_name")) if isinstance(existing, dict) else ""
+        timezone_name = (
+            station_timezone_map.get(station_id)
+            or existing_timezone_name
+            or infer_timezone_from_station(station_id)
+            or "UTC"
+        )
         local_date = _observation_local_date(observed_utc, timezone_name)
+        current_time = _parse_iso_datetime(observed_utc)
+
+        is_stale = False
+        is_future = False
+        if current_time is not None:
+            max_future_time = captured_at + timedelta(minutes=MAX_FUTURE_OBSERVATION_SKEW_MINUTES)
+            min_fresh_time = captured_at - timedelta(hours=MAX_STALE_OBSERVATION_AGE_HOURS)
+            if current_time > max_future_time:
+                is_future = True
+                processing_errors.append(f"row_{row_index}:future_observation_time")
+            elif current_time < min_fresh_time:
+                is_stale = True
+                processing_errors.append(f"row_{row_index}:stale_observation_time")
 
         observation_rows.append(
             {
@@ -381,9 +407,11 @@ def run_kalshi_temperature_metar_ingest(
             }
         )
 
+        if is_stale or is_future:
+            continue
+
         existing = latest_by_station.get(station_id)
         existing_time = _parse_iso_datetime(existing.get("observation_time_utc")) if isinstance(existing, dict) else None
-        current_time = _parse_iso_datetime(observed_utc)
         should_update_latest = False
         if current_time is not None:
             if existing_time is None or current_time > existing_time:
@@ -497,7 +525,11 @@ def run_kalshi_temperature_metar_ingest(
     observations_csv = out_dir / f"kalshi_temperature_metar_observations_{stamp}.csv"
     _write_observations_csv(observations_csv, observation_rows)
 
+    combined_errors = parse_errors + processing_errors
+
     status = _normalize_text(parsed.get("status")) or "ready"
+    if status == "ready" and combined_errors:
+        status = "ready_partial"
     if status == "no_rows":
         status = "ready_no_rows"
 
@@ -513,8 +545,8 @@ def run_kalshi_temperature_metar_ingest(
         "station_timezone_mappings": len(station_timezone_map),
         "rows_parsed": len(parsed_rows),
         "rows_emitted": len(observation_rows),
-        "parse_errors_count": len(parse_errors),
-        "parse_errors": parse_errors[:100],
+        "parse_errors_count": len(combined_errors),
+        "parse_errors": combined_errors[:100],
         "station_updates": new_station_updates,
         "stations_tracked": len(latest_by_station),
         "station_interval_stats_count": len(station_interval_stats),

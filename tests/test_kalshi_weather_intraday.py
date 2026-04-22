@@ -259,6 +259,118 @@ class KalshiWeatherIntradayTests(unittest.TestCase):
         self.assertIn("invalid_temperature_c_at_index_0", snapshot["parse_warnings"])
         self.assertIn("invalid_temperature_c_at_index_1", snapshot["parse_warnings"])
 
+    def test_build_intraday_temperature_snapshot_marks_freshness_unchecked_by_default(self) -> None:
+        def fake_http_get_json(url: str, timeout_seconds: float):
+            self.assertIn("/stations/KJFK/observations", url)
+            return (
+                200,
+                {
+                    "features": [
+                        {
+                            "properties": {
+                                "timestamp": "2026-04-08T15:10:00+00:00",
+                                "temperature": {"value": 20.0},
+                            }
+                        },
+                    ]
+                },
+            )
+
+        snapshot = build_intraday_temperature_snapshot(
+            station_id="KJFK",
+            target_date_local="2026-04-08",
+            timezone_name="America/New_York",
+            http_get_json=fake_http_get_json,
+            now_utc=datetime(2026, 4, 8, 16, 0, tzinfo=timezone.utc),
+        )
+
+        self.assertEqual(snapshot["status"], "ready")
+        self.assertEqual(snapshot["freshness_status"], "unchecked")
+        self.assertEqual(snapshot["freshness_reason"], "freshness_guard_disabled")
+        self.assertAlmostEqual(float(snapshot["latest_observation_age_seconds"]), 3000.0, places=3)
+
+    def test_build_intraday_temperature_snapshot_strict_freshness_rejects_stale_observation(self) -> None:
+        def fake_http_get_json(url: str, timeout_seconds: float):
+            self.assertIn("/stations/KJFK/observations", url)
+            return (
+                200,
+                {
+                    "features": [
+                        {
+                            "properties": {
+                                "timestamp": "2026-04-08T14:10:00+00:00",
+                                "temperature": {"value": 18.2},
+                            }
+                        },
+                    ]
+                },
+            )
+
+        snapshot = build_intraday_temperature_snapshot(
+            station_id="KJFK",
+            target_date_local="2026-04-08",
+            timezone_name="America/New_York",
+            http_get_json=fake_http_get_json,
+            now_utc=datetime(2026, 4, 8, 16, 0, tzinfo=timezone.utc),
+            max_observation_age_seconds=3600.0,
+            require_fresh_observation=True,
+        )
+
+        self.assertEqual(snapshot["status"], "observations_stale")
+        self.assertEqual(snapshot["freshness_status"], "stale")
+        self.assertEqual(snapshot["freshness_reason"], "max_age_exceeded")
+        self.assertEqual(snapshot["latest_observation_time_utc"], "2026-04-08T14:10:00+00:00")
+        self.assertIn("freshness_guard_failed:max_age_exceeded", snapshot["parse_warnings"])
+
+    def test_build_intraday_temperature_snapshot_strict_freshness_falls_back_from_stale_metar(self) -> None:
+        metar_state = {
+            "latest_observation_by_station": {
+                "KJFK": {
+                    "observation_time_utc": "2026-04-08T10:00:00+00:00",
+                    "temp_c": 20.0,
+                }
+            },
+            "max_temp_c_by_station_local_day": {
+                "KJFK|2026-04-08": 20.0,
+            },
+            "min_temp_c_by_station_local_day": {
+                "KJFK|2026-04-08": 12.0,
+            },
+        }
+
+        def fake_http_get_json(url: str, timeout_seconds: float):
+            self.assertIn("/stations/KJFK/observations", url)
+            return (
+                200,
+                {
+                    "features": [
+                        {
+                            "properties": {
+                                "timestamp": "2026-04-08T15:30:00+00:00",
+                                "temperature": {"value": 17.0},
+                            }
+                        },
+                    ]
+                },
+            )
+
+        snapshot = build_intraday_temperature_snapshot(
+            station_id="KJFK",
+            target_date_local="2026-04-08",
+            timezone_name="America/New_York",
+            metar_state=metar_state,
+            http_get_json=fake_http_get_json,
+            now_utc=datetime(2026, 4, 8, 16, 0, tzinfo=timezone.utc),
+            max_observation_age_seconds=3600.0,
+            require_fresh_observation=True,
+            allow_nws_fallback=True,
+        )
+
+        self.assertEqual(snapshot["status"], "ready")
+        self.assertEqual(snapshot["snapshot_source"], "nws_station_observations")
+        self.assertEqual(snapshot["freshness_status"], "fresh")
+        self.assertEqual(snapshot["freshness_reason"], "max_age_within_limit")
+
     def test_quantize_temperature_nearest_half_away_from_zero(self) -> None:
         self.assertEqual(quantize_temperature(21.5), 22.0)
         self.assertEqual(quantize_temperature(-1.5), -2.0)

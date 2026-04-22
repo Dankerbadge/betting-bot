@@ -86,6 +86,30 @@ class KalshiWeatherSettlementTests(unittest.TestCase):
         self.assertEqual(end, "23:59")
         self.assertEqual(source, "rules_text")
 
+    def test_infer_observation_window_local_parses_through_with_comma(self) -> None:
+        start, end, source = infer_observation_window_local(
+            "Observation period is from 12:00 AM ET, through 11:59 PM ET."
+        )
+        self.assertEqual(start, "00:00")
+        self.assertEqual(end, "23:59")
+        self.assertEqual(source, "rules_text")
+
+    def test_infer_observation_window_local_parses_midnight_and_noon_tokens(self) -> None:
+        start, end, source = infer_observation_window_local(
+            "Observation period is between midnight and noon local time."
+        )
+        self.assertEqual(start, "00:00")
+        self.assertEqual(end, "12:00")
+        self.assertEqual(source, "rules_text")
+
+    def test_infer_observation_window_local_parses_compact_hhmm_range(self) -> None:
+        start, end, source = infer_observation_window_local(
+            "Observation period is between 0000 and 2359 local time."
+        )
+        self.assertEqual(start, "00:00")
+        self.assertEqual(end, "23:59")
+        self.assertEqual(source, "rules_text")
+
     def test_build_weather_settlement_spec_contains_core_fields(self) -> None:
         spec = build_weather_settlement_spec(
             {

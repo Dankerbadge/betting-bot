@@ -56,6 +56,17 @@ _DEFAULT_HISTORICAL_LOOKBACK_YEARS = 15
 _DEFAULT_STATION_HISTORY_CACHE_MAX_AGE_HOURS = 24.0
 _MIN_VALID_TEMPERATURE_F = -120.0
 _MAX_VALID_TEMPERATURE_F = 140.0
+_MAX_RECENT_OBSERVATION_FUTURE_SKEW = timedelta(minutes=0)
+_MIN_VALID_OBSERVATION_TEMPERATURE_C = -100.0
+_MAX_VALID_OBSERVATION_TEMPERATURE_C = 70.0
+_MIN_VALID_OBSERVATION_DEWPOINT_C = -100.0
+_MAX_VALID_OBSERVATION_DEWPOINT_C = 70.0
+_MIN_VALID_OBSERVATION_RELATIVE_HUMIDITY_PCT = 0.0
+_MAX_VALID_OBSERVATION_RELATIVE_HUMIDITY_PCT = 100.0
+_MIN_VALID_OBSERVATION_PRECIP_MM = 0.0
+_MAX_VALID_OBSERVATION_PRECIP_MM = 500.0
+_MIN_VALID_OBSERVATION_WIND_SPEED_MPS = 0.0
+_MAX_VALID_OBSERVATION_WIND_SPEED_MPS = 120.0
 _MIN_SAMPLE_YEARS_BY_DAILY_FAMILY = {
     "daily_rain": 8,
     "daily_temperature": 10,
@@ -213,6 +224,66 @@ def _parse_float(value: Any) -> float | None:
     if numeric is None or not math.isfinite(numeric):
         return None
     return numeric
+
+
+def _parse_recent_observation_float(
+    value: Any,
+    *,
+    min_value: float,
+    max_value: float,
+) -> float | None:
+    if isinstance(value, bool):
+        return None
+    numeric = _parse_float(value)
+    if numeric is None:
+        return None
+    if numeric < min_value or numeric > max_value:
+        return None
+    return numeric
+
+
+def _parse_recent_observation_timestamp(value: Any, *, now: datetime) -> datetime | None:
+    observed_at = _parse_datetime(value)
+    if observed_at is None:
+        return None
+    current_time = now.astimezone(timezone.utc)
+    if observed_at > current_time + _MAX_RECENT_OBSERVATION_FUTURE_SKEW:
+        return None
+    return observed_at
+
+
+def _validate_recent_nws_observation(
+    observation: dict[str, Any],
+    *,
+    now: datetime,
+) -> tuple[datetime | None, dict[str, float] | None, str | None]:
+    timestamp = _parse_recent_observation_timestamp(observation.get("timestamp"), now=now)
+    if timestamp is None:
+        return None, None, "invalid_timestamp"
+
+    metric_specs = (
+        ("temperature_c", _MIN_VALID_OBSERVATION_TEMPERATURE_C, _MAX_VALID_OBSERVATION_TEMPERATURE_C),
+        ("dewpoint_c", _MIN_VALID_OBSERVATION_DEWPOINT_C, _MAX_VALID_OBSERVATION_DEWPOINT_C),
+        (
+            "relative_humidity_pct",
+            _MIN_VALID_OBSERVATION_RELATIVE_HUMIDITY_PCT,
+            _MAX_VALID_OBSERVATION_RELATIVE_HUMIDITY_PCT,
+        ),
+        ("precipitation_last_hour_mm", _MIN_VALID_OBSERVATION_PRECIP_MM, _MAX_VALID_OBSERVATION_PRECIP_MM),
+        ("wind_speed_mps", _MIN_VALID_OBSERVATION_WIND_SPEED_MPS, _MAX_VALID_OBSERVATION_WIND_SPEED_MPS),
+    )
+
+    parsed_metrics: dict[str, float] = {}
+    for field_name, min_value, max_value in metric_specs:
+        raw_value = observation.get(field_name)
+        if raw_value is None:
+            continue
+        parsed_value = _parse_recent_observation_float(raw_value, min_value=min_value, max_value=max_value)
+        if parsed_value is None:
+            return None, None, f"invalid_{field_name}"
+        parsed_metrics[field_name] = parsed_value
+
+    return timestamp, parsed_metrics, None
 
 
 def _is_valid_temperature_f(value: Any) -> bool:
@@ -1207,6 +1278,7 @@ def _build_daily_rain_prior(
     observations_recent_count = 0
     observations_recent_rain_count = 0
     observations_signal = 0.0
+    observations_parse_warning_count = 0
     if include_nws_observations:
         try:
             observations_payload = station_observations_fetcher(
@@ -1223,14 +1295,20 @@ def _build_daily_rain_prior(
                 for observation in observations:
                     if not isinstance(observation, dict):
                         continue
-                    observed_dt = _parse_datetime(observation.get("timestamp"))
-                    if observed_dt is None:
+                    observed_dt, parsed_metrics, parse_warning = _validate_recent_nws_observation(
+                        observation,
+                        now=now,
+                    )
+                    if parse_warning is not None:
+                        observations_parse_warning_count += 1
                         continue
-                    age_hours_obs = max(0.0, (now - observed_dt).total_seconds() / 3600.0)
+                    if observed_dt is None or parsed_metrics is None:
+                        continue
+                    age_hours_obs = (now.astimezone(timezone.utc) - observed_dt).total_seconds() / 3600.0
                     if age_hours_obs > 12.0:
                         continue
                     observations_recent_count += 1
-                    precip_mm = _parse_float(observation.get("precipitation_last_hour_mm"))
+                    precip_mm = parsed_metrics.get("precipitation_last_hour_mm")
                     text_description = str(observation.get("text_description") or "").strip().lower()
                     if (isinstance(precip_mm, float) and precip_mm >= 0.2) or ("rain" in text_description):
                         observations_recent_rain_count += 1
@@ -1362,6 +1440,7 @@ def _build_daily_rain_prior(
         f"rain_climatology_blend_weight={rain_climatology_blend_weight:.4f}",
         f"nws_observations_status={observations_status}",
         f"nws_observations_recent_count={observations_recent_count}",
+        f"nws_observations_parse_warning_count={observations_parse_warning_count}",
         f"nws_observations_recent_rain_count={observations_recent_rain_count}",
         f"nws_observations_signal={observations_signal:.4f}",
         f"nws_alerts_status={alerts_status}",
@@ -1578,6 +1657,7 @@ def _build_daily_temperature_prior(
     observations_status = "disabled"
     observations_recent_count = 0
     observations_temp_correction = 0.0
+    observations_parse_warning_count = 0
     if include_nws_observations:
         try:
             observations_payload = station_observations_fetcher(
@@ -1595,13 +1675,19 @@ def _build_daily_temperature_prior(
                 for observation in observations:
                     if not isinstance(observation, dict):
                         continue
-                    observed_dt = _parse_datetime(observation.get("timestamp"))
-                    if observed_dt is None:
+                    observed_dt, parsed_metrics, parse_warning = _validate_recent_nws_observation(
+                        observation,
+                        now=now,
+                    )
+                    if parse_warning is not None:
+                        observations_parse_warning_count += 1
                         continue
-                    age_hours_obs = max(0.0, (now - observed_dt).total_seconds() / 3600.0)
+                    if observed_dt is None or parsed_metrics is None:
+                        continue
+                    age_hours_obs = (now.astimezone(timezone.utc) - observed_dt).total_seconds() / 3600.0
                     if age_hours_obs > 6.0:
                         continue
-                    temperature_c = _parse_float(observation.get("temperature_c"))
+                    temperature_c = parsed_metrics.get("temperature_c")
                     if temperature_c is None:
                         continue
                     recent_temps_f.append((temperature_c * 9.0 / 5.0) + 32.0)
@@ -1718,6 +1804,7 @@ def _build_daily_temperature_prior(
         f"forecast_updated_at={updated_at or 'unknown'}",
         f"nws_observations_status={observations_status}",
         f"nws_observations_recent_count={observations_recent_count}",
+        f"nws_observations_parse_warning_count={observations_parse_warning_count}",
         f"nws_observations_temp_correction_f={observations_temp_correction:.3f}",
         f"nws_alerts_status={alerts_status}",
         f"nws_alerts_count={alerts_count}",
