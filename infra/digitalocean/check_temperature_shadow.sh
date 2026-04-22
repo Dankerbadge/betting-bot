@@ -116,6 +116,19 @@ normalize_status_token() {
     | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'
 }
 
+normalize_boolean_token() {
+  local raw="${1:-}"
+  local default_value="${2:-false}"
+  local default_binary normalized_binary
+  default_binary="$(normalize_binary_flag "$default_value" "0")"
+  normalized_binary="$(normalize_binary_flag "$raw" "$default_binary")"
+  if [[ "$normalized_binary" == "1" ]]; then
+    echo "true"
+  else
+    echo "false"
+  fi
+}
+
 if ! [[ "$LIVE_STATUS_STRICT_MAX_AGE_SECONDS" =~ ^[0-9]+$ ]]; then
   LIVE_STATUS_STRICT_MAX_AGE_SECONDS=300
 fi
@@ -719,16 +732,16 @@ if [[ -f "$alpha_summary_latest_health" && "$HAS_JQ" == "1" ]]; then
 fi
 alpha_summary_health_status="$(normalize_status_token "${alpha_summary_health_status:-unknown}")"
 alpha_summary_health_reason="$(printf '%s' "${alpha_summary_health_reason:-}" | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g' | sed 's/^ //; s/ $//')"
-alpha_summary_payload_consistent="$(printf '%s' "${alpha_summary_payload_consistent:-unknown}" | tr '[:upper:]' '[:lower:]')"
-alpha_summary_message_quality_pass="$(printf '%s' "${alpha_summary_message_quality_pass:-unknown}" | tr '[:upper:]' '[:lower:]')"
-alpha_summary_quality_gate_source="$(printf '%s' "${alpha_summary_quality_gate_source:-unknown}" | tr '[:upper:]' '[:lower:]')"
-alpha_summary_quality_gate_auto_applied="$(printf '%s' "${alpha_summary_quality_gate_auto_applied:-false}" | tr '[:upper:]' '[:lower:]')"
-alpha_summary_auto_apply_enabled="$(printf '%s' "${alpha_summary_auto_apply_enabled:-false}" | tr '[:upper:]' '[:lower:]')"
-alpha_summary_auto_apply_should_apply="$(printf '%s' "${alpha_summary_auto_apply_should_apply:-false}" | tr '[:upper:]' '[:lower:]')"
-alpha_summary_auto_apply_applied_in_this_run="$(printf '%s' "${alpha_summary_auto_apply_applied_in_this_run:-false}" | tr '[:upper:]' '[:lower:]')"
-alpha_summary_auto_apply_released_in_this_run="$(printf '%s' "${alpha_summary_auto_apply_released_in_this_run:-false}" | tr '[:upper:]' '[:lower:]')"
-alpha_summary_auto_apply_apply_reason="$(printf '%s' "${alpha_summary_auto_apply_apply_reason:-unknown}" | tr '[:upper:]' '[:lower:]')"
-alpha_summary_trader_payload_consistent="$(printf '%s' "${alpha_summary_trader_payload_consistent:-unknown}" | tr '[:upper:]' '[:lower:]')"
+alpha_summary_payload_consistent="$(normalize_boolean_token "${alpha_summary_payload_consistent:-unknown}" "false")"
+alpha_summary_message_quality_pass="$(normalize_boolean_token "${alpha_summary_message_quality_pass:-unknown}" "false")"
+alpha_summary_quality_gate_source="$(normalize_status_token "${alpha_summary_quality_gate_source:-unknown}")"
+alpha_summary_quality_gate_auto_applied="$(normalize_boolean_token "${alpha_summary_quality_gate_auto_applied:-false}" "false")"
+alpha_summary_auto_apply_enabled="$(normalize_boolean_token "${alpha_summary_auto_apply_enabled:-false}" "false")"
+alpha_summary_auto_apply_should_apply="$(normalize_boolean_token "${alpha_summary_auto_apply_should_apply:-false}" "false")"
+alpha_summary_auto_apply_applied_in_this_run="$(normalize_boolean_token "${alpha_summary_auto_apply_applied_in_this_run:-false}" "false")"
+alpha_summary_auto_apply_released_in_this_run="$(normalize_boolean_token "${alpha_summary_auto_apply_released_in_this_run:-false}" "false")"
+alpha_summary_auto_apply_apply_reason="$(normalize_status_token "${alpha_summary_auto_apply_apply_reason:-unknown}")"
+alpha_summary_trader_payload_consistent="$(normalize_boolean_token "${alpha_summary_trader_payload_consistent:-unknown}" "false")"
 if [[ -n "$alpha_summary_auto_apply_profile_path" && "$alpha_summary_auto_apply_profile_path" != "null" ]]; then
   AUTO_PROFILE_PATH="$alpha_summary_auto_apply_profile_path"
 fi
