@@ -37,7 +37,8 @@ BLOCKER_AUDIT_WEBHOOK_URL="${BLOCKER_AUDIT_WEBHOOK_URL:-${ALPHA_SUMMARY_WEBHOOK_
 BLOCKER_AUDIT_WEBHOOK_THREAD_ID="${BLOCKER_AUDIT_WEBHOOK_THREAD_ID:-${ALPHA_SUMMARY_WEBHOOK_ALPHA_THREAD_ID:-${ALPHA_SUMMARY_WEBHOOK_THREAD_ID:-${ALERT_WEBHOOK_THREAD_ID:-}}}}"
 BLOCKER_AUDIT_WEBHOOK_TIMEOUT_SECONDS="${BLOCKER_AUDIT_WEBHOOK_TIMEOUT_SECONDS:-5}"
 BLOCKER_AUDIT_WEBHOOK_USERNAME="${BLOCKER_AUDIT_WEBHOOK_USERNAME:-BetBot Ops}"
-export BLOCKER_AUDIT_DISCORD_MODE
+BLOCKER_AUDIT_STRICT_FAIL_ON_WINDOW_SUMMARY_PARSE_ERROR="${BLOCKER_AUDIT_STRICT_FAIL_ON_WINDOW_SUMMARY_PARSE_ERROR:-0}"
+export BLOCKER_AUDIT_DISCORD_MODE BLOCKER_AUDIT_STRICT_FAIL_ON_WINDOW_SUMMARY_PARSE_ERROR
 
 build_discord_target_url() {
   local base_url="${1:-}"
@@ -190,11 +191,28 @@ window_label = _normalize(sys.argv[5]) or "168h"
 discord_mode = _normalize(os.environ.get("BLOCKER_AUDIT_DISCORD_MODE")).lower() or "concise"
 if discord_mode not in {"concise", "detailed"}:
     discord_mode = "concise"
+strict_fail_on_window_summary_parse_error = _normalize(
+    os.environ.get("BLOCKER_AUDIT_STRICT_FAIL_ON_WINDOW_SUMMARY_PARSE_ERROR")
+).lower() in {"1", "true", "yes", "on"}
 
+window_summary_parse_error = ""
+window_summary_loaded = False
 try:
     payload = json.loads(window_summary_path.read_text(encoding="utf-8"))
+    if isinstance(payload, dict):
+        window_summary_loaded = True
+    else:
+        payload = {}
+        window_summary_parse_error = "root payload is not an object"
 except Exception:
     payload = {}
+    window_summary_parse_error = "invalid JSON"
+
+if window_summary_parse_error and strict_fail_on_window_summary_parse_error:
+    raise SystemExit(
+        "STRICT CHECK FAILED: blocker audit window summary malformed "
+        f"({window_summary_parse_error})"
+    )
 
 totals = payload.get("totals") if isinstance(payload.get("totals"), dict) else {}
 reason_counts = payload.get("policy_reason_counts") if isinstance(payload.get("policy_reason_counts"), dict) else {}
@@ -476,6 +494,10 @@ if not flow_totals_consistent:
     base_lines.append(
         "Data quality check: totals do not add up (signals != approved + blocked); review the window data before acting."
     )
+if window_summary_parse_error:
+    base_lines.append(
+        "Data quality check: blocker window summary malformed; review summarize_window output before trusting blocker guidance."
+    )
 if not largest_blocker_present_if_blocked:
     base_lines.append(
         "Data quality check: blocked flow exists but no blocker rows were produced; review reason parsing."
@@ -529,6 +551,9 @@ message_quality_checks = {
     "concise_message_length_ok": len(discord_message_concise) <= 1900,
     "detailed_message_length_ok": len(discord_message_detailed) <= 1900,
     "contains_performance_basis_line": ("Performance basis:" in discord_message),
+    "window_summary_loaded": bool(window_summary_loaded),
+    "window_summary_parse_error_present": bool(window_summary_parse_error),
+    "window_summary_parse_error": window_summary_parse_error,
     "flow_totals_consistent": bool(flow_totals_consistent),
     "largest_blocker_present_if_blocked": bool(largest_blocker_present_if_blocked),
 }
@@ -552,6 +577,11 @@ result = {
         "coldmath_hardening_latest": str(coldmath_hardening_path),
         "decision_matrix_hardening_latest": str(decision_matrix_path),
         "decision_matrix_lane_alert_state": str(lane_alert_state_path),
+    },
+    "data_quality": {
+        "window_summary_loaded": bool(window_summary_loaded),
+        "window_summary_parse_error_present": bool(window_summary_parse_error),
+        "window_summary_parse_error": window_summary_parse_error,
     },
     "headline": {
         "prediction_quality_basis": "unique_market_side",

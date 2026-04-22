@@ -415,6 +415,49 @@ def test_quick_check_strict_fails_when_lane_state_required_but_missing_with_true
     assert "decision_matrix_lane_state_missing" in result.stdout
 
 
+def test_quick_check_strict_fails_when_lane_state_required_but_malformed(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    lane_state_file = output_dir / "health" / ".decision_matrix_lane_alert_state.json"
+    lane_state_file.write_text("{not-json", encoding="utf-8")
+
+    env_file = tmp_path / "quick.env"
+    _write_env_file(
+        env_file=env_file,
+        output_dir=output_dir,
+        extra_lines=(
+            "DECISION_MATRIX_LANE_STRICT_REQUIRE_STATE_FILE=1",
+        ),
+    )
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_quick_script(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 2
+    assert "decision_matrix_lane: parse_error" in result.stdout
+    assert "decision_matrix_lane_state_parse_error" in result.stdout
+
+
+def test_quick_check_strict_allows_malformed_lane_state_when_not_required(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    lane_state_file = output_dir / "health" / ".decision_matrix_lane_alert_state.json"
+    lane_state_file.write_text("{not-json", encoding="utf-8")
+
+    env_file = tmp_path / "quick.env"
+    _write_env_file(env_file=env_file, output_dir=output_dir)
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_quick_script(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 0
+    assert "decision_matrix_lane: parse_error" in result.stdout
+    assert "decision_matrix_lane_state_parse_error" not in result.stdout
+    assert "quick_result: GREEN" in result.stdout
+
+
 def test_quick_check_strict_fails_when_thread_map_is_incomplete(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[1]
     output_dir = tmp_path / "out"

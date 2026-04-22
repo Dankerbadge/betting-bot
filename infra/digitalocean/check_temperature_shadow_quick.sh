@@ -237,11 +237,14 @@ try:
     strict_threshold = max(0, int(float(threshold_raw)))
 except Exception:
     strict_threshold = 0
+parse_error = False
 try:
     payload = json.loads(path.read_text(encoding="utf-8"))
 except Exception:
+    parse_error = True
     payload = {}
 if not isinstance(payload, dict):
+    parse_error = True
     payload = {}
 status = _normalize(payload.get("last_lane_status")) or "unknown"
 notify_reason = _normalize(payload.get("last_notify_reason")) or "none"
@@ -272,11 +275,18 @@ print(
     f"notify_reason={notify_reason} "
     f"strict_statuses={','.join(sorted(strict_statuses)) or 'n/a'} "
     f"strict_threshold={strict_threshold} "
-    f"strict_blocked={'true' if strict_blocked else 'false'}"
+    f"strict_blocked={'true' if strict_blocked else 'false'} "
+    f"parse_error={'true' if parse_error else 'false'}"
 )
 PY
 )"
   echo "$lane_line age_sec=$lane_age"
+  if [[ "$lane_line" == *"parse_error=true"* ]]; then
+    echo "decision_matrix_lane: parse_error ($DECISION_MATRIX_LANE_ALERT_STATE_FILE)"
+    if [[ "$DECISION_MATRIX_LANE_STRICT_REQUIRE_STATE_FILE" == "1" ]]; then
+      action_flags+=("decision_matrix_lane_state_parse_error")
+    fi
+  fi
   if [[ "$lane_line" == *"strict_blocked=true"* ]]; then
     action_flags+=("decision_matrix_lane_degraded_streak")
   fi
