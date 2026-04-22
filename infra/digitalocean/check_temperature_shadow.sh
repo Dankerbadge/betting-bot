@@ -823,9 +823,13 @@ fi
 latest_stale_metrics_drill="$(ls -1t "$OUTPUT_DIR"/recovery_chaos/stale_metrics_drill/stale_metrics_drill_latest.json 2>/dev/null | head -n 1 || true)"
 if [[ -n "$latest_stale_metrics_drill" && "$HAS_JQ" == "1" ]]; then
   stale_metrics_drill_age="$(( $(date +%s) - $(date -r "$latest_stale_metrics_drill" +%s) ))"
-  jq -r --arg age "$stale_metrics_drill_age" '
-    "stale_metrics_drill_latest status=\(.status // "unknown") age_sec=\($age) cycle_count=\(.metrics.cycle_count // 0) blocker_stale_cycles=\(.metrics.blocker_metrics_stale_cycle_count // 0) disallowed_max_markets_hits=\(.metrics.disallowed_max_markets_reason_hits // 0) check_no_stale_data_driven_max_markets=\(.checks.no_stale_data_driven_max_markets_reasons // false)"
-  ' "$latest_stale_metrics_drill"
+  if jq -e . "$latest_stale_metrics_drill" >/dev/null 2>&1; then
+    jq -r --arg age "$stale_metrics_drill_age" '
+      "stale_metrics_drill_latest status=\(.status // "unknown") age_sec=\($age) cycle_count=\(.metrics.cycle_count // 0) blocker_stale_cycles=\(.metrics.blocker_metrics_stale_cycle_count // 0) disallowed_max_markets_hits=\(.metrics.disallowed_max_markets_reason_hits // 0) check_no_stale_data_driven_max_markets=\(.checks.no_stale_data_driven_max_markets_reasons // false)"
+    ' "$latest_stale_metrics_drill"
+  else
+    echo "stale_metrics_drill_latest -> PARSE_ERROR ($latest_stale_metrics_drill) age_sec=$stale_metrics_drill_age"
+  fi
 fi
 
 latest_log_maintenance="$(ls -1t "$OUTPUT_DIR"/health/log_maintenance/log_maintenance_latest.json 2>/dev/null | head -n 1 || true)"
