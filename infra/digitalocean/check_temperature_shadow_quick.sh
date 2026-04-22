@@ -322,7 +322,8 @@ PY
   route_status="$(python3 - "$ROUTE_GUARD_FILE" <<'PY'
 import json,sys
 p=json.load(open(sys.argv[1]))
-print(str(p.get('guard_status') or 'unknown').lower())
+status = str(p.get('guard_status') or 'unknown')
+print(status.replace("\r", "").strip().lower())
 PY
 )"
   if [[ "$route_status" != "green" ]]; then
@@ -353,7 +354,7 @@ fi
 if [[ -x "$SCRIPT_DIR/check_discord_thread_map.sh" ]]; then
   map_json="$(bash "$SCRIPT_DIR/check_discord_thread_map.sh" --env "$ENV_FILE" --json 2>/dev/null || true)"
   if [[ -n "$map_json" ]]; then
-    read -r map_line < <(python3 - "$map_json" <<'PY'
+    map_line="$(python3 - "$map_json" <<'PY'
 import json,sys
 raw=(sys.argv[1] if len(sys.argv) > 1 else "").strip()
 if not raw:
@@ -364,13 +365,26 @@ try:
 except Exception:
   print("thread_map: parse_error")
   raise SystemExit(0)
-ready=bool(p.get('ready_for_apply', p.get('can_apply', False)))
+def _as_bool(value: object) -> bool:
+  if isinstance(value, bool):
+    return value
+  if isinstance(value, (int, float)):
+    return value != 0
+  if isinstance(value, str):
+    lowered = value.strip().lower()
+    if lowered in {"1", "true", "yes", "on"}:
+      return True
+    if lowered in {"0", "false", "no", "off", ""}:
+      return False
+  return bool(value)
+
+ready=_as_bool(p.get('ready_for_apply', p.get('can_apply', False)))
 shared_groups=int(p.get('route_guard_shared_route_group_count') or 0)
 missing_map=p.get('missing_required_in_map') or []
 missing_env=p.get('missing_required_in_env') or []
 print(f"thread_map: ready_for_apply={str(ready).lower()} shared_route_groups={shared_groups} missing_map={len(missing_map)} missing_env={len(missing_env)}")
 PY
-)
+)"
     echo "$map_line"
     thread_map_needs_action="$(python3 - "$map_json" <<'PY'
 import json,sys
@@ -380,8 +394,21 @@ try:
 except Exception:
   print("0")
   raise SystemExit(0)
+def _as_bool(value: object) -> bool:
+  if isinstance(value, bool):
+    return value
+  if isinstance(value, (int, float)):
+    return value != 0
+  if isinstance(value, str):
+    lowered = value.strip().lower()
+    if lowered in {"1", "true", "yes", "on"}:
+      return True
+    if lowered in {"0", "false", "no", "off", ""}:
+      return False
+  return bool(value)
+
 shared=int(p.get("route_guard_shared_route_group_count") or 0)
-ready=bool(p.get("ready_for_apply", p.get("can_apply", False)))
+ready=_as_bool(p.get("ready_for_apply", p.get("can_apply", False)))
 print("1" if (shared > 0 and not ready) else "0")
 PY
 )"

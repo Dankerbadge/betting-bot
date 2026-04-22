@@ -469,6 +469,30 @@ def test_quick_check_non_strict_reports_thread_map_incomplete_but_exits_zero(tmp
     assert "quick_result: YELLOW" in result.stdout
 
 
+def test_quick_check_strict_fails_when_thread_map_ready_flag_is_false_string(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+
+    env_file = tmp_path / "quick.env"
+    _write_env_file(env_file=env_file, output_dir=output_dir)
+    script_path, tool_dir = _prepare_script_bundle(
+        tmp_path=tmp_path,
+        root=root,
+        thread_map_json=(
+            '{"ready_for_apply": "false", "route_guard_shared_route_group_count": 2, '
+            '"missing_required_in_map": ["SHADOW_ALERT_WEBHOOK_THREAD_ID"], '
+            '"missing_required_in_env": ["ALPHA_SUMMARY_WEBHOOK_OPS_THREAD_ID"]}'
+        ),
+    )
+    result = _run_quick_script(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 2
+    assert "thread_map: ready_for_apply=false" in result.stdout
+    assert "thread_map_incomplete" in result.stdout
+
+
 def test_quick_check_strict_fails_when_route_guard_status_is_not_green(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[1]
     output_dir = tmp_path / "out"
@@ -490,6 +514,31 @@ def test_quick_check_strict_fails_when_route_guard_status_is_not_green(tmp_path:
 
     assert result.returncode == 2
     assert "discord_route_guard_not_green" in result.stdout
+
+
+def test_quick_check_strict_allows_route_guard_status_green_with_surrounding_whitespace(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    _write_json(
+        output_dir / "health" / "discord_route_guard" / "discord_route_guard_latest.json",
+        {
+            "guard_status": " GREEN ",
+            "shared_route_group_count": 0,
+            "route_remediations": [],
+        },
+    )
+
+    env_file = tmp_path / "quick.env"
+    _write_env_file(env_file=env_file, output_dir=output_dir)
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_quick_script(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 0
+    assert "discord_route_guard_not_green" not in result.stdout
 
 
 def test_quick_check_prints_route_guard_missing_keys_hint_when_present(tmp_path: Path) -> None:
