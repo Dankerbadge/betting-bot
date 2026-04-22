@@ -1790,6 +1790,45 @@ def test_shadow_check_non_strict_ignores_red_live_status_failure(tmp_path: Path)
     assert "STRICT CHECK FAILED" not in result.stderr
 
 
+def test_shadow_check_strict_fails_when_live_status_artifact_is_missing(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    (output_dir / "health" / "live_status_latest.json").unlink(missing_ok=True)
+
+    env_file = tmp_path / "shadow.env"
+    _write_env_file(env_file=env_file, output_dir=output_dir)
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_shadow_check(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 2
+    assert "live_status -> MISSING" in result.stdout
+    assert "STRICT CHECK FAILED: live_status is unknown/non-green" in result.stderr
+
+
+def test_shadow_check_non_strict_allows_missing_live_status_artifact(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    (output_dir / "health" / "live_status_latest.json").unlink(missing_ok=True)
+
+    env_file = tmp_path / "shadow.env"
+    _write_env_file(env_file=env_file, output_dir=output_dir)
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_shadow_check(
+        script_path=script_path,
+        env_file=env_file,
+        tool_dir=tool_dir,
+        strict=False,
+    )
+
+    assert result.returncode == 0
+    assert "live_status -> MISSING" in result.stdout
+    assert "STRICT CHECK FAILED: live_status is unknown/non-green" not in result.stderr
+
+
 def test_shadow_check_non_strict_ignores_route_guard_timer_failure(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[1]
     output_dir = tmp_path / "out"
