@@ -135,7 +135,7 @@ echo "services: shadow=$shadow_state alpha_summary_timer=$alpha_timer_state rout
 action_flags=()
 
 if [[ -f "$LIVE_STATUS_FILE" ]]; then
-  live_line="$(python3 - "$LIVE_STATUS_FILE" <<'PY'
+  if live_line="$(python3 - "$LIVE_STATUS_FILE" 2>/dev/null <<'PY'
 import json,sys
 p=json.load(open(sys.argv[1]))
 flags = p.get("trigger_flags") or {}
@@ -186,8 +186,12 @@ print(
   f"latest_planned={latest.get('planned_orders',0)}"
 )
 PY
-)"
-  echo "$live_line"
+  )"; then
+    echo "$live_line"
+  else
+    echo "live: parse_error ($LIVE_STATUS_FILE)"
+    action_flags+=("live_status_parse_error")
+  fi
 else
   echo "live: missing ($LIVE_STATUS_FILE)"
   action_flags+=("live_status_missing")
@@ -284,7 +288,7 @@ else
 fi
 
 if [[ -f "$ALPHA_SUMMARY_FILE" ]]; then
-  alpha_block="$(python3 - "$ALPHA_SUMMARY_FILE" <<'PY'
+  if alpha_block="$(python3 - "$ALPHA_SUMMARY_FILE" 2>/dev/null <<'PY'
 import json,sys
 p=json.load(open(sys.argv[1]))
 h=p.get('headline_metrics') or {}
@@ -324,17 +328,21 @@ print(
 if deploy_conf >= 55 and projected < 0:
     print("alpha_warning: confidence/pnl divergence (deploy_conf high but projected bankroll pnl is negative)")
 PY
-)"
-  if [[ -n "$alpha_block" ]]; then
-    echo "$alpha_block"
-  fi
-  if [[ "$alpha_block" == *"alpha_warning: confidence/pnl divergence"* ]]; then
-    action_flags+=("confidence_pnl_divergence")
+  )"; then
+    if [[ -n "$alpha_block" ]]; then
+      echo "$alpha_block"
+    fi
+    if [[ "$alpha_block" == *"alpha_warning: confidence/pnl divergence"* ]]; then
+      action_flags+=("confidence_pnl_divergence")
+    fi
+  else
+    echo "alpha: parse_error ($ALPHA_SUMMARY_FILE)"
+    action_flags+=("alpha_summary_parse_error")
   fi
 fi
 
 if [[ -f "$ROUTE_GUARD_FILE" ]]; then
-  route_block="$(python3 - "$ROUTE_GUARD_FILE" <<'PY'
+  if route_block="$(python3 - "$ROUTE_GUARD_FILE" 2>/dev/null <<'PY'
 import json,sys
 p=json.load(open(sys.argv[1]))
 def _as_int(value: object, default: int = 0) -> int:
@@ -360,24 +368,32 @@ print(f"discord_route_guard: status={status} shared_route_groups={shared} requir
 if keys:
   print("discord_route_guard_missing_keys_hint=" + ",".join(keys[:8]))
 PY
-)"
-  if [[ -n "$route_block" ]]; then
-    echo "$route_block"
-  fi
-  route_status="$(python3 - "$ROUTE_GUARD_FILE" <<'PY'
+  )"; then
+    if [[ -n "$route_block" ]]; then
+      echo "$route_block"
+    fi
+    if route_status="$(python3 - "$ROUTE_GUARD_FILE" 2>/dev/null <<'PY'
 import json,sys
 p=json.load(open(sys.argv[1]))
 status = str(p.get('guard_status') or 'unknown')
 print(status.replace("\r", "").strip().lower())
 PY
-)"
-  if [[ "$route_status" != "green" ]]; then
-    action_flags+=("discord_route_guard_not_green")
+    )"; then
+      if [[ "$route_status" != "green" ]]; then
+        action_flags+=("discord_route_guard_not_green")
+      fi
+    else
+      echo "discord_route_guard: parse_error_status ($ROUTE_GUARD_FILE)"
+      action_flags+=("discord_route_guard_parse_error")
+    fi
+  else
+    echo "discord_route_guard: parse_error ($ROUTE_GUARD_FILE)"
+    action_flags+=("discord_route_guard_parse_error")
   fi
 fi
 
 if [[ -f "$DISCORD_AUDIT_FILE" ]]; then
-  audit_block="$(python3 - "$DISCORD_AUDIT_FILE" <<'PY'
+  if audit_block="$(python3 - "$DISCORD_AUDIT_FILE" 2>/dev/null <<'PY'
 import json,sys
 p=json.load(open(sys.argv[1]))
 def _as_float(value: object, default: float = 0.0) -> float:
@@ -401,12 +417,16 @@ print(f"discord_message_audit: overall={score:.1f}/100 worst_stream={worst}/100 
 if score < 90 or worst < 85:
     print("discord_message_audit_warning=readability_regression")
 PY
-)"
-  if [[ -n "$audit_block" ]]; then
-    echo "$audit_block"
-  fi
-  if [[ "$audit_block" == *"discord_message_audit_warning=readability_regression"* ]]; then
-    action_flags+=("discord_message_readability_regression")
+  )"; then
+    if [[ -n "$audit_block" ]]; then
+      echo "$audit_block"
+    fi
+    if [[ "$audit_block" == *"discord_message_audit_warning=readability_regression"* ]]; then
+      action_flags+=("discord_message_readability_regression")
+    fi
+  else
+    echo "discord_message_audit: parse_error ($DISCORD_AUDIT_FILE)"
+    action_flags+=("discord_message_audit_parse_error")
   fi
 fi
 

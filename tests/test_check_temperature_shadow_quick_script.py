@@ -632,6 +632,23 @@ def test_quick_check_strict_handles_malformed_route_guard_payload_without_crashi
     assert "quick_result: GREEN" in result.stdout
 
 
+def test_quick_check_strict_flags_route_guard_parse_error_for_malformed_json(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    route_guard_file = output_dir / "health" / "discord_route_guard" / "discord_route_guard_latest.json"
+    route_guard_file.write_text("{not-json", encoding="utf-8")
+
+    env_file = tmp_path / "quick.env"
+    _write_env_file(env_file=env_file, output_dir=output_dir)
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_quick_script(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 2
+    assert "discord_route_guard_parse_error" in result.stdout
+
+
 def test_quick_check_prints_route_guard_missing_keys_hint_when_present(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[1]
     output_dir = tmp_path / "out"
@@ -713,6 +730,23 @@ def test_quick_check_strict_handles_non_numeric_discord_audit_scores(tmp_path: P
     assert result.returncode == 2
     assert "discord_message_audit: overall=0.0/100 worst_stream=0/100 streams=2" in result.stdout
     assert "discord_message_readability_regression" in result.stdout
+
+
+def test_quick_check_strict_flags_discord_audit_parse_error_for_malformed_json(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    discord_audit_file = output_dir / "health" / "discord_message_audit" / "discord_message_audit_latest.json"
+    discord_audit_file.write_text("{not-json", encoding="utf-8")
+
+    env_file = tmp_path / "quick.env"
+    _write_env_file(env_file=env_file, output_dir=output_dir)
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_quick_script(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 2
+    assert "discord_message_audit_parse_error" in result.stdout
 
 
 def test_quick_check_strict_does_not_flag_readability_at_threshold_floor(tmp_path: Path) -> None:
@@ -907,6 +941,23 @@ def test_quick_check_strict_fails_when_live_status_artifact_is_missing(tmp_path:
     assert "live_status_missing" in result.stdout
 
 
+def test_quick_check_strict_flags_live_status_parse_error_for_malformed_json(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    live_status_file = output_dir / "health" / "live_status_latest.json"
+    live_status_file.write_text("{not-json", encoding="utf-8")
+
+    env_file = tmp_path / "quick.env"
+    _write_env_file(env_file=env_file, output_dir=output_dir)
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_quick_script(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 2
+    assert "live_status_parse_error" in result.stdout
+
+
 def test_quick_check_non_strict_reports_missing_live_status_but_exits_zero(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[1]
     output_dir = tmp_path / "out"
@@ -944,6 +995,23 @@ def test_quick_check_strict_fails_when_alpha_summary_artifact_is_missing(tmp_pat
 
     assert result.returncode == 2
     assert "alpha_summary_stale" in result.stdout
+
+
+def test_quick_check_strict_flags_alpha_summary_parse_error_for_malformed_json(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    alpha_summary_file = output_dir / "health" / "alpha_summary_latest.json"
+    alpha_summary_file.write_text("{not-json", encoding="utf-8")
+
+    env_file = tmp_path / "quick.env"
+    _write_env_file(env_file=env_file, output_dir=output_dir)
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_quick_script(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 2
+    assert "alpha_summary_parse_error" in result.stdout
 
 
 def test_quick_check_strict_fails_when_live_status_artifact_is_stale(tmp_path: Path) -> None:
