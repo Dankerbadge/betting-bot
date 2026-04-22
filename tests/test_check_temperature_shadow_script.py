@@ -1456,6 +1456,47 @@ def test_shadow_check_strict_fails_when_live_status_is_red(tmp_path: Path) -> No
     assert "STRICT CHECK FAILED: live_status is red" in result.stderr
 
 
+def test_shadow_check_non_strict_ignores_red_live_status_failure(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    _write_json(
+        output_dir / "health" / "live_status_latest.json",
+        {
+            "status": "red",
+            "trigger_flags": {
+                "approvals_resumed": False,
+                "planned_orders_resumed": False,
+            },
+            "freshness_plan": {
+                "approval_rate_guardrail_status": "critical_high",
+                "approval_rate_guardrail_evaluated": True,
+                "approval_rate": 0.9,
+                "metar_observation_stale_rate": 0.8,
+            },
+            "scan_budget": {
+                "effective_max_markets": 100,
+            },
+            "latest_cycle_metrics": {
+                "intents_approved": 0,
+                "intents_total": 10,
+                "planned_orders": 0,
+            },
+            "red_reasons": ["simulated_red"],
+            "yellow_reasons": [],
+        },
+    )
+
+    env_file = tmp_path / "shadow.env"
+    _write_env_file(env_file=env_file, output_dir=output_dir)
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_shadow_check(script_path=script_path, env_file=env_file, tool_dir=tool_dir, strict=False)
+
+    assert result.returncode == 0
+    assert "STRICT CHECK FAILED" not in result.stderr
+
+
 def test_shadow_check_strict_warns_when_live_status_is_yellow(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[1]
     output_dir = tmp_path / "out"

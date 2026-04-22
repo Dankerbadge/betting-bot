@@ -447,3 +447,27 @@ def test_quick_check_strict_fails_when_route_guard_artifact_is_stale(tmp_path: P
 
     assert result.returncode == 2
     assert "route_guard_stale" in result.stdout
+
+
+def test_quick_check_non_strict_reports_flags_but_exits_zero(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    _write_json(
+        output_dir / "health" / "discord_route_guard" / "discord_route_guard_latest.json",
+        {
+            "guard_status": "yellow",
+            "shared_route_group_count": 3,
+            "route_remediations": [],
+        },
+    )
+
+    env_file = tmp_path / "quick.env"
+    _write_env_file(env_file=env_file, output_dir=output_dir)
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_quick_script(script_path=script_path, env_file=env_file, tool_dir=tool_dir, strict=False)
+
+    assert result.returncode == 0
+    assert "quick_result: YELLOW" in result.stdout
+    assert "discord_route_guard_not_green" in result.stdout
