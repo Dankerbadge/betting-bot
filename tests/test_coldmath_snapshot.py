@@ -5,7 +5,11 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from betbot.coldmath_snapshot import run_coldmath_snapshot_summary, summarize_coldmath_snapshot_files
+from betbot.coldmath_snapshot import (
+    build_public_observed_ledger_events,
+    run_coldmath_snapshot_summary,
+    summarize_coldmath_snapshot_files,
+)
 
 
 class ColdmathSnapshotTests(unittest.TestCase):
@@ -149,7 +153,7 @@ class ColdmathSnapshotTests(unittest.TestCase):
             self.assertEqual(summary["api_fetch"]["status"], "ready")
             self.assertEqual(summary["positions_rows"], 2)
             self.assertEqual(summary["closed_positions_rows"], 0)
-            self.assertEqual(summary["portfolio_reconciliation"]["status"], "pass")
+            self.assertEqual(summary["portfolio_reconciliation"]["status"], "drift")
             self.assertTrue((snapshot_dir / "equity.csv").exists())
             self.assertTrue((snapshot_dir / "positions.csv").exists())
             self.assertTrue((snapshot_dir / "closed_positions.csv").exists())
@@ -276,16 +280,16 @@ class ColdmathSnapshotTests(unittest.TestCase):
                 summary["api_fetch"]["ledger_fetch"]["trades"]["non_taker_trade_delta"],
                 1,
             )
-            self.assertEqual(summary["ledger"]["events_rows_total"], 3)
-            self.assertEqual(summary["ledger"]["event_keys_unique"], 3)
+            self.assertEqual(summary["ledger"]["events_rows_total"], 4)
+            self.assertEqual(summary["ledger"]["event_keys_unique"], 4)
             self.assertEqual(summary["ledger"]["event_duplicate_rows_detected"], 0)
             self.assertEqual(
                 summary["api_fetch"]["ledger_fetch"]["events"]["duplicates_dropped"],
-                2,
+                1,
             )
             self.assertEqual(
                 summary["api_fetch"]["ledger_fetch"]["events"]["canonical_rows_total"],
-                3,
+                4,
             )
             self.assertTrue((snapshot_dir / "trades.csv").exists())
             self.assertTrue((snapshot_dir / "activity.csv").exists())
@@ -338,6 +342,115 @@ class ColdmathSnapshotTests(unittest.TestCase):
             self.assertEqual(summary["profile_wallet_resolution"]["status"], "resolved")
             self.assertTrue(any("/profile?" in url for url in requested_urls))
             self.assertTrue(any("user=0xproxy" in url and "/value?" in url for url in requested_urls))
+
+    def test_closed_positions_uses_timestamp_and_respects_limit_cap(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            snapshot_dir = base / "coldmath"
+            out_dir = base / "out"
+            now_utc = datetime(2026, 4, 21, 23, 0, tzinfo=timezone.utc)
+            requested_urls: list[str] = []
+
+            def fake_http_get_json(url: str, timeout_seconds: float):
+                _ = timeout_seconds
+                requested_urls.append(url)
+                if "/value?" in url:
+                    return (200, [{"user": "0xabc", "value": 12.5}])
+                if "/positions?" in url:
+                    return (200, [])
+                if "/closed-positions?" in url:
+                    return (
+                        200,
+                        [
+                            {
+                                "conditionId": "c1",
+                                "asset": "a1",
+                                "size": 10.0,
+                                "avgPrice": 0.45,
+                                "title": "Closed weather position",
+                                "slug": "highest-temp-nyc-apr-20-60-61f",
+                                "eventSlug": "highest-temp-nyc-apr-20",
+                                "outcome": "No",
+                                "timestamp": "2026-04-21T18:30:00Z",
+                                "realizedPnl": 3.2,
+                            }
+                        ],
+                    )
+                if "/trades?" in url:
+                    return (200, [])
+                if "/activity?" in url:
+                    return (200, [])
+                return (404, {"error": "not found"})
+
+            summary = run_coldmath_snapshot_summary(
+                snapshot_dir=str(snapshot_dir),
+                output_dir=str(out_dir),
+                wallet_address="0xabc",
+                now=now_utc,
+                refresh_from_api=True,
+                closed_positions_page_size=500,
+                http_get_json=fake_http_get_json,
+            )
+
+            self.assertEqual(summary["status"], "ready")
+            self.assertEqual(summary["closed_positions_rows"], 1)
+            self.assertAlmostEqual(
+                float(summary["closed_positions_realized_pnl_sum"] or 0.0),
+                3.2,
+                places=6,
+            )
+            self.assertEqual(
+                summary["closed_positions_closed_at_min"],
+                "2026-04-21T18:30:00+00:00",
+            )
+            self.assertEqual(summary["api_fetch"]["closed_positions_rows"], 1)
+            self.assertEqual(summary["api_fetch"]["closed_positions_endpoint_status"], 200)
+            self.assertTrue(
+                any("/closed-positions?" in url and "limit=50" in url for url in requested_urls)
+            )
+
+    def test_public_ledger_dedupe_uses_event_timestamp(self) -> None:
+        payload = build_public_observed_ledger_events(
+            trades_rows=[
+                {
+                    "capturedAt": "2026-04-21T00:00:00Z",
+                    "queryScope": "all_roles",
+                    "tradeId": "t1",
+                    "timestamp": "2026-04-21T10:00:00Z",
+                    "marketSlug": "mkt-1",
+                    "eventSlug": "ev-1",
+                    "title": "Trade A",
+                    "outcome": "No",
+                    "side": "BUY",
+                    "size": "10",
+                    "price": "0.5",
+                    "usdcSize": "5",
+                    "transactionHash": "0xtx",
+                    "conditionId": "c1",
+                    "asset": "a1",
+                },
+                {
+                    "capturedAt": "2026-04-21T00:00:00Z",
+                    "queryScope": "all_roles",
+                    "tradeId": "t2",
+                    "timestamp": "2026-04-21T10:01:00Z",
+                    "marketSlug": "mkt-1",
+                    "eventSlug": "ev-1",
+                    "title": "Trade B",
+                    "outcome": "No",
+                    "side": "BUY",
+                    "size": "10",
+                    "price": "0.5",
+                    "usdcSize": "5",
+                    "transactionHash": "0xtx",
+                    "conditionId": "c1",
+                    "asset": "a1",
+                },
+            ],
+            activity_rows=[],
+        )
+        self.assertEqual(payload["canonical_rows_total"], 2)
+        self.assertEqual(payload["duplicates_dropped"], 0)
 
 
 if __name__ == "__main__":

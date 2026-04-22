@@ -376,7 +376,7 @@ def run_polymarket_market_data_ingest(
     coldmath_positions_page_size: int = 500,
     coldmath_positions_max_pages: int = 20,
     coldmath_refresh_closed_positions_from_api: bool = True,
-    coldmath_closed_positions_page_size: int = 500,
+    coldmath_closed_positions_page_size: int = 50,
     coldmath_closed_positions_max_pages: int = 20,
     coldmath_refresh_trades_from_api: bool = True,
     coldmath_refresh_activity_from_api: bool = True,
@@ -416,6 +416,10 @@ def run_polymarket_market_data_ingest(
     if snapshot_dir_path is not None:
         effective_equity_csv = coldmath_equity_csv or str(snapshot_dir_path / "equity.csv")
         effective_positions_csv = coldmath_positions_csv or str(snapshot_dir_path / "positions.csv")
+        effective_closed_positions_csv = str(snapshot_dir_path / "closed_positions.csv")
+        effective_trades_csv = str(snapshot_dir_path / "trades.csv")
+        effective_activity_csv = str(snapshot_dir_path / "activity.csv")
+        effective_ledger_events_csv = str(snapshot_dir_path / "ledger_events.csv")
         if coldmath_refresh_from_api and str(coldmath_wallet_address or "").strip():
             coldmath_snapshot = run_coldmath_snapshot_summary(
                 snapshot_dir=str(snapshot_dir_path),
@@ -445,10 +449,24 @@ def run_polymarket_market_data_ingest(
             summary["coldmath_snapshot"] = coldmath_snapshot
             effective_equity_csv = str(coldmath_snapshot.get("equity_csv") or effective_equity_csv)
             effective_positions_csv = str(coldmath_snapshot.get("positions_csv") or effective_positions_csv)
+            effective_closed_positions_csv = str(
+                coldmath_snapshot.get("closed_positions_csv") or effective_closed_positions_csv
+            )
+            effective_trades_csv = str(coldmath_snapshot.get("trades_csv") or effective_trades_csv)
+            effective_activity_csv = str(
+                coldmath_snapshot.get("activity_csv") or effective_activity_csv
+            )
+            effective_ledger_events_csv = str(
+                coldmath_snapshot.get("ledger_events_csv") or effective_ledger_events_csv
+            )
         else:
             summary["coldmath_snapshot"] = summarize_coldmath_snapshot_files(
                 equity_csv=effective_equity_csv,
                 positions_csv=effective_positions_csv,
+                closed_positions_csv=effective_closed_positions_csv,
+                trades_csv=effective_trades_csv,
+                activity_csv=effective_activity_csv,
+                ledger_events_csv=effective_ledger_events_csv,
                 wallet_address=coldmath_wallet_address,
                 stale_hours=coldmath_stale_hours,
                 now=now or datetime.now(timezone.utc),

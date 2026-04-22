@@ -330,7 +330,7 @@ def build_parser() -> argparse.ArgumentParser:
     runtime_cycle.add_argument(
         "--coldmath-closed-positions-page-size",
         type=int,
-        default=500,
+        default=50,
         help="Page size used for paginated ColdMath closed-positions API pulls",
     )
     runtime_cycle.add_argument(
@@ -3167,7 +3167,7 @@ def build_parser() -> argparse.ArgumentParser:
     polymarket_market_ingest.add_argument(
         "--coldmath-closed-positions-page-size",
         type=int,
-        default=500,
+        default=50,
         help="Page size used for paginated ColdMath closed-positions API pulls",
     )
     polymarket_market_ingest.add_argument(
@@ -3287,7 +3287,7 @@ def build_parser() -> argparse.ArgumentParser:
     coldmath_snapshot_summary.add_argument(
         "--closed-positions-page-size",
         type=int,
-        default=500,
+        default=50,
         help="Page size used when fetching paginated wallet closed-positions",
     )
     coldmath_snapshot_summary.add_argument(

@@ -14,6 +14,7 @@ from urllib.request import Request, urlopen
 JsonGetter = Callable[[str, float], tuple[int, Any]]
 
 POLYMARKET_DATA_API_BASE_URL = "https://data-api.polymarket.com"
+POLYMARKET_GAMMA_API_BASE_URL = "https://gamma-api.polymarket.com"
 POLYMARKET_BROWSER_HEADERS = {
     "Accept": "application/json,text/plain,*/*",
     "Origin": "https://polymarket.com",
@@ -334,7 +335,10 @@ def _normalize_closed_position_row(
         "outcome": _normalize_text(raw_row.get("outcome")),
         "endDate": _normalize_text(raw_row.get("endDate")),
         "closedAt": _normalize_text(
-            raw_row.get("closedAt")
+            raw_row.get("timestamp")
+            or raw_row.get("timeStamp")
+            or raw_row.get("time")
+            or raw_row.get("closedAt")
             or raw_row.get("redeemedAt")
             or raw_row.get("settledAt")
             or raw_row.get("updatedAt")
@@ -367,7 +371,7 @@ def _activity_accounting_direction(activity_type: str, side: str) -> str:
 def _canonical_event_key(row: dict[str, str], *, event_type: str) -> str:
     tx_hash = _normalize_text(row.get("transactionHash")).lower()
     market_slug = _normalize_text(row.get("marketSlug")).lower()
-    timestamp = _normalize_text(row.get("timestamp"))
+    timestamp = _normalize_text(row.get("eventTimestamp") or row.get("timestamp"))
     side = _normalize_text(row.get("side")).lower()
     outcome = _normalize_text(row.get("outcome")).lower()
     size = _float_text(row.get("size"))
@@ -526,6 +530,7 @@ def _resolve_public_profile_wallet(
     *,
     wallet_address: str,
     data_api_base_url: str,
+    gamma_api_base_url: str = POLYMARKET_GAMMA_API_BASE_URL,
     timeout_seconds: float,
     http_get_json: JsonGetter,
 ) -> dict[str, Any]:
@@ -538,10 +543,14 @@ def _resolve_public_profile_wallet(
             "source": "",
         }
 
-    base = _normalize_text(data_api_base_url).rstrip("/")
-    attempts = [
-        ("user", f"{base}/profile?{urlencode({'user': requested})}"),
-        ("address", f"{base}/profile?{urlencode({'address': requested})}"),
+    data_base = _normalize_text(data_api_base_url).rstrip("/")
+    gamma_base = _normalize_text(gamma_api_base_url).rstrip("/")
+    attempts: list[tuple[str, str]] = [
+        ("gamma_public_profile_wallet", f"{gamma_base}/public-profile?{urlencode({'wallet': requested})}"),
+        ("gamma_public_profile_address", f"{gamma_base}/public-profile?{urlencode({'address': requested})}"),
+        ("gamma_public_profile_user", f"{gamma_base}/public-profile?{urlencode({'user': requested})}"),
+        ("data_profile_user", f"{data_base}/profile?{urlencode({'user': requested})}"),
+        ("data_profile_address", f"{data_base}/profile?{urlencode({'address': requested})}"),
     ]
     for query_kind, url in attempts:
         status_code, payload = http_get_json(url, timeout_seconds)
@@ -566,7 +575,7 @@ def _resolve_public_profile_wallet(
                 "status": "resolved",
                 "requested_wallet": requested,
                 "normalized_wallet": proxy_wallet,
-                "source": f"profile_{query_kind}",
+                "source": query_kind,
                 "http_status": status_code,
             }
 
@@ -589,7 +598,16 @@ def _fetch_data_api_rows(
     http_get_json: JsonGetter,
     extra_params: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    page_limit = max(1, int(page_size))
+    endpoint_max_limits = {
+        "positions": 500,
+        "activity": 500,
+        "closed-positions": 50,
+        "trades": 10000,
+    }
+    requested_page_size = max(1, int(page_size))
+    endpoint_key = _normalize_text(endpoint).lower()
+    max_limit_for_endpoint = int(endpoint_max_limits.get(endpoint_key, requested_page_size))
+    page_limit = min(requested_page_size, max_limit_for_endpoint)
     max_page_count = max(1, int(max_pages))
     rows: list[dict[str, Any]] = []
     errors: list[str] = []
@@ -641,7 +659,9 @@ def _fetch_data_api_rows(
         "rows": rows,
         "errors": errors,
         "http_status": http_status,
+        "requested_page_size": requested_page_size,
         "page_size": page_limit,
+        "endpoint_max_limit": max_limit_for_endpoint,
         "max_pages": max_page_count,
         "pages_fetched": pages_fetched,
         "last_offset": last_offset,
@@ -829,11 +849,12 @@ def fetch_polymarket_wallet_snapshot(
     *,
     wallet_address: str,
     data_api_base_url: str = POLYMARKET_DATA_API_BASE_URL,
+    gamma_api_base_url: str = POLYMARKET_GAMMA_API_BASE_URL,
     timeout_seconds: float = 20.0,
     positions_page_size: int = 500,
     positions_max_pages: int = 20,
     refresh_closed_positions: bool = True,
-    closed_positions_page_size: int = 500,
+    closed_positions_page_size: int = 50,
     closed_positions_max_pages: int = 20,
     refresh_trades: bool = True,
     refresh_activity: bool = True,
@@ -856,6 +877,7 @@ def fetch_polymarket_wallet_snapshot(
     profile_resolution = _resolve_public_profile_wallet(
         wallet_address=requested_wallet,
         data_api_base_url=base_url,
+        gamma_api_base_url=gamma_api_base_url,
         timeout_seconds=timeout_seconds,
         http_get_json=http_get_json,
     )
@@ -961,21 +983,26 @@ def fetch_polymarket_wallet_snapshot(
                     _normalize_closed_position_row(raw_row=raw_row)
                 )
 
-    positions_value = sum(_parse_float(row.get("currentValue")) or 0.0 for row in positions_rows)
+    current_positions_value = sum(
+        _parse_float(row.get("currentValue")) or 0.0 for row in positions_rows
+    )
+    positions_value = (
+        float(wallet_value)
+        if isinstance(wallet_value, float)
+        else current_positions_value
+    )
     cash_balance: float | None = None
-    if isinstance(wallet_value, float):
-        cash_balance = wallet_value - positions_value
 
     equity_row = {
         "cashBalance": _float_text(cash_balance),
         "positionsValue": _float_text(positions_value),
-        "equity": _float_text(wallet_value),
+        "equity": "",
         "valuationTime": valuation_time,
         "wallet": wallet,
         "requestedWallet": requested_wallet,
         "positionsCount": str(len(positions_rows)),
         "dataApiBaseUrl": base_url,
-        "source": "polymarket_data_api",
+        "source": "polymarket_data_api_public_positions_value",
     }
 
     if errors and not positions_rows and wallet_value is None:
@@ -1137,6 +1164,11 @@ def fetch_polymarket_wallet_snapshot(
         "captured_at": valuation_time,
         "data_api_base_url": base_url,
         "value_endpoint_status": value_status,
+        "value_interpreted_as_positions_value": True,
+        "positions_value_from_value_endpoint": (
+            float(wallet_value) if isinstance(wallet_value, float) else None
+        ),
+        "positions_value_from_positions_rows": round(current_positions_value, 12),
         "positions_endpoint_status": positions_status,
         "positions_pages_fetched": pages_fetched,
         "positions_page_size": page_size,
@@ -1145,7 +1177,10 @@ def fetch_polymarket_wallet_snapshot(
         "closed_positions_pages_fetched": closed_positions_fetch_payload.get(
             "pages_fetched"
         ),
-        "closed_positions_page_size": max(1, int(closed_positions_page_size)),
+        "closed_positions_page_size": closed_positions_fetch_payload.get("page_size"),
+        "closed_positions_requested_page_size": closed_positions_fetch_payload.get(
+            "requested_page_size"
+        ),
         "closed_positions_max_pages": max(1, int(closed_positions_max_pages)),
         "equity_row": equity_row,
         "positions_rows": positions_rows,
@@ -1635,11 +1670,12 @@ def run_coldmath_snapshot_summary(
     include_taker_only_trades: bool = True,
     include_all_trade_roles: bool = True,
     data_api_base_url: str = POLYMARKET_DATA_API_BASE_URL,
+    gamma_api_base_url: str = POLYMARKET_GAMMA_API_BASE_URL,
     api_timeout_seconds: float = 20.0,
     positions_page_size: int = 500,
     positions_max_pages: int = 20,
     refresh_closed_positions_from_api: bool = True,
-    closed_positions_page_size: int = 500,
+    closed_positions_page_size: int = 50,
     closed_positions_max_pages: int = 20,
     trades_page_size: int = 500,
     trades_max_pages: int = 20,
@@ -1667,6 +1703,7 @@ def run_coldmath_snapshot_summary(
         api_snapshot = fetch_polymarket_wallet_snapshot(
             wallet_address=wallet_address,
             data_api_base_url=data_api_base_url,
+            gamma_api_base_url=gamma_api_base_url,
             timeout_seconds=api_timeout_seconds,
             positions_page_size=positions_page_size,
             positions_max_pages=positions_max_pages,
@@ -1688,6 +1725,9 @@ def run_coldmath_snapshot_summary(
             "status": api_snapshot.get("status"),
             "captured_at": api_snapshot.get("captured_at"),
             "value_endpoint_status": api_snapshot.get("value_endpoint_status"),
+            "value_interpreted_as_positions_value": api_snapshot.get(
+                "value_interpreted_as_positions_value"
+            ),
             "positions_endpoint_status": api_snapshot.get("positions_endpoint_status"),
             "positions_pages_fetched": api_snapshot.get("positions_pages_fetched"),
             "closed_positions_endpoint_status": api_snapshot.get(
@@ -1695,6 +1735,10 @@ def run_coldmath_snapshot_summary(
             ),
             "closed_positions_pages_fetched": api_snapshot.get(
                 "closed_positions_pages_fetched"
+            ),
+            "closed_positions_page_size": api_snapshot.get("closed_positions_page_size"),
+            "closed_positions_requested_page_size": api_snapshot.get(
+                "closed_positions_requested_page_size"
             ),
             "errors": list(api_snapshot.get("errors") or []),
             "positions_rows": len(api_snapshot.get("positions_rows") or []),

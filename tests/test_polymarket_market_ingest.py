@@ -90,6 +90,26 @@ class PolymarketMarketIngestTests(unittest.TestCase):
                 f"c1,a1,10,0.50,{valuation_time}\n",
                 encoding="utf-8",
             )
+            (snapshot_dir / "closed_positions.csv").write_text(
+                "conditionId,asset,size,avgPrice,title,slug,eventSlug,outcome,endDate,closedAt,cashPnl,realizedPnl,percentPnl,percentRealizedPnl,totalBought,source\n"
+                "c0,a0,5,0.4,Closed test,closed-test,event-test,No,2026-04-20,2026-04-21T10:00:00Z,1.0,1.2,0.1,0.12,2.0,test\n",
+                encoding="utf-8",
+            )
+            (snapshot_dir / "trades.csv").write_text(
+                "capturedAt,queryScope,tradeId,timestamp,marketSlug,eventSlug,title,outcome,side,size,price,usdcSize,transactionHash,conditionId,asset\n"
+                "2026-04-21T12:00:00Z,all_roles,t1,2026-04-21T11:00:00Z,mkt-1,event-1,Trade,No,buy,10,0.5,5,0xtx,c1,a1\n",
+                encoding="utf-8",
+            )
+            (snapshot_dir / "activity.csv").write_text(
+                "capturedAt,activityId,timestamp,type,marketSlug,eventSlug,title,outcome,side,size,price,usdcSize,transactionHash,conditionId,asset\n"
+                "2026-04-21T12:00:00Z,a1,2026-04-21T11:01:00Z,TRADE,mkt-1,event-1,Trade,No,buy,10,0.5,5,0xtx,c1,a1\n",
+                encoding="utf-8",
+            )
+            (snapshot_dir / "ledger_events.csv").write_text(
+                "capturedAt,eventKey,eventTimestamp,eventType,eventClass,source,sourceRowId,sourceQueryScope,marketSlug,eventSlug,title,outcome,side,size,price,usdcSize,transactionHash,conditionId,asset,accountingDirection,dedupeStatus,isTradeLike\n"
+                "2026-04-21T12:00:00Z,key1,2026-04-21T11:00:00Z,TRADE,trade,trades,t1,all_roles,mkt-1,event-1,Trade,No,buy,10,0.5,5,0xtx,c1,a1,debit,canonical,1\n",
+                encoding="utf-8",
+            )
 
             def fake_http_get_json(url: str, timeout_seconds: float):
                 _ = timeout_seconds
@@ -111,6 +131,8 @@ class PolymarketMarketIngestTests(unittest.TestCase):
             coldmath_snapshot = summary["coldmath_snapshot"]
             self.assertEqual(coldmath_snapshot["status"], "ready")
             self.assertEqual(coldmath_snapshot["priced_positions"], 1)
+            self.assertEqual(coldmath_snapshot["closed_positions_rows"], 1)
+            self.assertEqual(coldmath_snapshot["ledger"]["events_rows_total"], 1)
             self.assertTrue(Path(summary["output_file"]).exists())
 
     def test_run_polymarket_ingest_builds_coldmath_temperature_alignment(self) -> None:
