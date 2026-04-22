@@ -476,9 +476,13 @@ fi
 readiness_runner_state="$OUTPUT_DIR/health/readiness_runner_latest.json"
 if [[ -f "$readiness_runner_state" && "$HAS_JQ" == "1" ]]; then
   runner_age="$(( $(date +%s) - $(date -r "$readiness_runner_state" +%s) ))"
-  jq -r --arg age "$runner_age" '
-    "readiness_runner status=\(.run_status // "unknown") stage=\(.stage // "unknown") message=\(.message // "") nonfatal=\((.nonfatal_stage_failures // []) | join(",")) age_sec=" + $age
-  ' "$readiness_runner_state"
+  if jq -e . "$readiness_runner_state" >/dev/null 2>&1; then
+    jq -r --arg age "$runner_age" '
+      "readiness_runner status=\(.run_status // "unknown") stage=\(.stage // "unknown") message=\(.message // "") nonfatal=\((.nonfatal_stage_failures // []) | join(",")) age_sec=" + $age
+    ' "$readiness_runner_state"
+  else
+    echo "readiness_runner_latest -> PARSE_ERROR ($readiness_runner_state) age_sec=$runner_age"
+  fi
 fi
 
 latest_gate="$(ls -1t "$OUTPUT_DIR"/kalshi_temperature_go_live_gate_*.json 2>/dev/null | head -n 1 || true)"
