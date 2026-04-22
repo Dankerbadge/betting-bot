@@ -380,6 +380,23 @@ def test_quick_check_strict_fails_when_live_status_artifact_is_missing(tmp_path:
     assert "live_status_missing" in result.stdout
 
 
+def test_quick_check_strict_fails_when_alpha_summary_artifact_is_missing(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    (output_dir / "health" / "alpha_summary_latest.json").unlink(missing_ok=True)
+    (output_dir / "health" / "alpha_summary" / "alpha_summary_latest.json").unlink(missing_ok=True)
+
+    env_file = tmp_path / "quick.env"
+    _write_env_file(env_file=env_file, output_dir=output_dir)
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_quick_script(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 2
+    assert "alpha_summary_stale" in result.stdout
+
+
 def test_quick_check_strict_fails_when_live_status_artifact_is_stale(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[1]
     output_dir = tmp_path / "out"
@@ -449,6 +466,22 @@ def test_quick_check_strict_fails_when_route_guard_artifact_is_stale(tmp_path: P
     assert "route_guard_stale" in result.stdout
 
 
+def test_quick_check_strict_allows_missing_lane_state_when_not_required(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+
+    env_file = tmp_path / "quick.env"
+    _write_env_file(env_file=env_file, output_dir=output_dir)
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_quick_script(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 0
+    assert "decision_matrix_lane: missing" in result.stdout
+    assert "quick_result: GREEN" in result.stdout
+
+
 def test_quick_check_non_strict_reports_flags_but_exits_zero(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[1]
     output_dir = tmp_path / "out"
@@ -471,6 +504,26 @@ def test_quick_check_non_strict_reports_flags_but_exits_zero(tmp_path: Path) -> 
     assert result.returncode == 0
     assert "quick_result: YELLOW" in result.stdout
     assert "discord_route_guard_not_green" in result.stdout
+
+
+def test_quick_check_strict_does_not_fail_on_thread_map_parse_error(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+
+    env_file = tmp_path / "quick.env"
+    _write_env_file(env_file=env_file, output_dir=output_dir)
+    script_path, tool_dir = _prepare_script_bundle(
+        tmp_path=tmp_path,
+        root=root,
+        thread_map_json="not-json",
+    )
+    result = _run_quick_script(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 0
+    assert "thread_map: parse_error" in result.stdout
+    assert "thread_map_incomplete" not in result.stdout
 
 
 def test_quick_check_help_flag_exits_zero_and_prints_usage() -> None:
