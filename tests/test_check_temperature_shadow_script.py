@@ -1555,6 +1555,29 @@ def test_shadow_check_missing_env_file_fails(tmp_path: Path) -> None:
     assert f"Missing {missing_env}" in result.stderr
 
 
+def test_shadow_check_accepts_positional_env_path(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+
+    env_file = tmp_path / "shadow.env"
+    _write_env_file(env_file=env_file, output_dir=output_dir)
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    env = dict(os.environ)
+    env["PATH"] = f"{tool_dir}:{env.get('PATH', '')}"
+    result = subprocess.run(
+        ["/bin/bash", str(script_path), str(env_file)],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert "=== systemd ===" in result.stdout
+
+
 def test_shadow_check_strict_warns_when_live_status_is_yellow(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[1]
     output_dir = tmp_path / "out"

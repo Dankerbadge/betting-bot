@@ -529,3 +529,46 @@ def test_quick_check_missing_env_file_fails(tmp_path: Path) -> None:
 
     assert result.returncode == 1
     assert f"Missing {missing_env}" in result.stderr
+
+
+def test_quick_check_accepts_positional_env_path(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+
+    env_file = tmp_path / "quick.env"
+    _write_env_file(env_file=env_file, output_dir=output_dir)
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    env = dict(os.environ)
+    env["PATH"] = f"{tool_dir}:{env.get('PATH', '')}"
+    result = subprocess.run(
+        ["/bin/bash", str(script_path), str(env_file)],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert "BetBot Quick Health" in result.stdout
+
+
+def test_quick_check_uses_nested_alpha_summary_fallback_path(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    alpha_summary_latest = output_dir / "health" / "alpha_summary_latest.json"
+    nested_alpha_summary_latest = output_dir / "health" / "alpha_summary" / "alpha_summary_latest.json"
+    nested_alpha_summary_latest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(alpha_summary_latest), str(nested_alpha_summary_latest))
+
+    env_file = tmp_path / "quick.env"
+    _write_env_file(env_file=env_file, output_dir=output_dir)
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_quick_script(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 0
+    assert "alpha: health=GREEN" in result.stdout
+    assert "quick_result: GREEN" in result.stdout
