@@ -493,6 +493,30 @@ def test_quick_check_strict_fails_when_thread_map_ready_flag_is_false_string(tmp
     assert "thread_map_incomplete" in result.stdout
 
 
+def test_quick_check_strict_handles_malformed_thread_map_shape_without_crashing(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+
+    env_file = tmp_path / "quick.env"
+    _write_env_file(env_file=env_file, output_dir=output_dir)
+    script_path, tool_dir = _prepare_script_bundle(
+        tmp_path=tmp_path,
+        root=root,
+        thread_map_json=(
+            '{"ready_for_apply": false, "route_guard_shared_route_group_count": "n/a", '
+            '"missing_required_in_map": "not-a-list", "missing_required_in_env": 7}'
+        ),
+    )
+    result = _run_quick_script(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 0
+    assert "thread_map: ready_for_apply=false shared_route_groups=0 missing_map=0 missing_env=0" in result.stdout
+    assert "thread_map_incomplete" not in result.stdout
+    assert "quick_result: GREEN" in result.stdout
+
+
 def test_quick_check_strict_fails_when_route_guard_status_is_not_green(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[1]
     output_dir = tmp_path / "out"

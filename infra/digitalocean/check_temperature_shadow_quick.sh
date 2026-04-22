@@ -436,11 +436,20 @@ def _as_bool(value: object) -> bool:
     if lowered in {"0", "false", "no", "off", ""}:
       return False
   return bool(value)
+def _as_int(value: object, default: int = 0) -> int:
+  if isinstance(value, bool):
+    return int(value)
+  try:
+    return int(float(value))
+  except Exception:
+    return default
+def _as_list(value: object) -> list[object]:
+  return value if isinstance(value, list) else []
 
 ready=_as_bool(p.get('ready_for_apply', p.get('can_apply', False)))
-shared_groups=int(p.get('route_guard_shared_route_group_count') or 0)
-missing_map=p.get('missing_required_in_map') or []
-missing_env=p.get('missing_required_in_env') or []
+shared_groups=_as_int(p.get('route_guard_shared_route_group_count'), 0)
+missing_map=_as_list(p.get('missing_required_in_map'))
+missing_env=_as_list(p.get('missing_required_in_env'))
 print(f"thread_map: ready_for_apply={str(ready).lower()} shared_route_groups={shared_groups} missing_map={len(missing_map)} missing_env={len(missing_env)}")
 PY
 )"
@@ -465,8 +474,15 @@ def _as_bool(value: object) -> bool:
     if lowered in {"0", "false", "no", "off", ""}:
       return False
   return bool(value)
+def _as_int(value: object, default: int = 0) -> int:
+  if isinstance(value, bool):
+    return int(value)
+  try:
+    return int(float(value))
+  except Exception:
+    return default
 
-shared=int(p.get("route_guard_shared_route_group_count") or 0)
+shared=_as_int(p.get("route_guard_shared_route_group_count"), 0)
 ready=_as_bool(p.get("ready_for_apply", p.get("can_apply", False)))
 print("1" if (shared > 0 and not ready) else "0")
 PY
