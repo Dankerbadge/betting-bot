@@ -525,6 +525,78 @@ def test_shadow_check_strict_fails_when_lane_parse_error_gate_enabled_with_true_
     assert "STRICT CHECK FAILED: decision-matrix lane parse error encountered" in result.stderr
 
 
+def test_shadow_check_strict_fails_when_lane_state_artifact_is_stale(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    lane_state_path = output_dir / "health" / ".decision_matrix_lane_alert_state.json"
+    _write_json(
+        lane_state_path,
+        {
+            "last_lane_status": "matrix_failed",
+            "degraded_streak_count": 1,
+            "degraded_streak_threshold": 3,
+            "degraded_streak_notify_every": 3,
+            "last_notify_reason": "none",
+        },
+    )
+    stale_mtime = int(os.path.getmtime(lane_state_path)) - 400
+    os.utime(lane_state_path, (stale_mtime, stale_mtime))
+
+    env_file = tmp_path / "shadow.env"
+    _write_env_file(
+        env_file=env_file,
+        output_dir=output_dir,
+        extra_lines=(
+            "DECISION_MATRIX_LANE_STRICT_MAX_AGE_SECONDS=60",
+        ),
+    )
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_shadow_check(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 2
+    assert "decision_matrix_lane_alert_state status=matrix_failed" in result.stdout
+    assert "STRICT CHECK FAILED: decision-matrix lane state artifact stale" in result.stderr
+
+
+def test_shadow_check_strict_ignores_lane_state_staleness_with_non_numeric_max_age(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    lane_state_path = output_dir / "health" / ".decision_matrix_lane_alert_state.json"
+    _write_json(
+        lane_state_path,
+        {
+            "last_lane_status": "matrix_failed",
+            "degraded_streak_count": 1,
+            "degraded_streak_threshold": 3,
+            "degraded_streak_notify_every": 3,
+            "last_notify_reason": "none",
+        },
+    )
+    stale_mtime = int(os.path.getmtime(lane_state_path)) - 400
+    os.utime(lane_state_path, (stale_mtime, stale_mtime))
+
+    env_file = tmp_path / "shadow.env"
+    _write_env_file(
+        env_file=env_file,
+        output_dir=output_dir,
+        extra_lines=(
+            "DECISION_MATRIX_LANE_STRICT_MAX_AGE_SECONDS=not-a-number",
+        ),
+    )
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_shadow_check(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 0
+    assert "decision_matrix_lane_alert_state status=matrix_failed" in result.stdout
+    assert "STRICT CHECK FAILED: decision-matrix lane state artifact stale" not in result.stderr
+
+
 def test_shadow_check_strict_fails_on_non_green_route_guard_when_collision_gate_enabled(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[1]
     output_dir = tmp_path / "out"

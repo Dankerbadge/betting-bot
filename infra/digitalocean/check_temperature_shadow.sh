@@ -86,6 +86,7 @@ DECISION_MATRIX_LANE_STRICT_DEGRADED_THRESHOLD="${DECISION_MATRIX_LANE_STRICT_DE
 DECISION_MATRIX_LANE_STRICT_DEGRADED_STATUSES="${DECISION_MATRIX_LANE_STRICT_DEGRADED_STATUSES:-matrix_failed,bootstrap_blocked}"
 DECISION_MATRIX_LANE_STRICT_REQUIRE_STATE_FILE="${DECISION_MATRIX_LANE_STRICT_REQUIRE_STATE_FILE:-0}"
 DECISION_MATRIX_LANE_STRICT_FAIL_ON_PARSE_ERROR="${DECISION_MATRIX_LANE_STRICT_FAIL_ON_PARSE_ERROR:-0}"
+DECISION_MATRIX_LANE_STRICT_MAX_AGE_SECONDS="${DECISION_MATRIX_LANE_STRICT_MAX_AGE_SECONDS:-0}"
 DECISION_MATRIX_LANE_ALERT_STATE_FILE="${DECISION_MATRIX_LANE_ALERT_STATE_FILE:-$OUTPUT_DIR/health/.decision_matrix_lane_alert_state.json}"
 REPLAN_COOLDOWN_STATE_FILE="${REPLAN_COOLDOWN_STATE_FILE:-$OUTPUT_DIR/.adaptive_replan_cooldown_minutes}"
 REPLAN_BACKSTOP_STATE_FILE="${REPLAN_BACKSTOP_STATE_FILE:-$OUTPUT_DIR/.adaptive_replan_backstop}"
@@ -141,6 +142,9 @@ if ! [[ "$AUTO_PROFILE_STRICT_MAX_AGE_SECONDS" =~ ^[0-9]+$ ]]; then
 fi
 if ! [[ "$DISCORD_ROUTE_GUARD_STRICT_MAX_AGE_SECONDS" =~ ^[0-9]+$ ]]; then
   DISCORD_ROUTE_GUARD_STRICT_MAX_AGE_SECONDS=10800
+fi
+if ! [[ "$DECISION_MATRIX_LANE_STRICT_MAX_AGE_SECONDS" =~ ^[0-9]+$ ]]; then
+  DECISION_MATRIX_LANE_STRICT_MAX_AGE_SECONDS=0
 fi
 DECISION_MATRIX_LANE_STRICT_REQUIRE_STATE_FILE="$(normalize_binary_flag "$DECISION_MATRIX_LANE_STRICT_REQUIRE_STATE_FILE" "0")"
 DECISION_MATRIX_LANE_STRICT_FAIL_ON_PARSE_ERROR="$(normalize_binary_flag "$DECISION_MATRIX_LANE_STRICT_FAIL_ON_PARSE_ERROR" "0")"
@@ -1165,6 +1169,13 @@ if (( STRICT_MODE == 1 )); then
     echo
     echo "STRICT CHECK FAILED: decision-matrix lane parse error encountered ($DECISION_MATRIX_LANE_ALERT_STATE_FILE)" >&2
     exit 2
+  fi
+  if [[ "$DECISION_MATRIX_LANE_STRICT_MAX_AGE_SECONDS" =~ ^[0-9]+$ ]] && (( DECISION_MATRIX_LANE_STRICT_MAX_AGE_SECONDS > 0 )); then
+    if [[ "$decision_matrix_lane_state_available" == "1" && "$decision_matrix_lane_state_age_seconds" =~ ^[0-9]+$ ]] && (( decision_matrix_lane_state_age_seconds > DECISION_MATRIX_LANE_STRICT_MAX_AGE_SECONDS )); then
+      echo
+      echo "STRICT CHECK FAILED: decision-matrix lane state artifact stale (age=${decision_matrix_lane_state_age_seconds}s > ${DECISION_MATRIX_LANE_STRICT_MAX_AGE_SECONDS}s)" >&2
+      exit 2
+    fi
   fi
   if [[ "$strict_lane_threshold" =~ ^[0-9]+$ ]] && (( strict_lane_threshold > 0 )); then
     if [[ "$decision_matrix_lane_strict_status_match" == "true" && "$decision_matrix_lane_degraded_streak_count" =~ ^[0-9]+$ ]] && (( decision_matrix_lane_degraded_streak_count >= strict_lane_threshold )); then
