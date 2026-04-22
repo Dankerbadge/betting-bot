@@ -466,6 +466,34 @@ def test_shadow_check_strict_fails_on_non_green_route_guard_when_collision_gate_
     assert "STRICT CHECK FAILED: discord-route-guard indicates non-green route separation" in result.stderr
 
 
+def test_shadow_check_strict_fails_on_route_guard_parse_error_when_collision_gate_enabled(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    route_guard_path = output_dir / "health" / "discord_route_guard" / "discord_route_guard_latest.json"
+    route_guard_path.parent.mkdir(parents=True, exist_ok=True)
+    route_guard_path.write_text("{not-json", encoding="utf-8")
+
+    env_file = tmp_path / "shadow.env"
+    _write_env_file(
+        env_file=env_file,
+        output_dir=output_dir,
+        extra_lines=(
+            "DISCORD_ROUTE_GUARD_TIMER_EXPECTED=1",
+            "DISCORD_ROUTE_GUARD_STRICT_FAIL_ON_COLLISION=1",
+        ),
+    )
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_shadow_check(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 2
+    assert "discord_route_guard_latest -> PARSE_ERROR" in result.stdout
+    assert "STRICT CHECK FAILED: discord-route-guard indicates non-green route separation" in result.stderr
+
+
 def test_shadow_check_strict_allows_uppercase_green_route_guard_status_when_collision_gate_enabled(
     tmp_path: Path,
 ) -> None:
@@ -606,6 +634,32 @@ def test_shadow_check_strict_allows_non_green_route_guard_when_collision_gate_di
     result = _run_shadow_check(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
 
     assert result.returncode == 0
+    assert "STRICT CHECK FAILED: discord-route-guard indicates non-green route separation" not in result.stderr
+
+
+def test_shadow_check_strict_allows_route_guard_parse_error_when_collision_gate_disabled(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    route_guard_path = output_dir / "health" / "discord_route_guard" / "discord_route_guard_latest.json"
+    route_guard_path.parent.mkdir(parents=True, exist_ok=True)
+    route_guard_path.write_text("{not-json", encoding="utf-8")
+
+    env_file = tmp_path / "shadow.env"
+    _write_env_file(
+        env_file=env_file,
+        output_dir=output_dir,
+        extra_lines=(
+            "DISCORD_ROUTE_GUARD_TIMER_EXPECTED=1",
+            "DISCORD_ROUTE_GUARD_STRICT_FAIL_ON_COLLISION=0",
+        ),
+    )
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_shadow_check(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 0
+    assert "discord_route_guard_latest -> PARSE_ERROR" in result.stdout
     assert "STRICT CHECK FAILED: discord-route-guard indicates non-green route separation" not in result.stderr
 
 

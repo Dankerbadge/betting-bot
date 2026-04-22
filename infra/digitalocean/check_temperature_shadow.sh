@@ -798,16 +798,24 @@ fi
 latest_discord_route_guard="$(ls -1t "$OUTPUT_DIR"/health/discord_route_guard/discord_route_guard_latest.json 2>/dev/null | head -n 1 || true)"
 if [[ -n "$latest_discord_route_guard" && "$HAS_JQ" == "1" ]]; then
   discord_route_guard_age_seconds="$(( $(date +%s) - $(date -r "$latest_discord_route_guard" +%s) ))"
-  discord_route_guard_status="$(jq -r '.guard_status // "unknown"' "$latest_discord_route_guard" 2>/dev/null || echo "unknown")"
-  discord_route_guard_status="$(normalize_status_token "${discord_route_guard_status:-unknown}")"
-  discord_route_guard_shared_route_group_count="$(jq -r '.shared_route_group_count // 0' "$latest_discord_route_guard" 2>/dev/null || echo "0")"
-  discord_route_guard_route_hint="$(jq -r '.route_remediations[0].route_hint // .shared_route_groups[0].route_hint // ""' "$latest_discord_route_guard" 2>/dev/null || true)"
-  discord_route_guard_required_thread_keys="$(jq -r '[.route_remediations[]?.required_thread_env_keys[]?] | unique | join(",")' "$latest_discord_route_guard" 2>/dev/null || true)"
-  jq -r --arg age "$discord_route_guard_age_seconds" '
-    "discord_route_guard_latest status=\(.guard_status // "unknown") age_sec=\($age) strict=\(.strict_mode // false) shared_route_groups=\(.shared_route_group_count // 0)"
-  ' "$latest_discord_route_guard"
-  if [[ -n "$discord_route_guard_route_hint" || -n "$discord_route_guard_required_thread_keys" ]]; then
-    echo "discord_route_guard_remediation route_hint=${discord_route_guard_route_hint:-n/a} required_thread_env_keys=${discord_route_guard_required_thread_keys:-n/a}"
+  if jq -e . "$latest_discord_route_guard" >/dev/null 2>&1; then
+    discord_route_guard_status="$(jq -r '.guard_status // "unknown"' "$latest_discord_route_guard" 2>/dev/null || echo "unknown")"
+    discord_route_guard_status="$(normalize_status_token "${discord_route_guard_status:-unknown}")"
+    discord_route_guard_shared_route_group_count="$(jq -r '.shared_route_group_count // 0' "$latest_discord_route_guard" 2>/dev/null || echo "0")"
+    discord_route_guard_route_hint="$(jq -r '.route_remediations[0].route_hint // .shared_route_groups[0].route_hint // ""' "$latest_discord_route_guard" 2>/dev/null || true)"
+    discord_route_guard_required_thread_keys="$(jq -r '[.route_remediations[]?.required_thread_env_keys[]?] | unique | join(",")' "$latest_discord_route_guard" 2>/dev/null || true)"
+    jq -r --arg age "$discord_route_guard_age_seconds" '
+      "discord_route_guard_latest status=\(.guard_status // "unknown") age_sec=\($age) strict=\(.strict_mode // false) shared_route_groups=\(.shared_route_group_count // 0)"
+    ' "$latest_discord_route_guard"
+    if [[ -n "$discord_route_guard_route_hint" || -n "$discord_route_guard_required_thread_keys" ]]; then
+      echo "discord_route_guard_remediation route_hint=${discord_route_guard_route_hint:-n/a} required_thread_env_keys=${discord_route_guard_required_thread_keys:-n/a}"
+    fi
+  else
+    discord_route_guard_status="unknown"
+    discord_route_guard_shared_route_group_count="0"
+    discord_route_guard_route_hint=""
+    discord_route_guard_required_thread_keys=""
+    echo "discord_route_guard_latest -> PARSE_ERROR ($latest_discord_route_guard) age_sec=$discord_route_guard_age_seconds"
   fi
 fi
 
