@@ -1238,3 +1238,125 @@ def test_shadow_check_strict_passes_when_auto_profile_expected_but_not_currently
 
     assert result.returncode == 0
     assert "STRICT CHECK FAILED: auto profile required" not in result.stderr
+
+
+def test_shadow_check_strict_fails_when_live_status_is_red(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    _write_json(
+        output_dir / "health" / "live_status_latest.json",
+        {
+            "status": "red",
+            "trigger_flags": {
+                "approvals_resumed": False,
+                "planned_orders_resumed": False,
+            },
+            "freshness_plan": {
+                "approval_rate_guardrail_status": "critical_high",
+                "approval_rate_guardrail_evaluated": True,
+                "approval_rate": 0.9,
+                "metar_observation_stale_rate": 0.8,
+            },
+            "scan_budget": {
+                "effective_max_markets": 100,
+            },
+            "latest_cycle_metrics": {
+                "intents_approved": 0,
+                "intents_total": 10,
+                "planned_orders": 0,
+            },
+            "red_reasons": ["simulated_red"],
+            "yellow_reasons": [],
+        },
+    )
+
+    env_file = tmp_path / "shadow.env"
+    _write_env_file(env_file=env_file, output_dir=output_dir)
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_shadow_check(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 2
+    assert "STRICT CHECK FAILED: live_status is red" in result.stderr
+
+
+def test_shadow_check_strict_warns_when_live_status_is_yellow(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    _write_json(
+        output_dir / "health" / "live_status_latest.json",
+        {
+            "status": "yellow",
+            "trigger_flags": {
+                "approvals_resumed": False,
+                "planned_orders_resumed": False,
+            },
+            "freshness_plan": {
+                "approval_rate_guardrail_status": "above_band",
+                "approval_rate_guardrail_evaluated": True,
+                "approval_rate": 0.25,
+                "metar_observation_stale_rate": 0.2,
+            },
+            "scan_budget": {
+                "effective_max_markets": 100,
+            },
+            "latest_cycle_metrics": {
+                "intents_approved": 1,
+                "intents_total": 10,
+                "planned_orders": 1,
+            },
+            "red_reasons": [],
+            "yellow_reasons": ["simulated_yellow"],
+        },
+    )
+
+    env_file = tmp_path / "shadow.env"
+    _write_env_file(env_file=env_file, output_dir=output_dir)
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_shadow_check(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 1
+    assert "STRICT CHECK WARNING: live_status is yellow" in result.stderr
+
+
+def test_shadow_check_strict_fails_when_live_status_artifact_is_stale(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    live_status_path = output_dir / "health" / "live_status_latest.json"
+    os.utime(live_status_path, (1, 1))
+
+    env_file = tmp_path / "shadow.env"
+    _write_env_file(
+        env_file=env_file,
+        output_dir=output_dir,
+        extra_lines=(
+            "LIVE_STATUS_STRICT_MAX_AGE_SECONDS=1",
+        ),
+    )
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_shadow_check(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 2
+    assert "STRICT CHECK FAILED: live_status artifact stale" in result.stderr
+
+
+def test_shadow_check_strict_fails_when_alpha_summary_artifact_is_missing(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    alpha_path = output_dir / "health" / "alpha_summary_latest.json"
+    alpha_path.unlink(missing_ok=True)
+
+    env_file = tmp_path / "shadow.env"
+    _write_env_file(env_file=env_file, output_dir=output_dir)
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_shadow_check(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 2
+    assert "STRICT CHECK FAILED: alpha summary artifact unavailable" in result.stderr
