@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import json
 from pathlib import Path
 import re
+import time
 from typing import Any, Callable
 from urllib.error import HTTPError
 from urllib.parse import urlencode
@@ -597,6 +598,8 @@ def _fetch_data_api_rows(
     max_pages: int,
     http_get_json: JsonGetter,
     extra_params: dict[str, Any] | None = None,
+    retry_max_attempts: int = 3,
+    retry_backoff_seconds: float = 0.35,
 ) -> dict[str, Any]:
     endpoint_max_limits = {
         "positions": 500,
@@ -613,6 +616,11 @@ def _fetch_data_api_rows(
     errors: list[str] = []
     http_status = 200
     pages_fetched = 0
+    http_requests = 0
+    retry_attempts_total = 0
+    retry_events_preview: list[dict[str, Any]] = []
+    termination_reason = "max_pages_reached"
+    truncated = False
 
     for page_index in range(max_page_count):
         params: list[tuple[str, str]] = [
@@ -628,21 +636,52 @@ def _fetch_data_api_rows(
                 params.append((str(key), _normalize_text(value)))
 
         url = f"{base_url}/{endpoint}?{urlencode(params)}"
-        status_code, payload = http_get_json(url, timeout_seconds)
+        status_code = 0
+        payload: Any = {}
+        for attempt_index in range(max(1, int(retry_max_attempts))):
+            status_code, payload = http_get_json(url, timeout_seconds)
+            http_requests += 1
+            if status_code == 200:
+                break
+            is_retryable = status_code in {429, 500, 502, 503, 504}
+            has_more_attempts = attempt_index < (max(1, int(retry_max_attempts)) - 1)
+            if not (is_retryable and has_more_attempts):
+                break
+            retry_attempts_total += 1
+            if len(retry_events_preview) < 20:
+                retry_events_preview.append(
+                    {
+                        "endpoint": endpoint,
+                        "offset": page_index * page_limit,
+                        "attempt": attempt_index + 1,
+                        "status_code": status_code,
+                    }
+                )
+            sleep_seconds = max(0.0, float(retry_backoff_seconds)) * (2**attempt_index)
+            if sleep_seconds > 0:
+                time.sleep(sleep_seconds)
+
         pages_fetched += 1
         if status_code != 200:
             http_status = status_code
             errors.append(f"{endpoint}_http_{status_code}")
+            termination_reason = "http_error"
             break
         if not isinstance(payload, list):
             errors.append(f"{endpoint}_payload_invalid")
+            termination_reason = "payload_invalid"
             break
         if not payload:
+            termination_reason = "empty_page"
             break
 
         rows.extend(item for item in payload if isinstance(item, dict))
         if len(payload) < page_limit:
+            termination_reason = "page_short"
             break
+    else:
+        truncated = True
+        termination_reason = "max_pages_reached"
 
     status = "ready"
     if errors and rows:
@@ -664,6 +703,11 @@ def _fetch_data_api_rows(
         "endpoint_max_limit": max_limit_for_endpoint,
         "max_pages": max_page_count,
         "pages_fetched": pages_fetched,
+        "http_requests": http_requests,
+        "retry_attempts_total": retry_attempts_total,
+        "retry_events_preview": retry_events_preview,
+        "truncated": truncated,
+        "termination_reason": termination_reason,
         "last_offset": last_offset,
         "next_offset": next_offset,
     }
@@ -903,61 +947,55 @@ def fetch_polymarket_wallet_snapshot(
     positions_rows: list[dict[str, str]] = []
     seen_keys: set[tuple[str, str, str]] = set()
 
-    positions_status = 200
-    pages_fetched = 0
-    for page_index in range(max_pages):
-        offset = page_index * page_size
-        positions_url = f"{base_url}/positions?{urlencode({'user': wallet, 'limit': page_size, 'offset': offset})}"
-        status_code, payload = http_get_json(positions_url, timeout_seconds)
-        pages_fetched += 1
-        if status_code != 200:
-            positions_status = status_code
-            errors.append(f"positions_http_{status_code}")
-            break
-        if not isinstance(payload, list):
-            errors.append("positions_payload_invalid")
-            break
-        if not payload:
-            break
+    positions_fetch_payload = _fetch_data_api_rows(
+        endpoint="positions",
+        wallet_address=wallet,
+        base_url=base_url,
+        timeout_seconds=timeout_seconds,
+        page_size=page_size,
+        max_pages=max_pages,
+        http_get_json=http_get_json,
+    )
+    positions_status = int(positions_fetch_payload.get("http_status") or 0)
+    pages_fetched = int(positions_fetch_payload.get("pages_fetched") or 0)
+    for error in positions_fetch_payload.get("errors") or []:
+        errors.append(f"positions::{_normalize_text(error)}")
 
-        for raw_row in payload:
-            if not isinstance(raw_row, dict):
-                continue
-            condition_id = _normalize_text(raw_row.get("conditionId"))
-            asset = _normalize_text(raw_row.get("asset"))
-            outcome = _normalize_text(raw_row.get("outcome"))
-            dedupe_key = (condition_id.lower(), asset, outcome.lower())
-            if dedupe_key in seen_keys:
-                continue
-            seen_keys.add(dedupe_key)
-            positions_rows.append(
-                {
-                    "conditionId": condition_id,
-                    "asset": asset,
-                    "size": _float_text(raw_row.get("size")),
-                    "curPrice": _float_text(raw_row.get("curPrice")),
-                    "valuationTime": valuation_time,
-                    "eventSlug": _normalize_text(raw_row.get("eventSlug")),
-                    "slug": _normalize_text(raw_row.get("slug")),
-                    "title": _normalize_text(raw_row.get("title")),
-                    "outcome": outcome,
-                    "endDate": _normalize_text(raw_row.get("endDate")),
-                    "currentValue": _float_text(raw_row.get("currentValue")),
-                    "avgPrice": _float_text(raw_row.get("avgPrice")),
-                    "initialValue": _float_text(raw_row.get("initialValue")),
-                    "totalBought": _float_text(raw_row.get("totalBought")),
-                    "cashPnl": _float_text(raw_row.get("cashPnl")),
-                    "realizedPnl": _float_text(raw_row.get("realizedPnl")),
-                    "percentPnl": _float_text(raw_row.get("percentPnl")),
-                    "percentRealizedPnl": _float_text(raw_row.get("percentRealizedPnl")),
-                    "redeemable": "1" if _coerce_bool(raw_row.get("redeemable")) else "0",
-                    "mergeable": "1" if _coerce_bool(raw_row.get("mergeable")) else "0",
-                    "negativeRisk": "1" if _coerce_bool(raw_row.get("negativeRisk")) else "0",
-                }
-            )
-
-        if len(payload) < page_size:
-            break
+    for raw_row in positions_fetch_payload.get("rows") or []:
+        if not isinstance(raw_row, dict):
+            continue
+        condition_id = _normalize_text(raw_row.get("conditionId"))
+        asset = _normalize_text(raw_row.get("asset"))
+        outcome = _normalize_text(raw_row.get("outcome"))
+        dedupe_key = (condition_id.lower(), asset, outcome.lower())
+        if dedupe_key in seen_keys:
+            continue
+        seen_keys.add(dedupe_key)
+        positions_rows.append(
+            {
+                "conditionId": condition_id,
+                "asset": asset,
+                "size": _float_text(raw_row.get("size")),
+                "curPrice": _float_text(raw_row.get("curPrice")),
+                "valuationTime": valuation_time,
+                "eventSlug": _normalize_text(raw_row.get("eventSlug")),
+                "slug": _normalize_text(raw_row.get("slug")),
+                "title": _normalize_text(raw_row.get("title")),
+                "outcome": outcome,
+                "endDate": _normalize_text(raw_row.get("endDate")),
+                "currentValue": _float_text(raw_row.get("currentValue")),
+                "avgPrice": _float_text(raw_row.get("avgPrice")),
+                "initialValue": _float_text(raw_row.get("initialValue")),
+                "totalBought": _float_text(raw_row.get("totalBought")),
+                "cashPnl": _float_text(raw_row.get("cashPnl")),
+                "realizedPnl": _float_text(raw_row.get("realizedPnl")),
+                "percentPnl": _float_text(raw_row.get("percentPnl")),
+                "percentRealizedPnl": _float_text(raw_row.get("percentRealizedPnl")),
+                "redeemable": "1" if _coerce_bool(raw_row.get("redeemable")) else "0",
+                "mergeable": "1" if _coerce_bool(raw_row.get("mergeable")) else "0",
+                "negativeRisk": "1" if _coerce_bool(raw_row.get("negativeRisk")) else "0",
+            }
+        )
 
     closed_positions_rows: list[dict[str, str]] = []
     closed_positions_fetch_payload: dict[str, Any] = {
@@ -1035,6 +1073,12 @@ def fetch_polymarket_wallet_snapshot(
                 "rows": len(taker_only_payload.get("rows") or []),
                 "http_status": taker_only_payload.get("http_status"),
                 "pages_fetched": taker_only_payload.get("pages_fetched"),
+                "http_requests": taker_only_payload.get("http_requests"),
+                "retry_attempts_total": taker_only_payload.get("retry_attempts_total"),
+                "truncated": taker_only_payload.get("truncated"),
+                "termination_reason": taker_only_payload.get("termination_reason"),
+                "requested_page_size": taker_only_payload.get("requested_page_size"),
+                "page_size": taker_only_payload.get("page_size"),
                 "last_offset": taker_only_payload.get("last_offset"),
                 "next_offset": taker_only_payload.get("next_offset"),
                 "errors": list(taker_only_payload.get("errors") or []),
@@ -1066,6 +1110,12 @@ def fetch_polymarket_wallet_snapshot(
                 "rows": len(all_roles_payload.get("rows") or []),
                 "http_status": all_roles_payload.get("http_status"),
                 "pages_fetched": all_roles_payload.get("pages_fetched"),
+                "http_requests": all_roles_payload.get("http_requests"),
+                "retry_attempts_total": all_roles_payload.get("retry_attempts_total"),
+                "truncated": all_roles_payload.get("truncated"),
+                "termination_reason": all_roles_payload.get("termination_reason"),
+                "requested_page_size": all_roles_payload.get("requested_page_size"),
+                "page_size": all_roles_payload.get("page_size"),
                 "last_offset": all_roles_payload.get("last_offset"),
                 "next_offset": all_roles_payload.get("next_offset"),
                 "errors": list(all_roles_payload.get("errors") or []),
@@ -1118,6 +1168,12 @@ def fetch_polymarket_wallet_snapshot(
         "rows_total": len(activity_rows),
         "http_status": activity_fetch_payload.get("http_status"),
         "pages_fetched": activity_fetch_payload.get("pages_fetched"),
+        "http_requests": activity_fetch_payload.get("http_requests"),
+        "retry_attempts_total": activity_fetch_payload.get("retry_attempts_total"),
+        "truncated": activity_fetch_payload.get("truncated"),
+        "termination_reason": activity_fetch_payload.get("termination_reason"),
+        "requested_page_size": activity_fetch_payload.get("requested_page_size"),
+        "page_size": activity_fetch_payload.get("page_size"),
         "last_offset": activity_fetch_payload.get("last_offset"),
         "next_offset": activity_fetch_payload.get("next_offset"),
         "errors": list(activity_fetch_payload.get("errors") or []),
@@ -1171,11 +1227,32 @@ def fetch_polymarket_wallet_snapshot(
         "positions_value_from_positions_rows": round(current_positions_value, 12),
         "positions_endpoint_status": positions_status,
         "positions_pages_fetched": pages_fetched,
-        "positions_page_size": page_size,
+        "positions_http_requests": positions_fetch_payload.get("http_requests"),
+        "positions_retry_attempts_total": positions_fetch_payload.get(
+            "retry_attempts_total"
+        ),
+        "positions_truncated": positions_fetch_payload.get("truncated"),
+        "positions_termination_reason": positions_fetch_payload.get(
+            "termination_reason"
+        ),
+        "positions_page_size": positions_fetch_payload.get("page_size"),
+        "positions_requested_page_size": positions_fetch_payload.get(
+            "requested_page_size"
+        ),
         "positions_max_pages": max_pages,
         "closed_positions_endpoint_status": closed_positions_fetch_payload.get("http_status"),
         "closed_positions_pages_fetched": closed_positions_fetch_payload.get(
             "pages_fetched"
+        ),
+        "closed_positions_http_requests": closed_positions_fetch_payload.get(
+            "http_requests"
+        ),
+        "closed_positions_retry_attempts_total": closed_positions_fetch_payload.get(
+            "retry_attempts_total"
+        ),
+        "closed_positions_truncated": closed_positions_fetch_payload.get("truncated"),
+        "closed_positions_termination_reason": closed_positions_fetch_payload.get(
+            "termination_reason"
         ),
         "closed_positions_page_size": closed_positions_fetch_payload.get("page_size"),
         "closed_positions_requested_page_size": closed_positions_fetch_payload.get(
