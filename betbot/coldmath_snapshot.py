@@ -96,6 +96,31 @@ ACTIVITY_FIELDNAMES = [
     "asset",
 ]
 
+LEDGER_EVENTS_FIELDNAMES = [
+    "capturedAt",
+    "eventKey",
+    "eventTimestamp",
+    "eventType",
+    "eventClass",
+    "source",
+    "sourceRowId",
+    "sourceQueryScope",
+    "marketSlug",
+    "eventSlug",
+    "title",
+    "outcome",
+    "side",
+    "size",
+    "price",
+    "usdcSize",
+    "transactionHash",
+    "conditionId",
+    "asset",
+    "accountingDirection",
+    "dedupeStatus",
+    "isTradeLike",
+]
+
 
 def _normalize_text(value: Any) -> str:
     return str(value or "").strip()
@@ -274,6 +299,236 @@ def _normalize_activity_row(
     }
 
 
+def _activity_accounting_direction(activity_type: str, side: str) -> str:
+    normalized_type = _normalize_text(activity_type).upper()
+    normalized_side = _normalize_text(side).lower()
+    if normalized_type == "TRADE":
+        if normalized_side == "buy":
+            return "debit"
+        if normalized_side == "sell":
+            return "credit"
+        return "mixed"
+    if normalized_type in {"REDEEM", "REWARD", "MAKER_REBATE", "REFERRAL_REWARD"}:
+        return "credit"
+    if normalized_type in {"SPLIT", "MERGE", "CONVERSION"}:
+        return "structural"
+    return "unknown"
+
+
+def _canonical_event_key(row: dict[str, str], *, event_type: str) -> str:
+    tx_hash = _normalize_text(row.get("transactionHash")).lower()
+    market_slug = _normalize_text(row.get("marketSlug")).lower()
+    timestamp = _normalize_text(row.get("timestamp"))
+    side = _normalize_text(row.get("side")).lower()
+    outcome = _normalize_text(row.get("outcome")).lower()
+    size = _float_text(row.get("size"))
+    price = _float_text(row.get("price"))
+    usdc_size = _float_text(row.get("usdcSize"))
+    condition_id = _normalize_text(row.get("conditionId")).lower()
+    asset = _normalize_text(row.get("asset")).lower()
+    source_id = _normalize_text(row.get("tradeId") or row.get("activityId")).lower()
+    normalized_event_type = _normalize_text(event_type).upper() or "UNKNOWN"
+    parts = [
+        normalized_event_type,
+        tx_hash,
+        timestamp,
+        market_slug,
+        condition_id,
+        asset,
+        outcome,
+        side,
+        size,
+        price,
+        usdc_size,
+    ]
+    if all(not part for part in parts[1:]):
+        parts.append(source_id)
+    return "|".join(parts)
+
+
+def _event_sort_key(row: dict[str, str]) -> tuple[float, int]:
+    timestamp = _parse_ts(row.get("eventTimestamp"))
+    if isinstance(timestamp, datetime):
+        return (timestamp.timestamp(), 0)
+    return (0.0, 1)
+
+
+def build_public_observed_ledger_events(
+    *,
+    trades_rows: list[dict[str, str]],
+    activity_rows: list[dict[str, str]],
+) -> dict[str, Any]:
+    candidates: list[dict[str, str]] = []
+    for row in trades_rows:
+        event_type = "TRADE"
+        candidates.append(
+            {
+                "capturedAt": _normalize_text(row.get("capturedAt")),
+                "eventTimestamp": _normalize_text(row.get("timestamp")),
+                "eventType": event_type,
+                "eventClass": "trade",
+                "source": "trades",
+                "sourceRowId": _normalize_text(row.get("tradeId")),
+                "sourceQueryScope": _normalize_text(row.get("queryScope")),
+                "marketSlug": _normalize_text(row.get("marketSlug")),
+                "eventSlug": _normalize_text(row.get("eventSlug")),
+                "title": _normalize_text(row.get("title")),
+                "outcome": _normalize_text(row.get("outcome")),
+                "side": _normalize_text(row.get("side")),
+                "size": _float_text(row.get("size")),
+                "price": _float_text(row.get("price")),
+                "usdcSize": _float_text(row.get("usdcSize")),
+                "transactionHash": _normalize_text(row.get("transactionHash")),
+                "conditionId": _normalize_text(row.get("conditionId")),
+                "asset": _normalize_text(row.get("asset")),
+                "accountingDirection": _activity_accounting_direction(
+                    event_type,
+                    _normalize_text(row.get("side")),
+                ),
+                "isTradeLike": "1",
+            }
+        )
+
+    for row in activity_rows:
+        event_type = _normalize_text(row.get("type")).upper() or "UNKNOWN"
+        is_trade_like = event_type == "TRADE"
+        candidates.append(
+            {
+                "capturedAt": _normalize_text(row.get("capturedAt")),
+                "eventTimestamp": _normalize_text(row.get("timestamp")),
+                "eventType": event_type,
+                "eventClass": ("trade" if is_trade_like else "activity"),
+                "source": "activity",
+                "sourceRowId": _normalize_text(row.get("activityId")),
+                "sourceQueryScope": "",
+                "marketSlug": _normalize_text(row.get("marketSlug")),
+                "eventSlug": _normalize_text(row.get("eventSlug")),
+                "title": _normalize_text(row.get("title")),
+                "outcome": _normalize_text(row.get("outcome")),
+                "side": _normalize_text(row.get("side")),
+                "size": _float_text(row.get("size")),
+                "price": _float_text(row.get("price")),
+                "usdcSize": _float_text(row.get("usdcSize")),
+                "transactionHash": _normalize_text(row.get("transactionHash")),
+                "conditionId": _normalize_text(row.get("conditionId")),
+                "asset": _normalize_text(row.get("asset")),
+                "accountingDirection": _activity_accounting_direction(
+                    event_type,
+                    _normalize_text(row.get("side")),
+                ),
+                "isTradeLike": ("1" if is_trade_like else "0"),
+            }
+        )
+
+    # Prefer explicit trade rows over mirrored TRADE activity rows when keys collide.
+    candidates.sort(
+        key=lambda row: (
+            0 if _normalize_text(row.get("source")) == "trades" else 1,
+            _event_sort_key(row),
+        )
+    )
+
+    canonical_rows: list[dict[str, str]] = []
+    duplicate_count = 0
+    seen_keys: set[str] = set()
+    duplicates_by_source: dict[str, int] = {}
+    raw_source_counts: dict[str, int] = {}
+    canonical_source_counts: dict[str, int] = {}
+    raw_type_counts: dict[str, int] = {}
+    canonical_type_counts: dict[str, int] = {}
+
+    for candidate in candidates:
+        source = _normalize_text(candidate.get("source")).lower() or "unknown"
+        event_type = _normalize_text(candidate.get("eventType")).upper() or "UNKNOWN"
+        raw_source_counts[source] = raw_source_counts.get(source, 0) + 1
+        raw_type_counts[event_type] = raw_type_counts.get(event_type, 0) + 1
+
+        event_key = _canonical_event_key(candidate, event_type=event_type)
+        if event_key in seen_keys:
+            duplicate_count += 1
+            duplicates_by_source[source] = duplicates_by_source.get(source, 0) + 1
+            continue
+        seen_keys.add(event_key)
+
+        canonical_source_counts[source] = canonical_source_counts.get(source, 0) + 1
+        canonical_type_counts[event_type] = canonical_type_counts.get(event_type, 0) + 1
+
+        canonical = dict(candidate)
+        canonical["eventKey"] = event_key
+        canonical["dedupeStatus"] = "canonical"
+        canonical_rows.append(canonical)
+
+    canonical_rows.sort(key=_event_sort_key)
+
+    return {
+        "rows": canonical_rows,
+        "raw_rows_total": len(candidates),
+        "canonical_rows_total": len(canonical_rows),
+        "duplicates_dropped": duplicate_count,
+        "raw_source_counts": raw_source_counts,
+        "canonical_source_counts": canonical_source_counts,
+        "raw_type_counts": raw_type_counts,
+        "canonical_type_counts": canonical_type_counts,
+        "duplicates_by_source": duplicates_by_source,
+    }
+
+
+def _resolve_public_profile_wallet(
+    *,
+    wallet_address: str,
+    data_api_base_url: str,
+    timeout_seconds: float,
+    http_get_json: JsonGetter,
+) -> dict[str, Any]:
+    requested = _normalize_text(wallet_address).lower()
+    if not requested:
+        return {
+            "status": "missing_wallet",
+            "requested_wallet": requested,
+            "normalized_wallet": "",
+            "source": "",
+        }
+
+    base = _normalize_text(data_api_base_url).rstrip("/")
+    attempts = [
+        ("user", f"{base}/profile?{urlencode({'user': requested})}"),
+        ("address", f"{base}/profile?{urlencode({'address': requested})}"),
+    ]
+    for query_kind, url in attempts:
+        status_code, payload = http_get_json(url, timeout_seconds)
+        if status_code != 200:
+            continue
+        candidate: dict[str, Any] | None = None
+        if isinstance(payload, dict):
+            candidate = payload
+        elif isinstance(payload, list) and payload and isinstance(payload[0], dict):
+            candidate = payload[0]
+        if not isinstance(candidate, dict):
+            continue
+        proxy_wallet = _normalize_text(
+            candidate.get("proxyWallet")
+            or candidate.get("proxy_wallet")
+            or candidate.get("proxyAddress")
+            or candidate.get("wallet")
+            or candidate.get("address")
+        ).lower()
+        if proxy_wallet:
+            return {
+                "status": "resolved",
+                "requested_wallet": requested,
+                "normalized_wallet": proxy_wallet,
+                "source": f"profile_{query_kind}",
+                "http_status": status_code,
+            }
+
+    return {
+        "status": "unresolved",
+        "requested_wallet": requested,
+        "normalized_wallet": requested,
+        "source": "fallback_input",
+    }
+
+
 def _fetch_data_api_rows(
     *,
     endpoint: str,
@@ -330,6 +585,8 @@ def _fetch_data_api_rows(
     elif not rows:
         status = "empty"
 
+    last_offset = ((pages_fetched - 1) * page_limit) if pages_fetched > 0 else 0
+    next_offset = pages_fetched * page_limit
     return {
         "status": status,
         "rows": rows,
@@ -338,6 +595,8 @@ def _fetch_data_api_rows(
         "page_size": page_limit,
         "max_pages": max_page_count,
         "pages_fetched": pages_fetched,
+        "last_offset": last_offset,
+        "next_offset": next_offset,
     }
 
 
@@ -535,13 +794,20 @@ def fetch_polymarket_wallet_snapshot(
     now: datetime | None = None,
     http_get_json: JsonGetter = _http_get_json,
 ) -> dict[str, Any]:
-    wallet = _normalize_text(wallet_address).lower()
-    if not wallet:
+    requested_wallet = _normalize_text(wallet_address).lower()
+    if not requested_wallet:
         raise ValueError("wallet_address is required")
 
     captured_at = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     valuation_time = captured_at.isoformat()
     base_url = _normalize_text(data_api_base_url).rstrip("/")
+    profile_resolution = _resolve_public_profile_wallet(
+        wallet_address=requested_wallet,
+        data_api_base_url=base_url,
+        timeout_seconds=timeout_seconds,
+        http_get_json=http_get_json,
+    )
+    wallet = _normalize_text(profile_resolution.get("normalized_wallet")).lower() or requested_wallet
 
     errors: list[str] = []
     value_url = f"{base_url}/value?{urlencode({'user': wallet})}"
@@ -630,6 +896,7 @@ def fetch_polymarket_wallet_snapshot(
         "equity": _float_text(wallet_value),
         "valuationTime": valuation_time,
         "wallet": wallet,
+        "requestedWallet": requested_wallet,
         "positionsCount": str(len(positions_rows)),
         "dataApiBaseUrl": base_url,
         "source": "polymarket_data_api",
@@ -665,6 +932,8 @@ def fetch_polymarket_wallet_snapshot(
                 "rows": len(taker_only_payload.get("rows") or []),
                 "http_status": taker_only_payload.get("http_status"),
                 "pages_fetched": taker_only_payload.get("pages_fetched"),
+                "last_offset": taker_only_payload.get("last_offset"),
+                "next_offset": taker_only_payload.get("next_offset"),
                 "errors": list(taker_only_payload.get("errors") or []),
             }
             trade_fetch_statuses.append(str(taker_only_payload.get("status") or ""))
@@ -694,6 +963,8 @@ def fetch_polymarket_wallet_snapshot(
                 "rows": len(all_roles_payload.get("rows") or []),
                 "http_status": all_roles_payload.get("http_status"),
                 "pages_fetched": all_roles_payload.get("pages_fetched"),
+                "last_offset": all_roles_payload.get("last_offset"),
+                "next_offset": all_roles_payload.get("next_offset"),
                 "errors": list(all_roles_payload.get("errors") or []),
             }
             trade_fetch_statuses.append(str(all_roles_payload.get("status") or ""))
@@ -744,8 +1015,15 @@ def fetch_polymarket_wallet_snapshot(
         "rows_total": len(activity_rows),
         "http_status": activity_fetch_payload.get("http_status"),
         "pages_fetched": activity_fetch_payload.get("pages_fetched"),
+        "last_offset": activity_fetch_payload.get("last_offset"),
+        "next_offset": activity_fetch_payload.get("next_offset"),
         "errors": list(activity_fetch_payload.get("errors") or []),
     }
+
+    ledger_events_payload = build_public_observed_ledger_events(
+        trades_rows=trades_rows,
+        activity_rows=activity_rows,
+    )
 
     ledger_fetch = {
         "status": _combine_fetch_status(
@@ -756,11 +1034,30 @@ def fetch_polymarket_wallet_snapshot(
         ),
         "trades": trades_fetch,
         "activity": activity_fetch,
+        "events": {
+            "raw_rows_total": ledger_events_payload.get("raw_rows_total"),
+            "canonical_rows_total": ledger_events_payload.get("canonical_rows_total"),
+            "duplicates_dropped": ledger_events_payload.get("duplicates_dropped"),
+            "raw_source_counts": dict(ledger_events_payload.get("raw_source_counts") or {}),
+            "canonical_source_counts": dict(
+                ledger_events_payload.get("canonical_source_counts") or {}
+            ),
+            "raw_type_counts": dict(ledger_events_payload.get("raw_type_counts") or {}),
+            "canonical_type_counts": dict(
+                ledger_events_payload.get("canonical_type_counts") or {}
+            ),
+            "duplicates_by_source": dict(
+                ledger_events_payload.get("duplicates_by_source") or {}
+            ),
+        },
     }
 
     return {
         "status": status,
         "wallet_address": wallet,
+        "requested_wallet_address": requested_wallet,
+        "normalized_wallet_address": wallet,
+        "profile_wallet_resolution": profile_resolution,
         "captured_at": valuation_time,
         "data_api_base_url": base_url,
         "value_endpoint_status": value_status,
@@ -772,7 +1069,10 @@ def fetch_polymarket_wallet_snapshot(
         "positions_rows": positions_rows,
         "trades_rows": trades_rows,
         "activity_rows": activity_rows,
+        "ledger_events_rows": list(ledger_events_payload.get("rows") or []),
         "ledger_fetch": ledger_fetch,
+        "observability_mode": "public_observed_ledger",
+        "private_order_lifecycle_observable": False,
         "errors": errors,
     }
 
@@ -784,6 +1084,7 @@ def write_coldmath_snapshot_csvs(
     positions_rows: list[dict[str, Any]],
     trades_rows: list[dict[str, Any]] | None = None,
     activity_rows: list[dict[str, Any]] | None = None,
+    ledger_events_rows: list[dict[str, Any]] | None = None,
 ) -> dict[str, str]:
     snapshot_path = Path(snapshot_dir)
     snapshot_path.mkdir(parents=True, exist_ok=True)
@@ -817,6 +1118,16 @@ def write_coldmath_snapshot_csvs(
             for row in activity_rows:
                 writer.writerow({field: _normalize_text(row.get(field)) for field in ACTIVITY_FIELDNAMES})
 
+    ledger_events_path = snapshot_path / "ledger_events.csv"
+    if ledger_events_rows is not None:
+        with ledger_events_path.open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=LEDGER_EVENTS_FIELDNAMES)
+            writer.writeheader()
+            for row in ledger_events_rows:
+                writer.writerow(
+                    {field: _normalize_text(row.get(field)) for field in LEDGER_EVENTS_FIELDNAMES}
+                )
+
     written = {
         "snapshot_dir": str(snapshot_path),
         "equity_csv": str(equity_path),
@@ -826,6 +1137,8 @@ def write_coldmath_snapshot_csvs(
         written["trades_csv"] = str(trades_path)
     if activity_rows is not None:
         written["activity_csv"] = str(activity_path)
+    if ledger_events_rows is not None:
+        written["ledger_events_csv"] = str(ledger_events_path)
     return written
 
 
@@ -835,6 +1148,7 @@ def summarize_coldmath_snapshot_files(
     positions_csv: str | Path,
     trades_csv: str | Path | None = None,
     activity_csv: str | Path | None = None,
+    ledger_events_csv: str | Path | None = None,
     wallet_address: str = "",
     stale_hours: float = 48.0,
     now: datetime | None = None,
@@ -846,11 +1160,15 @@ def summarize_coldmath_snapshot_files(
     positions_path = Path(positions_csv)
     trades_path = Path(trades_csv) if trades_csv else None
     activity_path = Path(activity_csv) if activity_csv else None
+    ledger_events_path = Path(ledger_events_csv) if ledger_events_csv else None
 
     equity_rows = _read_csv_rows(equity_path)
     positions_rows = _read_csv_rows(positions_path)
     trades_rows = _read_csv_rows(trades_path) if isinstance(trades_path, Path) else []
     activity_rows = _read_csv_rows(activity_path) if isinstance(activity_path, Path) else []
+    ledger_events_rows = (
+        _read_csv_rows(ledger_events_path) if isinstance(ledger_events_path, Path) else []
+    )
 
     missing_files: list[str] = []
     if not equity_path.exists():
@@ -926,6 +1244,14 @@ def summarize_coldmath_snapshot_files(
         row.pop("sorting_notional", None)
 
     family_behavior = summarize_family_behavior(positions_rows=positions_rows)
+    if not ledger_events_rows and (trades_rows or activity_rows):
+        ledger_events_rows = list(
+            build_public_observed_ledger_events(
+                trades_rows=trades_rows,
+                activity_rows=activity_rows,
+            ).get("rows")
+            or []
+        )
 
     trade_scope_counts: dict[str, int] = {}
     trade_side_counts: dict[str, int] = {}
@@ -968,16 +1294,43 @@ def summarize_coldmath_snapshot_files(
         if isinstance(timestamp, datetime):
             activity_timestamps.append(timestamp)
 
+    ledger_event_type_counts: dict[str, int] = {}
+    ledger_event_source_counts: dict[str, int] = {}
+    ledger_event_class_counts: dict[str, int] = {}
+    ledger_event_timestamps: list[datetime] = []
+    canonical_event_keys: set[str] = set()
+    duplicate_event_rows = 0
+    trade_like_event_count = 0
+    for row in ledger_events_rows:
+        event_type = _normalize_text(row.get("eventType")).upper() or "UNKNOWN"
+        event_source = _normalize_text(row.get("source")).lower() or "unknown"
+        event_class = _normalize_text(row.get("eventClass")).lower() or "unknown"
+        ledger_event_type_counts[event_type] = ledger_event_type_counts.get(event_type, 0) + 1
+        ledger_event_source_counts[event_source] = (
+            ledger_event_source_counts.get(event_source, 0) + 1
+        )
+        ledger_event_class_counts[event_class] = ledger_event_class_counts.get(event_class, 0) + 1
+        if _coerce_bool(row.get("isTradeLike")):
+            trade_like_event_count += 1
+        event_key = _normalize_text(row.get("eventKey"))
+        if event_key:
+            if event_key in canonical_event_keys:
+                duplicate_event_rows += 1
+            canonical_event_keys.add(event_key)
+        timestamp = _parse_ts(row.get("eventTimestamp"))
+        if isinstance(timestamp, datetime):
+            ledger_event_timestamps.append(timestamp)
+
     ledger_missing_files: list[str] = []
     if isinstance(trades_path, Path) and not trades_path.exists():
         ledger_missing_files.append(str(trades_path))
     if isinstance(activity_path, Path) and not activity_path.exists():
         ledger_missing_files.append(str(activity_path))
-    if not trades_path and not activity_path:
+    if not trades_path and not activity_path and not ledger_events_path:
         ledger_status = "not_configured"
     elif ledger_missing_files:
         ledger_status = "missing"
-    elif trades_rows or activity_rows:
+    elif trades_rows or activity_rows or ledger_events_rows:
         ledger_status = "ready"
     else:
         ledger_status = "empty"
@@ -998,6 +1351,11 @@ def summarize_coldmath_snapshot_files(
         "positions_csv": str(positions_path),
         "trades_csv": str(trades_path) if isinstance(trades_path, Path) else "",
         "activity_csv": str(activity_path) if isinstance(activity_path, Path) else "",
+        "ledger_events_csv": (
+            str(ledger_events_path) if isinstance(ledger_events_path, Path) else ""
+        ),
+        "observability_mode": "public_observed_ledger",
+        "private_order_lifecycle_observable": False,
         "equity_rows": len(equity_rows),
         "positions_rows": len(positions_rows),
         "missing_files": missing_files,
@@ -1042,6 +1400,19 @@ def summarize_coldmath_snapshot_files(
             "activity_timestamp_max": (
                 max(activity_timestamps).isoformat() if activity_timestamps else ""
             ),
+            "events_rows_total": len(ledger_events_rows),
+            "trade_like_events_total": trade_like_event_count,
+            "event_type_counts": ledger_event_type_counts,
+            "event_source_counts": ledger_event_source_counts,
+            "event_class_counts": ledger_event_class_counts,
+            "event_timestamp_min": (
+                min(ledger_event_timestamps).isoformat() if ledger_event_timestamps else ""
+            ),
+            "event_timestamp_max": (
+                max(ledger_event_timestamps).isoformat() if ledger_event_timestamps else ""
+            ),
+            "event_keys_unique": len(canonical_event_keys),
+            "event_duplicate_rows_detected": duplicate_event_rows,
         },
     }
 
@@ -1053,6 +1424,7 @@ def run_coldmath_snapshot_summary(
     positions_csv: str | None = None,
     trades_csv: str | None = None,
     activity_csv: str | None = None,
+    ledger_events_csv: str | None = None,
     wallet_address: str = "",
     stale_hours: float = 48.0,
     output_dir: str = "outputs",
@@ -1070,6 +1442,7 @@ def run_coldmath_snapshot_summary(
     trades_max_pages: int = 20,
     activity_page_size: int = 500,
     activity_max_pages: int = 20,
+    build_public_ledger_events: bool = True,
     http_get_json: JsonGetter = _http_get_json,
 ) -> dict[str, Any]:
     captured_at = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
@@ -1078,6 +1451,8 @@ def run_coldmath_snapshot_summary(
     effective_positions_csv = positions_csv or str(snapshot_path / "positions.csv")
     effective_trades_csv = trades_csv or str(snapshot_path / "trades.csv")
     effective_activity_csv = activity_csv or str(snapshot_path / "activity.csv")
+    effective_ledger_events_csv = ledger_events_csv or str(snapshot_path / "ledger_events.csv")
+    effective_wallet_address = _normalize_text(wallet_address).lower()
 
     api_fetch_summary: dict[str, Any] | None = None
     if refresh_from_api:
@@ -1109,6 +1484,15 @@ def run_coldmath_snapshot_summary(
             "errors": list(api_snapshot.get("errors") or []),
             "positions_rows": len(api_snapshot.get("positions_rows") or []),
             "ledger_fetch": dict(api_snapshot.get("ledger_fetch") or {}),
+            "requested_wallet_address": api_snapshot.get("requested_wallet_address"),
+            "normalized_wallet_address": api_snapshot.get("normalized_wallet_address"),
+            "profile_wallet_resolution": dict(
+                api_snapshot.get("profile_wallet_resolution") or {}
+            ),
+            "observability_mode": api_snapshot.get("observability_mode"),
+            "private_order_lifecycle_observable": api_snapshot.get(
+                "private_order_lifecycle_observable"
+            ),
         }
 
         should_write_api_snapshot = api_snapshot.get("status") in {"ready", "partial"} and bool(
@@ -1132,6 +1516,11 @@ def run_coldmath_snapshot_summary(
                     if refresh_activity_from_api
                     else None
                 ),
+                ledger_events_rows=(
+                    list(api_snapshot.get("ledger_events_rows") or [])
+                    if build_public_ledger_events
+                    else None
+                ),
             )
             effective_equity_csv = written["equity_csv"]
             effective_positions_csv = written["positions_csv"]
@@ -1139,25 +1528,39 @@ def run_coldmath_snapshot_summary(
                 effective_trades_csv = written["trades_csv"]
             if "activity_csv" in written:
                 effective_activity_csv = written["activity_csv"]
+            if "ledger_events_csv" in written:
+                effective_ledger_events_csv = written["ledger_events_csv"]
             api_fetch_summary["equity_csv"] = effective_equity_csv
             api_fetch_summary["positions_csv"] = effective_positions_csv
             api_fetch_summary["trades_csv"] = effective_trades_csv
             api_fetch_summary["activity_csv"] = effective_activity_csv
+            api_fetch_summary["ledger_events_csv"] = effective_ledger_events_csv
+            effective_wallet_address = _normalize_text(
+                api_snapshot.get("normalized_wallet_address")
+                or api_snapshot.get("wallet_address")
+                or wallet_address
+            ).lower()
 
     summary = summarize_coldmath_snapshot_files(
         equity_csv=effective_equity_csv,
         positions_csv=effective_positions_csv,
         trades_csv=effective_trades_csv,
         activity_csv=effective_activity_csv,
-        wallet_address=wallet_address,
+        ledger_events_csv=effective_ledger_events_csv,
+        wallet_address=effective_wallet_address,
         stale_hours=stale_hours,
         now=captured_at,
     )
+    summary["requested_wallet_address"] = _normalize_text(wallet_address).lower()
+    summary["normalized_wallet_address"] = effective_wallet_address
     summary["captured_at"] = captured_at.isoformat()
     summary["snapshot_dir"] = str(snapshot_path)
     summary["refresh_from_api"] = bool(refresh_from_api)
     if api_fetch_summary is not None:
         summary["api_fetch"] = api_fetch_summary
+        summary["profile_wallet_resolution"] = dict(
+            api_fetch_summary.get("profile_wallet_resolution") or {}
+        )
 
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)

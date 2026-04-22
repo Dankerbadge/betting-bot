@@ -269,10 +269,64 @@ class ColdmathSnapshotTests(unittest.TestCase):
                 summary["api_fetch"]["ledger_fetch"]["trades"]["non_taker_trade_delta"],
                 1,
             )
+            self.assertEqual(summary["ledger"]["events_rows_total"], 3)
+            self.assertEqual(summary["ledger"]["event_keys_unique"], 3)
+            self.assertEqual(summary["ledger"]["event_duplicate_rows_detected"], 0)
+            self.assertEqual(
+                summary["api_fetch"]["ledger_fetch"]["events"]["duplicates_dropped"],
+                2,
+            )
+            self.assertEqual(
+                summary["api_fetch"]["ledger_fetch"]["events"]["canonical_rows_total"],
+                3,
+            )
             self.assertTrue((snapshot_dir / "trades.csv").exists())
             self.assertTrue((snapshot_dir / "activity.csv").exists())
+            self.assertTrue((snapshot_dir / "ledger_events.csv").exists())
             self.assertTrue(any("takerOnly=true" in url for url in requested_urls))
             self.assertTrue(any("takerOnly=false" in url for url in requested_urls))
+
+    def test_run_summary_resolves_proxy_wallet_and_marks_public_observability(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            snapshot_dir = base / "coldmath"
+            out_dir = base / "out"
+            now_utc = datetime(2026, 4, 21, 22, 45, tzinfo=timezone.utc)
+            requested_urls: list[str] = []
+
+            def fake_http_get_json(url: str, timeout_seconds: float):
+                _ = timeout_seconds
+                requested_urls.append(url)
+                if "/profile?" in url:
+                    return (200, {"proxyWallet": "0xProxy"})
+                if "/value?" in url and "user=0xproxy" in url:
+                    return (200, [{"user": "0xproxy", "value": 50.0}])
+                if "/positions?" in url and "user=0xproxy" in url:
+                    return (200, [])
+                if "/trades?" in url and "user=0xproxy" in url:
+                    return (200, [])
+                if "/activity?" in url and "user=0xproxy" in url:
+                    return (200, [])
+                return (404, {"error": "not found"})
+
+            summary = run_coldmath_snapshot_summary(
+                snapshot_dir=str(snapshot_dir),
+                output_dir=str(out_dir),
+                wallet_address="0xEOA",
+                now=now_utc,
+                refresh_from_api=True,
+                http_get_json=fake_http_get_json,
+            )
+
+            self.assertEqual(summary["status"], "ready")
+            self.assertEqual(summary["requested_wallet_address"], "0xeoa")
+            self.assertEqual(summary["normalized_wallet_address"], "0xproxy")
+            self.assertEqual(summary["wallet_address"], "0xproxy")
+            self.assertEqual(summary["observability_mode"], "public_observed_ledger")
+            self.assertFalse(summary["private_order_lifecycle_observable"])
+            self.assertEqual(summary["profile_wallet_resolution"]["status"], "resolved")
+            self.assertTrue(any("/profile?" in url for url in requested_urls))
+            self.assertTrue(any("user=0xproxy" in url and "/value?" in url for url in requested_urls))
 
 
 if __name__ == "__main__":
