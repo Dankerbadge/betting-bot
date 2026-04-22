@@ -72,6 +72,24 @@ DECISION_MATRIX_LANE_STRICT_DEGRADED_THRESHOLD="${DECISION_MATRIX_LANE_STRICT_DE
 DECISION_MATRIX_LANE_STRICT_DEGRADED_STATUSES="${DECISION_MATRIX_LANE_STRICT_DEGRADED_STATUSES:-matrix_failed,bootstrap_blocked}"
 DECISION_MATRIX_LANE_STRICT_REQUIRE_STATE_FILE="${DECISION_MATRIX_LANE_STRICT_REQUIRE_STATE_FILE:-0}"
 
+normalize_binary_flag() {
+  local raw="${1:-}"
+  local default_value="${2:-0}"
+  local lowered
+  lowered="$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+  case "$lowered" in
+    1|true|yes|on)
+      echo "1"
+      ;;
+    0|false|no|off)
+      echo "0"
+      ;;
+    *)
+      echo "$default_value"
+      ;;
+  esac
+}
+
 if ! [[ "$LIVE_STATUS_MAX_AGE" =~ ^[0-9]+$ ]]; then
   LIVE_STATUS_MAX_AGE=300
 fi
@@ -81,6 +99,7 @@ fi
 if ! [[ "$ROUTE_GUARD_MAX_AGE" =~ ^[0-9]+$ ]]; then
   ROUTE_GUARD_MAX_AGE=10800
 fi
+DECISION_MATRIX_LANE_STRICT_REQUIRE_STATE_FILE="$(normalize_binary_flag "$DECISION_MATRIX_LANE_STRICT_REQUIRE_STATE_FILE" "0")"
 
 SHADOW_SVC="betbot-temperature-shadow.service"
 ALPHA_TIMER="betbot-temperature-alpha-summary.timer"

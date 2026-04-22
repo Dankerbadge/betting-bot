@@ -392,6 +392,29 @@ def test_quick_check_strict_fails_when_lane_state_required_but_missing(tmp_path:
     assert "decision_matrix_lane_state_missing" in result.stdout
 
 
+def test_quick_check_strict_fails_when_lane_state_required_but_missing_with_true_flag(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+
+    env_file = tmp_path / "quick.env"
+    _write_env_file(
+        env_file=env_file,
+        output_dir=output_dir,
+        extra_lines=(
+            "DECISION_MATRIX_LANE_STRICT_REQUIRE_STATE_FILE=true",
+        ),
+    )
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_quick_script(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 2
+    assert "decision_matrix_lane_state_missing" in result.stdout
+
+
 def test_quick_check_strict_fails_when_thread_map_is_incomplete(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[1]
     output_dir = tmp_path / "out"
