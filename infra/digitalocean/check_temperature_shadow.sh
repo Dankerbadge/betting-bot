@@ -790,9 +790,13 @@ fi
 
 latest_log_maintenance="$(ls -1t "$OUTPUT_DIR"/health/log_maintenance/log_maintenance_latest.json 2>/dev/null | head -n 1 || true)"
 if [[ -n "$latest_log_maintenance" && "$HAS_JQ" == "1" ]]; then
-  jq -r '
-    "log_maintenance_latest health=\(.health_status // "unknown") usage_gib=\(.usage.log_dir_gib // 0) compressed=\(.compressed_count // 0) pruned=\(.pruned_count // 0) logrotate_rule_present=\(.policy.logrotate_rule_present // false)"
-  ' "$latest_log_maintenance"
+  if jq -e . "$latest_log_maintenance" >/dev/null 2>&1; then
+    jq -r '
+      "log_maintenance_latest health=\(.health_status // "unknown") usage_gib=\(.usage.log_dir_gib // 0) compressed=\(.compressed_count // 0) pruned=\(.pruned_count // 0) logrotate_rule_present=\(.policy.logrotate_rule_present // false)"
+    ' "$latest_log_maintenance"
+  else
+    echo "log_maintenance_latest -> PARSE_ERROR ($latest_log_maintenance)"
+  fi
 fi
 
 latest_discord_route_guard="$(ls -1t "$OUTPUT_DIR"/health/discord_route_guard/discord_route_guard_latest.json 2>/dev/null | head -n 1 || true)"
