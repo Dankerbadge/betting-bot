@@ -236,6 +236,73 @@ def test_quick_check_default_threshold_keeps_green_when_streak_below_threshold(t
     assert "strict_threshold=6" in result.stdout
 
 
+def test_quick_check_strict_ignores_lane_degraded_streak_when_status_not_in_strict_set(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    _write_json(
+        output_dir / "health" / ".decision_matrix_lane_alert_state.json",
+        {
+            "last_lane_status": "healthy",
+            "degraded_streak_count": 99,
+            "degraded_streak_threshold": 1,
+            "degraded_streak_notify_every": 1,
+            "last_notify_reason": "none",
+        },
+    )
+
+    env_file = tmp_path / "quick.env"
+    _write_env_file(
+        env_file=env_file,
+        output_dir=output_dir,
+        extra_lines=(
+            "DECISION_MATRIX_LANE_STRICT_DEGRADED_THRESHOLD=1",
+        ),
+    )
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_quick_script(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 0
+    assert "strict_blocked=false" in result.stdout
+    assert "decision_matrix_lane_degraded_streak" not in result.stdout
+
+
+def test_quick_check_strict_honors_custom_lane_status_list_with_spaces(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    _write_json(
+        output_dir / "health" / ".decision_matrix_lane_alert_state.json",
+        {
+            "last_lane_status": "bootstrap_blocked",
+            "degraded_streak_count": 2,
+            "degraded_streak_threshold": 1,
+            "degraded_streak_notify_every": 1,
+            "last_notify_reason": "none",
+        },
+    )
+
+    env_file = tmp_path / "quick.env"
+    _write_env_file(
+        env_file=env_file,
+        output_dir=output_dir,
+        extra_lines=(
+            "DECISION_MATRIX_LANE_STRICT_DEGRADED_THRESHOLD=1",
+            'DECISION_MATRIX_LANE_STRICT_DEGRADED_STATUSES="matrix_failed, bootstrap_blocked"',
+        ),
+    )
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_quick_script(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 2
+    assert "strict_blocked=true" in result.stdout
+    assert "decision_matrix_lane_degraded_streak" in result.stdout
+
+
 def test_quick_check_strict_fails_when_lane_state_required_but_missing(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[1]
     output_dir = tmp_path / "out"
