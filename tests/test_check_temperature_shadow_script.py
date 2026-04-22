@@ -59,7 +59,13 @@ case "$cmd" in
       *) echo "$default_enabled"; exit 0 ;;
     esac
     ;;
-  cat) echo "# stub unit"; exit 0 ;;
+  cat)
+    case ",${MOCK_SYSTEMCTL_CAT_MISSING_UNITS:-}," in
+      *,"$unit",*) exit 1 ;;
+    esac
+    echo "# stub unit"
+    exit 0
+    ;;
   status) echo "stub status"; exit 0 ;;
   *) echo active; exit 0 ;;
 esac
@@ -1592,6 +1598,53 @@ def test_shadow_check_accepts_positional_env_path(tmp_path: Path) -> None:
 
     assert result.returncode == 0
     assert "=== systemd ===" in result.stdout
+
+
+def test_shadow_check_strict_skips_route_guard_timer_gate_when_timer_not_installed_and_expectation_unset(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    _write_json(
+        output_dir / "health" / "discord_route_guard" / "discord_route_guard_latest.json",
+        {
+            "guard_status": "yellow",
+            "shared_route_group_count": 2,
+            "route_remediations": [
+                {
+                    "route_hint": "shadow_alert",
+                    "required_thread_env_keys": ["SHADOW_ALERT_WEBHOOK_THREAD_ID"],
+                }
+            ],
+        },
+    )
+
+    env_file = tmp_path / "shadow.env"
+    _write_env_file(
+        env_file=env_file,
+        output_dir=output_dir,
+        extra_lines=(
+            "unset DISCORD_ROUTE_GUARD_TIMER_EXPECTED",
+            "unset DISCORD_ROUTE_GUARD_STRICT_FAIL_ON_COLLISION",
+            "unset DISCORD_ROUTE_GUARD_FAIL_ON_COLLISION",
+        ),
+    )
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_shadow_check(
+        script_path=script_path,
+        env_file=env_file,
+        tool_dir=tool_dir,
+        extra_env={
+            "MOCK_SYSTEMCTL_CAT_MISSING_UNITS": "betbot-temperature-discord-route-guard.timer",
+            "MOCK_DISCORD_ROUTE_GUARD_TIMER_ACTIVE": "inactive",
+        },
+    )
+
+    assert result.returncode == 0
+    assert "STRICT CHECK FAILED: discord-route-guard timer expected but not active" not in result.stderr
+    assert "STRICT CHECK FAILED: discord-route-guard indicates non-green route separation" not in result.stderr
 
 
 def test_shadow_check_strict_warns_when_live_status_is_yellow(tmp_path: Path) -> None:
