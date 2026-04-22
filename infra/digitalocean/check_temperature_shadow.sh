@@ -468,9 +468,13 @@ overall_status="$(normalize_status_token "${overall_status:-unknown}")"
 
 latest_readiness="$(ls -1t "$OUTPUT_DIR"/kalshi_temperature_live_readiness_*.json 2>/dev/null | head -n 1 || true)"
 if [[ -n "$latest_readiness" && "$HAS_JQ" == "1" ]]; then
-  jq -r '
-    "live_readiness recommendation=\(.overall_live_readiness.recommendation // "unknown") small=\(.overall_live_readiness.ready_for_small_live_pilot // false) scaled=\(.overall_live_readiness.ready_for_scaled_live // false)"
-  ' "$latest_readiness"
+  if jq -e . "$latest_readiness" >/dev/null 2>&1; then
+    jq -r '
+      "live_readiness recommendation=\(.overall_live_readiness.recommendation // "unknown") small=\(.overall_live_readiness.ready_for_small_live_pilot // false) scaled=\(.overall_live_readiness.ready_for_scaled_live // false)"
+    ' "$latest_readiness"
+  else
+    echo "live_readiness_latest -> PARSE_ERROR ($latest_readiness)"
+  fi
 fi
 
 readiness_runner_state="$OUTPUT_DIR/health/readiness_runner_latest.json"
