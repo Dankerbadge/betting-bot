@@ -319,6 +319,71 @@ def test_shadow_check_strict_fails_when_lane_status_matches_custom_list_with_spa
     assert "STRICT CHECK FAILED: decision-matrix lane degraded streak active" in result.stderr
 
 
+def test_shadow_check_strict_passes_when_lane_threshold_is_non_numeric(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    _write_json(
+        output_dir / "health" / ".decision_matrix_lane_alert_state.json",
+        {
+            "last_lane_status": "matrix_failed",
+            "degraded_streak_count": 99,
+            "degraded_streak_threshold": 1,
+            "degraded_streak_notify_every": 1,
+            "last_notify_reason": "none",
+        },
+    )
+
+    env_file = tmp_path / "shadow.env"
+    _write_env_file(
+        env_file=env_file,
+        output_dir=output_dir,
+        extra_lines=(
+            "DECISION_MATRIX_LANE_STRICT_DEGRADED_THRESHOLD=not-a-number",
+        ),
+    )
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_shadow_check(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 0
+    assert "decision_matrix_lane_alert_state status=matrix_failed" in result.stdout
+    assert "STRICT CHECK FAILED: decision-matrix lane degraded streak active" not in result.stderr
+
+
+def test_shadow_check_strict_falls_back_to_default_lane_statuses_when_config_empty(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    _write_json(
+        output_dir / "health" / ".decision_matrix_lane_alert_state.json",
+        {
+            "last_lane_status": "matrix_failed",
+            "degraded_streak_count": 2,
+            "degraded_streak_threshold": 1,
+            "degraded_streak_notify_every": 1,
+            "last_notify_reason": "none",
+        },
+    )
+
+    env_file = tmp_path / "shadow.env"
+    _write_env_file(
+        env_file=env_file,
+        output_dir=output_dir,
+        extra_lines=(
+            "DECISION_MATRIX_LANE_STRICT_DEGRADED_THRESHOLD=1",
+            'DECISION_MATRIX_LANE_STRICT_DEGRADED_STATUSES=""',
+        ),
+    )
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_shadow_check(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 2
+    assert "strict_statuses=matrix_failed,bootstrap_blocked" in result.stdout
+    assert "STRICT CHECK FAILED: decision-matrix lane degraded streak active" in result.stderr
+
+
 def test_shadow_check_strict_fails_when_lane_state_required_but_missing(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[1]
     output_dir = tmp_path / "out"
