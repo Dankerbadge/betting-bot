@@ -811,9 +811,13 @@ fi
 
 latest_chaos="$(ls -1t "$OUTPUT_DIR"/health/recovery/chaos_check_latest.json 2>/dev/null | head -n 1 || true)"
 if [[ -n "$latest_chaos" && "$HAS_JQ" == "1" ]]; then
-  jq -r '
-    "recovery_chaos_latest mode=\(.mode // "unknown") passed=\(.passed // false) pre_shadow=\(.pre_shadow_state // "unknown") post_shadow=\(.post_shadow_state // "unknown") failure_reason=\(.failure_reason // "")"
-  ' "$latest_chaos"
+  if jq -e . "$latest_chaos" >/dev/null 2>&1; then
+    jq -r '
+      "recovery_chaos_latest mode=\(.mode // "unknown") passed=\(.passed // false) pre_shadow=\(.pre_shadow_state // "unknown") post_shadow=\(.post_shadow_state // "unknown") failure_reason=\(.failure_reason // "")"
+    ' "$latest_chaos"
+  else
+    echo "recovery_chaos_latest -> PARSE_ERROR ($latest_chaos)"
+  fi
 fi
 
 latest_stale_metrics_drill="$(ls -1t "$OUTPUT_DIR"/recovery_chaos/stale_metrics_drill/stale_metrics_drill_latest.json 2>/dev/null | head -n 1 || true)"
