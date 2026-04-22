@@ -216,6 +216,7 @@ This emits a concise alpha summary artifact and sends one Discord message every 
 - last settled selection visibility (unique market-side + unique order-instance) with if-live counterfactual PnL
 - duplicate shadow-order reuse pressure since reset (planned rows vs unique order instances vs duplicate-row ratio)
 - ops webhook heartbeat includes decision-matrix lane status (`strict`, `bootstrap`, or `bootstrap blocked`) with bootstrap expiry timing when available
+- when lane alerts are active, ops heartbeat also includes degraded-lane streak context (`matrix_failed` / `bootstrap_blocked`) so persistent matrix weakness is visible without opening logs
 - 3–5 optimization suggestions based on blockers + alpha-gap context
 - guardrail recommendation sampling now prefers all in-window intents summaries/CSVs and falls back to latest-only only when window sampling is unavailable
 
@@ -284,6 +285,7 @@ This emits a rolling weekly blocker audit artifact and optional Discord message:
 - largest blocker and recommended close action
 - top-5 action list so threshold changes stay tied to blocker closure
 - decision-matrix lane row (`strict`, `bootstrap`, or `bootstrap blocked`) with bootstrap expiry timing when available
+- includes degraded-lane streak row when matrix weakness persists, including threshold/every-N cadence context
 
 ```bash
 cd "$HOME/betting-bot"
