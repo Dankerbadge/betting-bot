@@ -531,6 +531,22 @@ def test_quick_check_missing_env_file_fails(tmp_path: Path) -> None:
     assert f"Missing {missing_env}" in result.stderr
 
 
+def test_quick_check_env_file_without_output_dir_fails(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    script_path = root / "infra" / "digitalocean" / "check_temperature_shadow_quick.sh"
+    env_file = tmp_path / "quick.env"
+    env_file.write_text("LIVE_STATUS_STRICT_MAX_AGE_SECONDS=300\n", encoding="utf-8")
+    result = subprocess.run(
+        ["/bin/bash", str(script_path), "--env", str(env_file)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "OUTPUT_DIR not set in" in result.stderr
+
+
 def test_quick_check_accepts_positional_env_path(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[1]
     output_dir = tmp_path / "out"
