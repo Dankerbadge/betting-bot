@@ -473,6 +473,58 @@ def test_shadow_check_strict_fails_when_lane_state_required_but_malformed(tmp_pa
     assert "STRICT CHECK FAILED: decision-matrix lane state file malformed" in result.stderr
 
 
+def test_shadow_check_strict_fails_when_lane_parse_error_gate_enabled(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    lane_state_path = output_dir / "health" / ".decision_matrix_lane_alert_state.json"
+    lane_state_path.parent.mkdir(parents=True, exist_ok=True)
+    lane_state_path.write_text("{not-json", encoding="utf-8")
+
+    env_file = tmp_path / "shadow.env"
+    _write_env_file(
+        env_file=env_file,
+        output_dir=output_dir,
+        extra_lines=(
+            "DECISION_MATRIX_LANE_STRICT_FAIL_ON_PARSE_ERROR=1",
+        ),
+    )
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_shadow_check(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 2
+    assert "decision_matrix_lane_alert_state -> PARSE_ERROR" in result.stdout
+    assert "STRICT CHECK FAILED: decision-matrix lane parse error encountered" in result.stderr
+
+
+def test_shadow_check_strict_fails_when_lane_parse_error_gate_enabled_with_true_flag(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    lane_state_path = output_dir / "health" / ".decision_matrix_lane_alert_state.json"
+    lane_state_path.parent.mkdir(parents=True, exist_ok=True)
+    lane_state_path.write_text("{not-json", encoding="utf-8")
+
+    env_file = tmp_path / "shadow.env"
+    _write_env_file(
+        env_file=env_file,
+        output_dir=output_dir,
+        extra_lines=(
+            "DECISION_MATRIX_LANE_STRICT_FAIL_ON_PARSE_ERROR=true",
+        ),
+    )
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_shadow_check(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 2
+    assert "decision_matrix_lane_alert_state -> PARSE_ERROR" in result.stdout
+    assert "STRICT CHECK FAILED: decision-matrix lane parse error encountered" in result.stderr
+
+
 def test_shadow_check_strict_fails_on_non_green_route_guard_when_collision_gate_enabled(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[1]
     output_dir = tmp_path / "out"
