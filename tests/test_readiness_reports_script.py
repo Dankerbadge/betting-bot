@@ -350,3 +350,133 @@ def test_readiness_reports_resets_dedupe_after_green_then_realerts(tmp_path: Pat
     assert "shadow summary missing" in first_text.lower()
     assert "shadow summary missing" in second_text.lower()
     assert state_file.exists()
+
+
+def test_readiness_reports_fail_on_pipeline_red_exits_nonzero(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    fake_root = _prepare_fake_betbot_root(tmp_path)
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    state_file = tmp_path / "pipeline_alert_state.json"
+    tool_dir = _prepare_tool_shims(tmp_path)
+
+    captured_payloads: list[dict[str, object]] = []
+
+    class _CaptureHandler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:  # noqa: N802
+            content_length = int(self.headers.get("Content-Length", "0"))
+            body = self.rfile.read(content_length).decode("utf-8")
+            parsed: dict[str, object]
+            try:
+                payload = json.loads(body)
+                parsed = payload if isinstance(payload, dict) else {"raw": body}
+            except Exception:
+                parsed = {"raw": body}
+            captured_payloads.append(parsed)
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"ok")
+
+        def log_message(self, format: str, *args: object) -> None:  # noqa: A003
+            return
+
+    server = HTTPServer(("127.0.0.1", 0), _CaptureHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        env_file = tmp_path / "readiness.env"
+        _write_env_file(
+            env_file=env_file,
+            betbot_root=fake_root,
+            output_dir=output_dir,
+            webhook_url=f"http://127.0.0.1:{server.server_port}/pipeline",
+            state_file=state_file,
+        )
+        with env_file.open("a", encoding="utf-8") as handle:
+            handle.write("READINESS_FAIL_ON_PIPELINE_RED=1\n")
+
+        red = _run_readiness_cycle(
+            root=root,
+            env_file=env_file,
+            tool_dir=tool_dir,
+            live_readiness_status="red",
+            live_readiness_reason="missing_settlement_summary",
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+    assert red.returncode == 2
+    assert len(captured_payloads) == 1
+    payload_text = str(captured_payloads[0].get("text") or "").lower()
+    assert "settlement summary missing" in payload_text
+    assert state_file.exists()
+
+
+def test_readiness_reports_alert_can_notify_every_red_when_dedupe_disabled(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    fake_root = _prepare_fake_betbot_root(tmp_path)
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    state_file = tmp_path / "pipeline_alert_state.json"
+    tool_dir = _prepare_tool_shims(tmp_path)
+
+    captured_payloads: list[dict[str, object]] = []
+
+    class _CaptureHandler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:  # noqa: N802
+            content_length = int(self.headers.get("Content-Length", "0"))
+            body = self.rfile.read(content_length).decode("utf-8")
+            parsed: dict[str, object]
+            try:
+                payload = json.loads(body)
+                parsed = payload if isinstance(payload, dict) else {"raw": body}
+            except Exception:
+                parsed = {"raw": body}
+            captured_payloads.append(parsed)
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"ok")
+
+        def log_message(self, format: str, *args: object) -> None:  # noqa: A003
+            return
+
+    server = HTTPServer(("127.0.0.1", 0), _CaptureHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        env_file = tmp_path / "readiness.env"
+        _write_env_file(
+            env_file=env_file,
+            betbot_root=fake_root,
+            output_dir=output_dir,
+            webhook_url=f"http://127.0.0.1:{server.server_port}/pipeline",
+            state_file=state_file,
+        )
+        with env_file.open("a", encoding="utf-8") as handle:
+            handle.write("PIPELINE_ALERT_NOTIFY_STATUS_CHANGE_ONLY=0\n")
+
+        first = _run_readiness_cycle(
+            root=root,
+            env_file=env_file,
+            tool_dir=tool_dir,
+            live_readiness_status="red",
+            live_readiness_reason="missing_shadow_summary",
+        )
+        second = _run_readiness_cycle(
+            root=root,
+            env_file=env_file,
+            tool_dir=tool_dir,
+            live_readiness_status="red",
+            live_readiness_reason="missing_shadow_summary",
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+    assert first.returncode == 0
+    assert second.returncode == 0
+    assert len(captured_payloads) == 2
+    assert state_file.exists()
