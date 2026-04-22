@@ -487,9 +487,13 @@ fi
 
 latest_gate="$(ls -1t "$OUTPUT_DIR"/kalshi_temperature_go_live_gate_*.json 2>/dev/null | head -n 1 || true)"
 if [[ -n "$latest_gate" && "$HAS_JQ" == "1" ]]; then
-  jq -r '
-    "go_live_gate status=\(.gate_status // "unknown") recommendation=\(.recommendation // "unknown") earliest=\(.earliest_passing_horizon // "") failed_horizons=\(.failed_horizon_count // 0)"
-  ' "$latest_gate"
+  if jq -e . "$latest_gate" >/dev/null 2>&1; then
+    jq -r '
+      "go_live_gate status=\(.gate_status // "unknown") recommendation=\(.recommendation // "unknown") earliest=\(.earliest_passing_horizon // "") failed_horizons=\(.failed_horizon_count // 0)"
+    ' "$latest_gate"
+  else
+    echo "go_live_gate_latest -> PARSE_ERROR ($latest_gate)"
+  fi
 fi
 
 latest_alpha_dashboard="$(ls -1t "$OUTPUT_DIR"/alpha_workers/alpha_worker_dashboard_latest.json 2>/dev/null | head -n 1 || true)"
