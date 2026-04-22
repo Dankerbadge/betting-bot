@@ -39,9 +39,26 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 cmd="${1:-}"
+unit="${2:-}"
 case "$cmd" in
-  is-active) echo active; exit 0 ;;
-  is-enabled) echo enabled; exit 0 ;;
+  is-active)
+    default_active="${MOCK_SYSTEMCTL_IS_ACTIVE_DEFAULT:-active}"
+    case "$unit" in
+      betbot-temperature-alpha-workers) echo "${MOCK_ALPHA_WORKER_ACTIVE:-$default_active}"; exit 0 ;;
+      betbot-temperature-breadth-worker) echo "${MOCK_BREADTH_WORKER_ACTIVE:-$default_active}"; exit 0 ;;
+      betbot-temperature-discord-route-guard.timer) echo "${MOCK_DISCORD_ROUTE_GUARD_TIMER_ACTIVE:-$default_active}"; exit 0 ;;
+      betbot-temperature-stale-metrics-drill.timer) echo "${MOCK_STALE_METRICS_DRILL_TIMER_ACTIVE:-$default_active}"; exit 0 ;;
+      *) echo "$default_active"; exit 0 ;;
+    esac
+    ;;
+  is-enabled)
+    default_enabled="${MOCK_SYSTEMCTL_IS_ENABLED_DEFAULT:-enabled}"
+    case "$unit" in
+      betbot-temperature-discord-route-guard.timer) echo "${MOCK_DISCORD_ROUTE_GUARD_TIMER_ENABLED:-$default_enabled}"; exit 0 ;;
+      betbot-temperature-stale-metrics-drill.timer) echo "${MOCK_STALE_METRICS_DRILL_TIMER_ENABLED:-$default_enabled}"; exit 0 ;;
+      *) echo "$default_enabled"; exit 0 ;;
+    esac
+    ;;
   cat) echo "# stub unit"; exit 0 ;;
   status) echo "stub status"; exit 0 ;;
   *) echo active; exit 0 ;;
@@ -152,9 +169,12 @@ def _run_shadow_check(
     env_file: Path,
     tool_dir: Path,
     strict: bool = True,
+    extra_env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     env = dict(os.environ)
     env["PATH"] = f"{tool_dir}:{env.get('PATH', '')}"
+    if extra_env:
+        env.update(extra_env)
     cmd = ["/bin/bash", str(script_path)]
     if strict:
         cmd.append("--strict")
@@ -1360,3 +1380,118 @@ def test_shadow_check_strict_fails_when_alpha_summary_artifact_is_missing(tmp_pa
 
     assert result.returncode == 2
     assert "STRICT CHECK FAILED: alpha summary artifact unavailable" in result.stderr
+
+
+def test_shadow_check_strict_fails_when_alpha_worker_expected_but_not_active(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+
+    env_file = tmp_path / "shadow.env"
+    _write_env_file(
+        env_file=env_file,
+        output_dir=output_dir,
+        extra_lines=(
+            "ALPHA_WORKER_ENABLED=1",
+        ),
+    )
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_shadow_check(
+        script_path=script_path,
+        env_file=env_file,
+        tool_dir=tool_dir,
+        extra_env={
+            "MOCK_ALPHA_WORKER_ACTIVE": "inactive",
+        },
+    )
+
+    assert result.returncode == 2
+    assert "STRICT CHECK FAILED: alpha worker service expected but not active" in result.stderr
+
+
+def test_shadow_check_strict_fails_when_breadth_worker_expected_but_not_active(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+
+    env_file = tmp_path / "shadow.env"
+    _write_env_file(
+        env_file=env_file,
+        output_dir=output_dir,
+        extra_lines=(
+            "BREADTH_WORKER_ENABLED=1",
+        ),
+    )
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_shadow_check(
+        script_path=script_path,
+        env_file=env_file,
+        tool_dir=tool_dir,
+        extra_env={
+            "MOCK_BREADTH_WORKER_ACTIVE": "inactive",
+        },
+    )
+
+    assert result.returncode == 2
+    assert "STRICT CHECK FAILED: breadth worker service expected but not active" in result.stderr
+
+
+def test_shadow_check_strict_fails_when_discord_route_guard_timer_expected_but_not_active(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+
+    env_file = tmp_path / "shadow.env"
+    _write_env_file(
+        env_file=env_file,
+        output_dir=output_dir,
+        extra_lines=(
+            "DISCORD_ROUTE_GUARD_TIMER_EXPECTED=1",
+            "DISCORD_ROUTE_GUARD_STRICT_FAIL_ON_COLLISION=0",
+        ),
+    )
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_shadow_check(
+        script_path=script_path,
+        env_file=env_file,
+        tool_dir=tool_dir,
+        extra_env={
+            "MOCK_DISCORD_ROUTE_GUARD_TIMER_ACTIVE": "inactive",
+        },
+    )
+
+    assert result.returncode == 2
+    assert "STRICT CHECK FAILED: discord-route-guard timer expected but not active" in result.stderr
+
+
+def test_shadow_check_strict_fails_when_discord_route_guard_timer_expected_but_not_enabled(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+
+    env_file = tmp_path / "shadow.env"
+    _write_env_file(
+        env_file=env_file,
+        output_dir=output_dir,
+        extra_lines=(
+            "DISCORD_ROUTE_GUARD_TIMER_EXPECTED=1",
+            "DISCORD_ROUTE_GUARD_STRICT_FAIL_ON_COLLISION=0",
+        ),
+    )
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_shadow_check(
+        script_path=script_path,
+        env_file=env_file,
+        tool_dir=tool_dir,
+        extra_env={
+            "MOCK_DISCORD_ROUTE_GUARD_TIMER_ACTIVE": "active",
+            "MOCK_DISCORD_ROUTE_GUARD_TIMER_ENABLED": "disabled",
+        },
+    )
+
+    assert result.returncode == 2
+    assert "STRICT CHECK FAILED: discord-route-guard timer expected but not enabled" in result.stderr
