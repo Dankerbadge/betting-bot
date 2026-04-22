@@ -524,9 +524,13 @@ fi
 
 latest_settlement="$(ls -1t "$OUTPUT_DIR"/kalshi_temperature_settlement_state_*.json 2>/dev/null | head -n 1 || true)"
 if [[ -n "$latest_settlement" && "$HAS_JQ" == "1" ]]; then
-  jq -r '
-    "settlement_state lookups attempted=\(.final_report_lookup_attempted // 0) ready=\(.final_report_ready_count // 0) pending=\(.final_report_pending_count // 0) errors=\(.final_report_error_count // 0)"
-  ' "$latest_settlement"
+  if jq -e . "$latest_settlement" >/dev/null 2>&1; then
+    jq -r '
+      "settlement_state lookups attempted=\(.final_report_lookup_attempted // 0) ready=\(.final_report_ready_count // 0) pending=\(.final_report_pending_count // 0) errors=\(.final_report_error_count // 0)"
+    ' "$latest_settlement"
+  else
+    echo "settlement_state_latest -> PARSE_ERROR ($latest_settlement)"
+  fi
 fi
 
 latest_bankroll="$(ls -1t "$OUTPUT_DIR"/kalshi_temperature_bankroll_validation_*.json 2>/dev/null | head -n 1 || true)"
