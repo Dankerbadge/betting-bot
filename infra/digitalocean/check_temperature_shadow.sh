@@ -606,9 +606,27 @@ if [[ -f "$alpha_summary_latest_health" && "$HAS_JQ" == "1" ]]; then
   fi
   alpha_summary_health_status="$(jq -r '.health.status // .headline_metrics.health_status // "unknown"' "$alpha_summary_latest_health" | tr '[:upper:]' '[:lower:]')"
   alpha_summary_health_reason="$(jq -r '.health.reason_text // .headline_metrics.health_reason_text // ""' "$alpha_summary_latest_health")"
-  alpha_summary_payload_consistent="$(jq -r '.headline_metrics.approval_auto_apply_payload_consistent // true' "$alpha_summary_latest_health" | tr '[:upper:]' '[:lower:]')"
-  alpha_summary_message_quality_pass="$(jq -r '.headline_metrics.message_quality_overall_pass // true' "$alpha_summary_latest_health" | tr '[:upper:]' '[:lower:]')"
-  alpha_summary_trader_payload_consistent="$(jq -r '.headline_metrics.trader_view_payload_consistent // true' "$alpha_summary_latest_health" | tr '[:upper:]' '[:lower:]')"
+  alpha_summary_payload_consistent="$(jq -r '
+    if ((.headline_metrics | type) == "object") and (.headline_metrics | has("approval_auto_apply_payload_consistent")) then
+      .headline_metrics.approval_auto_apply_payload_consistent
+    else
+      true
+    end
+  ' "$alpha_summary_latest_health" | tr '[:upper:]' '[:lower:]')"
+  alpha_summary_message_quality_pass="$(jq -r '
+    if ((.headline_metrics | type) == "object") and (.headline_metrics | has("message_quality_overall_pass")) then
+      .headline_metrics.message_quality_overall_pass
+    else
+      true
+    end
+  ' "$alpha_summary_latest_health" | tr '[:upper:]' '[:lower:]')"
+  alpha_summary_trader_payload_consistent="$(jq -r '
+    if ((.headline_metrics | type) == "object") and (.headline_metrics | has("trader_view_payload_consistent")) then
+      .headline_metrics.trader_view_payload_consistent
+    else
+      true
+    end
+  ' "$alpha_summary_latest_health" | tr '[:upper:]' '[:lower:]')"
   alpha_summary_quality_gate_source="$(jq -r '.headline_metrics.quality_gate_source // "unknown"' "$alpha_summary_latest_health" | tr '[:upper:]' '[:lower:]')"
   alpha_summary_quality_gate_auto_applied="$(jq -r '.headline_metrics.quality_gate_auto_applied // false' "$alpha_summary_latest_health" | tr '[:upper:]' '[:lower:]')"
   alpha_summary_quality_gate_min_probability_confidence="$(jq -r '.headline_metrics.quality_gate_min_probability_confidence // ""' "$alpha_summary_latest_health")"
