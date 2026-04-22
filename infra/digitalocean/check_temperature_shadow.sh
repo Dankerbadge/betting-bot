@@ -446,13 +446,18 @@ if [[ -f "$HEALTH_STATUS_FILE" ]]; then
     fi
   fi
   if (( HAS_JQ == 1 )); then
-    overall_status="$(jq -r '.status // "unknown"' "$HEALTH_STATUS_FILE")"
-    jq -r '
-    "live_status status=\(.status // "unknown") approvals_resumed=\(.trigger_flags.approvals_resumed // false) planned_orders_resumed=\(.trigger_flags.planned_orders_resumed // false) shadow_resolved_first=\(.trigger_flags.shadow_resolved_first // false) shadow_basis=\(.trigger_flags.resolved_shadow_basis // "none") shadow_basis_value_14h=\(.trigger_flags.resolved_shadow_basis_value_14h // 0) effective_max_markets=\(.scan_budget.effective_max_markets // "n/a") next_max_markets=\(.scan_budget.next_max_markets // "n/a") adaptive_action=\(.scan_budget.adaptive_decision_action // "hold") adaptive_reason=\(.scan_budget.adaptive_decision_reason // "n/a") scan_cap_bound_with_headroom=\(.scan_budget.scan_cap_bound_with_headroom // false) load_per_vcpu=\(.scan_budget.load_per_vcpu // "n/a") intents_total_hint=\(.scan_budget.intents_total_hint // "n/a") settlement_pressure_active=\(.settlement_refresh_plan.pressure_active // false) settlement_blocked_rows_rolling=\(.settlement_refresh_plan.settlement_finalization_blocked_count // 0) settlement_blocked_underlyings=\(.settlement_refresh_plan.settlement_finalization_blocked_underlyings // 0) settlement_pending_count=\(.settlement_refresh_plan.pending_final_report_count // 0) settlement_unresolved_now=\(((.settlement_refresh_plan.settlement_finalization_blocked_underlyings // 0) + (.settlement_refresh_plan.pending_final_report_count // 0))) settlement_blocked_rate_rolling=\(.settlement_refresh_plan.settlement_finalization_blocked_rate // 0) settlement_blocked_rate_actionable=\(if (.settlement_refresh_plan.pressure_active // false) then (.settlement_refresh_plan.settlement_finalization_blocked_rate // 0) else 0 end) settlement_refresh_seconds=\(.settlement_refresh_plan.refresh_seconds_effective // 0) settlement_top_n=\(.settlement_refresh_plan.top_n_effective // 0) freshness_pressure_active=\(.freshness_plan.pressure_active // false) stale_count=\(.freshness_plan.metar_observation_stale_count // 0) stale_rate=\(.freshness_plan.metar_observation_stale_rate // 0) approval_rate=\(.freshness_plan.approval_rate // 0) range_possible_count=\(.freshness_plan.yes_range_still_possible_count // 0) range_possible_rate=\(.freshness_plan.yes_range_still_possible_rate // 0) range_possible_rate_effective=\(.freshness_plan.yes_range_still_possible_rate_effective // 0) metar_timeout=\(.freshness_plan.metar_timeout_seconds_effective // 0) metar_retries=\(.freshness_plan.metar_retry_attempts_effective // 0) interval_gap_effective=\(.interval_gap_control.effective_max_yes_possible_gap_for_yes_side // 0) interval_gap_next=\(.interval_gap_control.next_max_yes_possible_gap_for_yes_side // 0) interval_gap_action=\(.interval_gap_control.adaptive_action // "hold") interval_gap_reason=\(.interval_gap_control.adaptive_reason // "n/a") interval_gap_range_rate_effective=\(.interval_gap_control.range_possible_rate_effective // 0) replan_cooldown_effective=\(.replan_cooldown.effective_minutes // 0) replan_cooldown_next=\(.replan_cooldown.next_minutes // 0) replan_min_backstop=\(.replan_cooldown.min_orders_backstop_effective // 0) replan_next_min_backstop=\(.replan_cooldown.next_min_orders_backstop // 0) replan_stagnation_cycles=\(.replan_cooldown.stagnation_cycles // 0) replan_action=\(.replan_cooldown.adaptive_action // "hold") replan_reason=\(.replan_cooldown.adaptive_reason // "n/a") replan_blocked=\(.replan_cooldown.blocked_count // 0)/\(.replan_cooldown.input_count // 0) replan_blocked_ratio=\(.replan_cooldown.blocked_ratio // 0) replan_override_ratio=\(.replan_cooldown.override_ratio // 0) replan_backstop=\(.replan_cooldown.backstop_released_count // 0) replan_unique_market_sides=\(.replan_cooldown.unique_market_sides // 0) replan_unique_underlyings=\(.replan_cooldown.unique_underlyings // 0) attempts_metar=\(.command_execution.metar_attempts // 0) attempts_settlement=\(.command_execution.settlement_attempts // 0) attempts_shadow=\(.command_execution.shadow_attempts // 0)"
-    ' "$HEALTH_STATUS_FILE"
-    jq -r '
-      "live_status reasons red=\((.red_reasons // []) | join(",")) yellow=\((.yellow_reasons // []) | join(","))"
-    ' "$HEALTH_STATUS_FILE"
+    if jq -e . "$HEALTH_STATUS_FILE" >/dev/null 2>&1; then
+      overall_status="$(jq -r '.status // "unknown"' "$HEALTH_STATUS_FILE")"
+      jq -r '
+      "live_status status=\(.status // "unknown") approvals_resumed=\(.trigger_flags.approvals_resumed // false) planned_orders_resumed=\(.trigger_flags.planned_orders_resumed // false) shadow_resolved_first=\(.trigger_flags.shadow_resolved_first // false) shadow_basis=\(.trigger_flags.resolved_shadow_basis // "none") shadow_basis_value_14h=\(.trigger_flags.resolved_shadow_basis_value_14h // 0) effective_max_markets=\(.scan_budget.effective_max_markets // "n/a") next_max_markets=\(.scan_budget.next_max_markets // "n/a") adaptive_action=\(.scan_budget.adaptive_decision_action // "hold") adaptive_reason=\(.scan_budget.adaptive_decision_reason // "n/a") scan_cap_bound_with_headroom=\(.scan_budget.scan_cap_bound_with_headroom // false) load_per_vcpu=\(.scan_budget.load_per_vcpu // "n/a") intents_total_hint=\(.scan_budget.intents_total_hint // "n/a") settlement_pressure_active=\(.settlement_refresh_plan.pressure_active // false) settlement_blocked_rows_rolling=\(.settlement_refresh_plan.settlement_finalization_blocked_count // 0) settlement_blocked_underlyings=\(.settlement_refresh_plan.settlement_finalization_blocked_underlyings // 0) settlement_pending_count=\(.settlement_refresh_plan.pending_final_report_count // 0) settlement_unresolved_now=\(((.settlement_refresh_plan.settlement_finalization_blocked_underlyings // 0) + (.settlement_refresh_plan.pending_final_report_count // 0))) settlement_blocked_rate_rolling=\(.settlement_refresh_plan.settlement_finalization_blocked_rate // 0) settlement_blocked_rate_actionable=\(if (.settlement_refresh_plan.pressure_active // false) then (.settlement_refresh_plan.settlement_finalization_blocked_rate // 0) else 0 end) settlement_refresh_seconds=\(.settlement_refresh_plan.refresh_seconds_effective // 0) settlement_top_n=\(.settlement_refresh_plan.top_n_effective // 0) freshness_pressure_active=\(.freshness_plan.pressure_active // false) stale_count=\(.freshness_plan.metar_observation_stale_count // 0) stale_rate=\(.freshness_plan.metar_observation_stale_rate // 0) approval_rate=\(.freshness_plan.approval_rate // 0) range_possible_count=\(.freshness_plan.yes_range_still_possible_count // 0) range_possible_rate=\(.freshness_plan.yes_range_still_possible_rate // 0) range_possible_rate_effective=\(.freshness_plan.yes_range_still_possible_rate_effective // 0) metar_timeout=\(.freshness_plan.metar_timeout_seconds_effective // 0) metar_retries=\(.freshness_plan.metar_retry_attempts_effective // 0) interval_gap_effective=\(.interval_gap_control.effective_max_yes_possible_gap_for_yes_side // 0) interval_gap_next=\(.interval_gap_control.next_max_yes_possible_gap_for_yes_side // 0) interval_gap_action=\(.interval_gap_control.adaptive_action // "hold") interval_gap_reason=\(.interval_gap_control.adaptive_reason // "n/a") interval_gap_range_rate_effective=\(.interval_gap_control.range_possible_rate_effective // 0) replan_cooldown_effective=\(.replan_cooldown.effective_minutes // 0) replan_cooldown_next=\(.replan_cooldown.next_minutes // 0) replan_min_backstop=\(.replan_cooldown.min_orders_backstop_effective // 0) replan_next_min_backstop=\(.replan_cooldown.next_min_orders_backstop // 0) replan_stagnation_cycles=\(.replan_cooldown.stagnation_cycles // 0) replan_action=\(.replan_cooldown.adaptive_action // "hold") replan_reason=\(.replan_cooldown.adaptive_reason // "n/a") replan_blocked=\(.replan_cooldown.blocked_count // 0)/\(.replan_cooldown.input_count // 0) replan_blocked_ratio=\(.replan_cooldown.blocked_ratio // 0) replan_override_ratio=\(.replan_cooldown.override_ratio // 0) replan_backstop=\(.replan_cooldown.backstop_released_count // 0) replan_unique_market_sides=\(.replan_cooldown.unique_market_sides // 0) replan_unique_underlyings=\(.replan_cooldown.unique_underlyings // 0) attempts_metar=\(.command_execution.metar_attempts // 0) attempts_settlement=\(.command_execution.settlement_attempts // 0) attempts_shadow=\(.command_execution.shadow_attempts // 0)"
+      ' "$HEALTH_STATUS_FILE"
+      jq -r '
+        "live_status reasons red=\((.red_reasons // []) | join(",")) yellow=\((.yellow_reasons // []) | join(","))"
+      ' "$HEALTH_STATUS_FILE"
+    else
+      overall_status="unknown"
+      echo "live_status -> PARSE_ERROR ($HEALTH_STATUS_FILE)"
+    fi
   else
     echo "live_status -> present (install jq for parsed output): $HEALTH_STATUS_FILE"
   fi
@@ -653,82 +658,89 @@ if [[ -n "$latest_blocker_audit" && "$HAS_JQ" == "1" ]]; then
 fi
 
 if [[ -f "$alpha_summary_latest_health" && "$HAS_JQ" == "1" ]]; then
-  alpha_summary_available="1"
-  if alpha_summary_mtime="$(date -r "$alpha_summary_latest_health" +%s 2>/dev/null)"; then
-    now_epoch="$(date +%s)"
-    if [[ "$alpha_summary_mtime" =~ ^[0-9]+$ && "$now_epoch" =~ ^[0-9]+$ ]] && (( now_epoch >= alpha_summary_mtime )); then
-      alpha_summary_age_seconds="$(( now_epoch - alpha_summary_mtime ))"
+  if jq -e . "$alpha_summary_latest_health" >/dev/null 2>&1; then
+    alpha_summary_available="1"
+    if alpha_summary_mtime="$(date -r "$alpha_summary_latest_health" +%s 2>/dev/null)"; then
+      now_epoch="$(date +%s)"
+      if [[ "$alpha_summary_mtime" =~ ^[0-9]+$ && "$now_epoch" =~ ^[0-9]+$ ]] && (( now_epoch >= alpha_summary_mtime )); then
+        alpha_summary_age_seconds="$(( now_epoch - alpha_summary_mtime ))"
+      fi
     fi
+    alpha_summary_health_status="$(jq -r '.health.status // .headline_metrics.health_status // "unknown"' "$alpha_summary_latest_health")"
+    alpha_summary_health_reason="$(jq -r '.health.reason_text // .headline_metrics.health_reason_text // ""' "$alpha_summary_latest_health")"
+    alpha_summary_payload_consistent="$(jq -r '
+      if ((.headline_metrics | type) == "object") and (.headline_metrics | has("approval_auto_apply_payload_consistent")) then
+        .headline_metrics.approval_auto_apply_payload_consistent
+      else
+        true
+      end
+    ' "$alpha_summary_latest_health" | tr '[:upper:]' '[:lower:]')"
+    alpha_summary_message_quality_pass="$(jq -r '
+      if ((.headline_metrics | type) == "object") and (.headline_metrics | has("message_quality_overall_pass")) then
+        .headline_metrics.message_quality_overall_pass
+      else
+        true
+      end
+    ' "$alpha_summary_latest_health" | tr '[:upper:]' '[:lower:]')"
+    alpha_summary_trader_payload_consistent="$(jq -r '
+      if ((.headline_metrics | type) == "object") and (.headline_metrics | has("trader_view_payload_consistent")) then
+        .headline_metrics.trader_view_payload_consistent
+      else
+        true
+      end
+    ' "$alpha_summary_latest_health" | tr '[:upper:]' '[:lower:]')"
+    alpha_summary_quality_gate_source="$(jq -r '.headline_metrics.quality_gate_source // "unknown"' "$alpha_summary_latest_health" | tr '[:upper:]' '[:lower:]')"
+    alpha_summary_quality_gate_auto_applied="$(jq -r '.headline_metrics.quality_gate_auto_applied // false' "$alpha_summary_latest_health" | tr '[:upper:]' '[:lower:]')"
+    alpha_summary_quality_gate_min_probability_confidence="$(jq -r '.headline_metrics.quality_gate_min_probability_confidence // ""' "$alpha_summary_latest_health")"
+    alpha_summary_quality_gate_min_expected_edge_net="$(jq -r '.headline_metrics.quality_gate_min_expected_edge_net // ""' "$alpha_summary_latest_health")"
+    alpha_summary_auto_apply_enabled="$(jq -r '.approval_auto_apply.enabled // false' "$alpha_summary_latest_health" | tr '[:upper:]' '[:lower:]')"
+    alpha_summary_auto_apply_should_apply="$(jq -r '.approval_auto_apply.should_apply // false' "$alpha_summary_latest_health" | tr '[:upper:]' '[:lower:]')"
+    alpha_summary_auto_apply_applied_in_this_run="$(jq -r '.approval_auto_apply.applied_in_this_run // false' "$alpha_summary_latest_health" | tr '[:upper:]' '[:lower:]')"
+    alpha_summary_auto_apply_released_in_this_run="$(jq -r '.approval_auto_apply.released_in_this_run // false' "$alpha_summary_latest_health" | tr '[:upper:]' '[:lower:]')"
+    alpha_summary_auto_apply_apply_reason="$(jq -r '.approval_auto_apply.apply_reason // "unknown"' "$alpha_summary_latest_health" | tr '[:upper:]' '[:lower:]')"
+    alpha_summary_auto_apply_profile_path="$(jq -r '.approval_auto_apply.profile_path // ""' "$alpha_summary_latest_health")"
+    jq -r '
+      "alpha_summary_latest health=\(.health.status // .headline_metrics.health_status // "unknown") confidence=\(.headline_metrics.confidence_level // "unknown") approvals=\(.headline_metrics.intents_approved // 0)/\(.headline_metrics.intents_total // 0) planned=\(.headline_metrics.planned_orders // 0) breadth=\(.headline_metrics.resolved_unique_market_sides // 0) settled_wins=\(.headline_metrics.settled_unique_market_side_wins // 0) settled_losses=\(.headline_metrics.settled_unique_market_side_losses // 0) settled_total=\(.headline_metrics.settled_unique_market_side_total // .headline_metrics.settled_unique_market_side_resolved_predictions // 0) settled_pnl_if_live=\(.headline_metrics.settled_unique_market_side_counterfactual_pnl_dollars_if_live // 0) last_settled_ticker=\(.headline_metrics.last_resolved_unique_market_side.market_ticker // "n/a") last_settled_side=\(.headline_metrics.last_resolved_unique_market_side.side // "n/a") last_settled_win=\(.headline_metrics.last_resolved_unique_market_side.win // "n/a") last_settled_pnl=\(.headline_metrics.last_resolved_unique_market_side.counterfactual_pnl_dollars_if_live // "n/a") trial_balance=\(.headline_metrics.trial_balance_current_dollars // .trial_balance_current_dollars // .trial_balance_current // "n/a") trial_balance_delta=\(.headline_metrics.trial_balance_growth_dollars // .headline_metrics.trial_balance_delta_dollars // .trial_balance_delta_total // "n/a") expected_edge_estimate=\(.headline_metrics.expected_shadow_edge_total // .expected_shadow_edge_total // "n/a") impact_basis_label=\(.trader_view.suggestion_impact_pool_basis_label // .headline_metrics.suggestion_impact_pool_basis_label // "n/a") projection_basis=\(if ((.headline_metrics.settled_unique_market_side_resolved_predictions // 0) > 0) then "settled_counterfactual" else "provisional_no_settled" end) trader_view_present=\((.trader_view | type) == "object") discord_structured=\((.discord_summary_structured | type) == "object") dup_rows_since_reset=\(.headline_metrics.trial_duplicate_rows_since_reset // 0) dup_ratio_since_reset=\(.headline_metrics.trial_duplicate_rows_ratio_since_reset // 0) replan_blocked=\(.headline_metrics.replan_cooldown_blocked_count // 0)/\(.headline_metrics.replan_cooldown_input_count // 0) replan_blocked_ratio=\(.headline_metrics.replan_cooldown_blocked_ratio // 0) replan_override=\(.headline_metrics.replan_cooldown_override_count // 0) replan_backstop=\(.headline_metrics.replan_cooldown_backstop_released_count // 0) replan_uniques=\(.headline_metrics.replan_cooldown_unique_market_sides // 0)/\(.headline_metrics.replan_cooldown_unique_underlyings // 0) projected_pnl=\(.headline_metrics.projected_pnl_on_reference_bankroll_dollars // 0) beat_hysa=\(.headline_metrics.beat_hysa // false) limiting_factor=\(.headline_metrics.display_limiting_factor // .headline_metrics.limiting_factor // "unknown") quality_risk=\(.headline_metrics.approval_quality_risk_alert_active // false) quality_risk_level=\(.headline_metrics.approval_quality_risk_alert_level // "none") quality_risk_streak=\(.headline_metrics.approval_quality_risk_streak // 0) auto_mode=\(.headline_metrics.approval_auto_apply_recommendation_mode // "n/a") auto_payload_consistent=\(.headline_metrics.approval_auto_apply_payload_consistent // true) trader_payload_consistent=\(.headline_metrics.trader_view_payload_consistent // true) msg_quality_pass=\(.headline_metrics.message_quality_overall_pass // true) msg_quality_fail_count=\(.headline_metrics.message_quality_failed_check_count // 0) auto_quality_risk_projected_streak=\(.headline_metrics.approval_auto_apply_quality_risk_projected_streak_for_auto // 0) auto_quality_risk_persistent=\(.headline_metrics.approval_auto_apply_quality_risk_persistent_for_auto // false) auto_strict_guardrail_max=\(.headline_metrics.approval_auto_apply_strict_guardrail_max // 0) edge_gate_share=\(.headline_metrics.edge_gate_blocked_share_of_blocked // 0) actions_improving=\(.suggestion_tracking_summary.counts.improving // 0) actions_stalled=\(.suggestion_tracking_summary.counts.stalled // 0) actions_regressing=\(.suggestion_tracking_summary.counts.regressing // 0) actions_closed=\(.suggestion_tracking_summary.counts.closed // 0) actions_new=\(.suggestion_tracking_summary.counts.new // 0) actions_escalated=\(.suggestion_tracking_summary.escalated_count // 0) checklist_count=\(.action_checklist_summary.count // 0) checklist_escalated=\(.action_checklist_summary.escalated_count // 0) checklist_next_due=\(.action_checklist_summary.next_due_at_utc // "n/a") checklist_owners=\((.action_checklist_summary.owners // []) | join(",")) top_action_key=\(.action_checklist_top[0].key // "n/a") top_action_owner=\(.action_checklist_top[0].owner // "n/a") top_action_escalated=\(.action_checklist_top[0].escalated // false) top_action_due=\(.action_checklist_top[0].due_at_utc // "n/a")"
+    ' "$alpha_summary_latest_health"
+    jq -r '
+      "alpha_summary_trader_view decision=\(.trader_view.decision_now // "n/a") mode=\(.trader_view.mode // "n/a") confidence=\(.trader_view.confidence_score // "n/a") band=\(.trader_view.confidence_band // "n/a") recommendation=\(.trader_view.live_recommendation // "n/a") approval_rate=\(.trader_view.approval_rate // "n/a") plan_conversion=\(.trader_view.plan_conversion_rate // "n/a") top_blocker=\(.trader_view.top_blocker_reason // "n/a") blocker_share=\(.trader_view.top_blocker_share_of_blocked // "n/a") freshness=\(.trader_view.freshness_block_rate // "n/a") breadth=\(.trader_view.resolved_unique_market_sides // 0)/\(.trader_view.unresolved_unique_market_sides // 0) projected_pnl=\(.trader_view.projected_pnl_reference_bankroll_dollars // "n/a") checkin_1d=\(.trader_view.checkin_pnl_1d_dollars // "n/a") checkin_7d=\(.trader_view.checkin_pnl_7d_dollars // "n/a") checkin_\(.trader_view.checkin_month_window_label // "30d")=\(.trader_view.checkin_month_pnl_dollars // "n/a") settled_available=\(.trader_view.settled_predictions_available // false) settled_win_rate=\(.trader_view.settled_prediction_win_rate // "n/a")"
+    ' "$alpha_summary_latest_health"
+    jq -r '
+      "alpha_summary_trader_actions "
+      + "1=\((.trader_view.next_actions_top3[0] // "n/a")) ; "
+      + "2=\((.trader_view.next_actions_top3[1] // "n/a")) ; "
+      + "3=\((.trader_view.next_actions_top3[2] // "n/a"))"
+    ' "$alpha_summary_latest_health"
+    alpha_summary_trader_view_present="$(jq -r '(.trader_view | type) == "object"' "$alpha_summary_latest_health" | tr '[:upper:]' '[:lower:]')"
+    alpha_summary_trader_consistent="$(jq -r '
+      def asnum: if type == "number" then . else null end;
+      (.trader_view // {}) as $tv
+      | (.headline_metrics // {}) as $hm
+      | ($tv.approval_rate | asnum) as $tv_ar
+      | ($hm.approval_rate | asnum) as $hm_ar
+      | ($tv.confidence_score | asnum) as $tv_cs
+      | ($hm.deployment_confidence_score | asnum) as $hm_cs
+      | (
+          (($tv | type) == "object")
+          and (($tv.mode // "") | type == "string")
+          and (($tv.mode // "") | test("^(shadow_only|live)$"))
+          and (($tv.decision_now // "") | type == "string")
+          and (($tv.decision_now // "") | length > 0)
+          and (($tv.live_recommendation // "") == ($hm.live_recommendation // ""))
+          and ($tv_ar != null and $hm_ar != null and (($tv_ar - $hm_ar) | abs) <= 0.000001)
+          and ($tv_cs != null and $hm_cs != null and (($tv_cs - $hm_cs) | abs) <= 0.001)
+        )
+    ' "$alpha_summary_latest_health" | tr '[:upper:]' '[:lower:]')"
+    echo "alpha_summary_trader_consistency present=$alpha_summary_trader_view_present consistent=$alpha_summary_trader_consistent"
+    jq -r '
+      "alpha_summary_live_readiness recommendation=\(.headline_metrics.live_recommendation // "n/a") small_live=\(.headline_metrics.ready_for_small_live_pilot // false) scaled_live=\(.headline_metrics.ready_for_scaled_live // false) earliest=\(.headline_metrics.earliest_passing_horizon // "n/a") confidence_score=\(.headline_metrics.deployment_confidence_score // "n/a") uncapped_score=\(.headline_metrics.deployment_confidence_score_uncapped // "n/a") band=\(.headline_metrics.deployment_confidence_band // "n/a") pilot_gap=\(.headline_metrics.pilot_gap_effective_points // "n/a") pilot_checks=\(.headline_metrics.pilot_checks_passed // "n/a")/\(.headline_metrics.pilot_checks_total // "n/a") pilot_open=\(.headline_metrics.pilot_checks_open // "n/a") pilot_flips=\(.headline_metrics.pilot_minimum_flips_needed // "n/a") pilot_top_open=\(.headline_metrics.pilot_top_open_reason // "n/a") cap_reason=\(.headline_metrics.deployment_confidence_cap_reason // "none") top_blocker=\(.headline_metrics.top_live_readiness_blocker_reason // "n/a") 1d=\(.live_readiness_horizons."1d".readiness_status // "n/a")/\(.live_readiness_horizons."1d".gates.gate_score // "n/a") 14d=\(.live_readiness_horizons."14d".readiness_status // "n/a")/\(.live_readiness_horizons."14d".gates.gate_score // "n/a") 28d=\(.live_readiness_horizons."28d".readiness_status // "n/a")/\(.live_readiness_horizons."28d".gates.gate_score // "n/a") 1yr=\(.live_readiness_horizons."1yr".readiness_status // "n/a")/\(.live_readiness_horizons."1yr".gates.gate_score // "n/a")"
+    ' "$alpha_summary_latest_health"
+  else
+    alpha_summary_available="0"
+    alpha_summary_health_status="unknown"
+    alpha_summary_health_reason="parse_error"
+    echo "alpha_summary_latest.json -> PARSE_ERROR ($alpha_summary_latest_health)"
   fi
-  alpha_summary_health_status="$(jq -r '.health.status // .headline_metrics.health_status // "unknown"' "$alpha_summary_latest_health")"
-  alpha_summary_health_reason="$(jq -r '.health.reason_text // .headline_metrics.health_reason_text // ""' "$alpha_summary_latest_health")"
-  alpha_summary_payload_consistent="$(jq -r '
-    if ((.headline_metrics | type) == "object") and (.headline_metrics | has("approval_auto_apply_payload_consistent")) then
-      .headline_metrics.approval_auto_apply_payload_consistent
-    else
-      true
-    end
-  ' "$alpha_summary_latest_health" | tr '[:upper:]' '[:lower:]')"
-  alpha_summary_message_quality_pass="$(jq -r '
-    if ((.headline_metrics | type) == "object") and (.headline_metrics | has("message_quality_overall_pass")) then
-      .headline_metrics.message_quality_overall_pass
-    else
-      true
-    end
-  ' "$alpha_summary_latest_health" | tr '[:upper:]' '[:lower:]')"
-  alpha_summary_trader_payload_consistent="$(jq -r '
-    if ((.headline_metrics | type) == "object") and (.headline_metrics | has("trader_view_payload_consistent")) then
-      .headline_metrics.trader_view_payload_consistent
-    else
-      true
-    end
-  ' "$alpha_summary_latest_health" | tr '[:upper:]' '[:lower:]')"
-  alpha_summary_quality_gate_source="$(jq -r '.headline_metrics.quality_gate_source // "unknown"' "$alpha_summary_latest_health" | tr '[:upper:]' '[:lower:]')"
-  alpha_summary_quality_gate_auto_applied="$(jq -r '.headline_metrics.quality_gate_auto_applied // false' "$alpha_summary_latest_health" | tr '[:upper:]' '[:lower:]')"
-  alpha_summary_quality_gate_min_probability_confidence="$(jq -r '.headline_metrics.quality_gate_min_probability_confidence // ""' "$alpha_summary_latest_health")"
-  alpha_summary_quality_gate_min_expected_edge_net="$(jq -r '.headline_metrics.quality_gate_min_expected_edge_net // ""' "$alpha_summary_latest_health")"
-  alpha_summary_auto_apply_enabled="$(jq -r '.approval_auto_apply.enabled // false' "$alpha_summary_latest_health" | tr '[:upper:]' '[:lower:]')"
-  alpha_summary_auto_apply_should_apply="$(jq -r '.approval_auto_apply.should_apply // false' "$alpha_summary_latest_health" | tr '[:upper:]' '[:lower:]')"
-  alpha_summary_auto_apply_applied_in_this_run="$(jq -r '.approval_auto_apply.applied_in_this_run // false' "$alpha_summary_latest_health" | tr '[:upper:]' '[:lower:]')"
-  alpha_summary_auto_apply_released_in_this_run="$(jq -r '.approval_auto_apply.released_in_this_run // false' "$alpha_summary_latest_health" | tr '[:upper:]' '[:lower:]')"
-  alpha_summary_auto_apply_apply_reason="$(jq -r '.approval_auto_apply.apply_reason // "unknown"' "$alpha_summary_latest_health" | tr '[:upper:]' '[:lower:]')"
-  alpha_summary_auto_apply_profile_path="$(jq -r '.approval_auto_apply.profile_path // ""' "$alpha_summary_latest_health")"
-  jq -r '
-    "alpha_summary_latest health=\(.health.status // .headline_metrics.health_status // "unknown") confidence=\(.headline_metrics.confidence_level // "unknown") approvals=\(.headline_metrics.intents_approved // 0)/\(.headline_metrics.intents_total // 0) planned=\(.headline_metrics.planned_orders // 0) breadth=\(.headline_metrics.resolved_unique_market_sides // 0) settled_wins=\(.headline_metrics.settled_unique_market_side_wins // 0) settled_losses=\(.headline_metrics.settled_unique_market_side_losses // 0) settled_total=\(.headline_metrics.settled_unique_market_side_total // .headline_metrics.settled_unique_market_side_resolved_predictions // 0) settled_pnl_if_live=\(.headline_metrics.settled_unique_market_side_counterfactual_pnl_dollars_if_live // 0) last_settled_ticker=\(.headline_metrics.last_resolved_unique_market_side.market_ticker // "n/a") last_settled_side=\(.headline_metrics.last_resolved_unique_market_side.side // "n/a") last_settled_win=\(.headline_metrics.last_resolved_unique_market_side.win // "n/a") last_settled_pnl=\(.headline_metrics.last_resolved_unique_market_side.counterfactual_pnl_dollars_if_live // "n/a") trial_balance=\(.headline_metrics.trial_balance_current_dollars // .trial_balance_current_dollars // .trial_balance_current // "n/a") trial_balance_delta=\(.headline_metrics.trial_balance_growth_dollars // .headline_metrics.trial_balance_delta_dollars // .trial_balance_delta_total // "n/a") expected_edge_estimate=\(.headline_metrics.expected_shadow_edge_total // .expected_shadow_edge_total // "n/a") impact_basis_label=\(.trader_view.suggestion_impact_pool_basis_label // .headline_metrics.suggestion_impact_pool_basis_label // "n/a") projection_basis=\(if ((.headline_metrics.settled_unique_market_side_resolved_predictions // 0) > 0) then "settled_counterfactual" else "provisional_no_settled" end) trader_view_present=\((.trader_view | type) == "object") discord_structured=\((.discord_summary_structured | type) == "object") dup_rows_since_reset=\(.headline_metrics.trial_duplicate_rows_since_reset // 0) dup_ratio_since_reset=\(.headline_metrics.trial_duplicate_rows_ratio_since_reset // 0) replan_blocked=\(.headline_metrics.replan_cooldown_blocked_count // 0)/\(.headline_metrics.replan_cooldown_input_count // 0) replan_blocked_ratio=\(.headline_metrics.replan_cooldown_blocked_ratio // 0) replan_override=\(.headline_metrics.replan_cooldown_override_count // 0) replan_backstop=\(.headline_metrics.replan_cooldown_backstop_released_count // 0) replan_uniques=\(.headline_metrics.replan_cooldown_unique_market_sides // 0)/\(.headline_metrics.replan_cooldown_unique_underlyings // 0) projected_pnl=\(.headline_metrics.projected_pnl_on_reference_bankroll_dollars // 0) beat_hysa=\(.headline_metrics.beat_hysa // false) limiting_factor=\(.headline_metrics.display_limiting_factor // .headline_metrics.limiting_factor // "unknown") quality_risk=\(.headline_metrics.approval_quality_risk_alert_active // false) quality_risk_level=\(.headline_metrics.approval_quality_risk_alert_level // "none") quality_risk_streak=\(.headline_metrics.approval_quality_risk_streak // 0) auto_mode=\(.headline_metrics.approval_auto_apply_recommendation_mode // "n/a") auto_payload_consistent=\(.headline_metrics.approval_auto_apply_payload_consistent // true) trader_payload_consistent=\(.headline_metrics.trader_view_payload_consistent // true) msg_quality_pass=\(.headline_metrics.message_quality_overall_pass // true) msg_quality_fail_count=\(.headline_metrics.message_quality_failed_check_count // 0) auto_quality_risk_projected_streak=\(.headline_metrics.approval_auto_apply_quality_risk_projected_streak_for_auto // 0) auto_quality_risk_persistent=\(.headline_metrics.approval_auto_apply_quality_risk_persistent_for_auto // false) auto_strict_guardrail_max=\(.headline_metrics.approval_auto_apply_strict_guardrail_max // 0) edge_gate_share=\(.headline_metrics.edge_gate_blocked_share_of_blocked // 0) actions_improving=\(.suggestion_tracking_summary.counts.improving // 0) actions_stalled=\(.suggestion_tracking_summary.counts.stalled // 0) actions_regressing=\(.suggestion_tracking_summary.counts.regressing // 0) actions_closed=\(.suggestion_tracking_summary.counts.closed // 0) actions_new=\(.suggestion_tracking_summary.counts.new // 0) actions_escalated=\(.suggestion_tracking_summary.escalated_count // 0) checklist_count=\(.action_checklist_summary.count // 0) checklist_escalated=\(.action_checklist_summary.escalated_count // 0) checklist_next_due=\(.action_checklist_summary.next_due_at_utc // "n/a") checklist_owners=\((.action_checklist_summary.owners // []) | join(",")) top_action_key=\(.action_checklist_top[0].key // "n/a") top_action_owner=\(.action_checklist_top[0].owner // "n/a") top_action_escalated=\(.action_checklist_top[0].escalated // false) top_action_due=\(.action_checklist_top[0].due_at_utc // "n/a")"
-  ' "$alpha_summary_latest_health"
-  jq -r '
-    "alpha_summary_trader_view decision=\(.trader_view.decision_now // "n/a") mode=\(.trader_view.mode // "n/a") confidence=\(.trader_view.confidence_score // "n/a") band=\(.trader_view.confidence_band // "n/a") recommendation=\(.trader_view.live_recommendation // "n/a") approval_rate=\(.trader_view.approval_rate // "n/a") plan_conversion=\(.trader_view.plan_conversion_rate // "n/a") top_blocker=\(.trader_view.top_blocker_reason // "n/a") blocker_share=\(.trader_view.top_blocker_share_of_blocked // "n/a") freshness=\(.trader_view.freshness_block_rate // "n/a") breadth=\(.trader_view.resolved_unique_market_sides // 0)/\(.trader_view.unresolved_unique_market_sides // 0) projected_pnl=\(.trader_view.projected_pnl_reference_bankroll_dollars // "n/a") checkin_1d=\(.trader_view.checkin_pnl_1d_dollars // "n/a") checkin_7d=\(.trader_view.checkin_pnl_7d_dollars // "n/a") checkin_\(.trader_view.checkin_month_window_label // "30d")=\(.trader_view.checkin_month_pnl_dollars // "n/a") settled_available=\(.trader_view.settled_predictions_available // false) settled_win_rate=\(.trader_view.settled_prediction_win_rate // "n/a")"
-  ' "$alpha_summary_latest_health"
-  jq -r '
-    "alpha_summary_trader_actions "
-    + "1=\((.trader_view.next_actions_top3[0] // "n/a")) ; "
-    + "2=\((.trader_view.next_actions_top3[1] // "n/a")) ; "
-    + "3=\((.trader_view.next_actions_top3[2] // "n/a"))"
-  ' "$alpha_summary_latest_health"
-  alpha_summary_trader_view_present="$(jq -r '(.trader_view | type) == "object"' "$alpha_summary_latest_health" | tr '[:upper:]' '[:lower:]')"
-  alpha_summary_trader_consistent="$(jq -r '
-    def asnum: if type == "number" then . else null end;
-    (.trader_view // {}) as $tv
-    | (.headline_metrics // {}) as $hm
-    | ($tv.approval_rate | asnum) as $tv_ar
-    | ($hm.approval_rate | asnum) as $hm_ar
-    | ($tv.confidence_score | asnum) as $tv_cs
-    | ($hm.deployment_confidence_score | asnum) as $hm_cs
-    | (
-        (($tv | type) == "object")
-        and (($tv.mode // "") | type == "string")
-        and (($tv.mode // "") | test("^(shadow_only|live)$"))
-        and (($tv.decision_now // "") | type == "string")
-        and (($tv.decision_now // "") | length > 0)
-        and (($tv.live_recommendation // "") == ($hm.live_recommendation // ""))
-        and ($tv_ar != null and $hm_ar != null and (($tv_ar - $hm_ar) | abs) <= 0.000001)
-        and ($tv_cs != null and $hm_cs != null and (($tv_cs - $hm_cs) | abs) <= 0.001)
-      )
-  ' "$alpha_summary_latest_health" | tr '[:upper:]' '[:lower:]')"
-  echo "alpha_summary_trader_consistency present=$alpha_summary_trader_view_present consistent=$alpha_summary_trader_consistent"
-  jq -r '
-    "alpha_summary_live_readiness recommendation=\(.headline_metrics.live_recommendation // "n/a") small_live=\(.headline_metrics.ready_for_small_live_pilot // false) scaled_live=\(.headline_metrics.ready_for_scaled_live // false) earliest=\(.headline_metrics.earliest_passing_horizon // "n/a") confidence_score=\(.headline_metrics.deployment_confidence_score // "n/a") uncapped_score=\(.headline_metrics.deployment_confidence_score_uncapped // "n/a") band=\(.headline_metrics.deployment_confidence_band // "n/a") pilot_gap=\(.headline_metrics.pilot_gap_effective_points // "n/a") pilot_checks=\(.headline_metrics.pilot_checks_passed // "n/a")/\(.headline_metrics.pilot_checks_total // "n/a") pilot_open=\(.headline_metrics.pilot_checks_open // "n/a") pilot_flips=\(.headline_metrics.pilot_minimum_flips_needed // "n/a") pilot_top_open=\(.headline_metrics.pilot_top_open_reason // "n/a") cap_reason=\(.headline_metrics.deployment_confidence_cap_reason // "none") top_blocker=\(.headline_metrics.top_live_readiness_blocker_reason // "n/a") 1d=\(.live_readiness_horizons."1d".readiness_status // "n/a")/\(.live_readiness_horizons."1d".gates.gate_score // "n/a") 14d=\(.live_readiness_horizons."14d".readiness_status // "n/a")/\(.live_readiness_horizons."14d".gates.gate_score // "n/a") 28d=\(.live_readiness_horizons."28d".readiness_status // "n/a")/\(.live_readiness_horizons."28d".gates.gate_score // "n/a") 1yr=\(.live_readiness_horizons."1yr".readiness_status // "n/a")/\(.live_readiness_horizons."1yr".gates.gate_score // "n/a")"
-  ' "$alpha_summary_latest_health"
 fi
 alpha_summary_health_status="$(normalize_status_token "${alpha_summary_health_status:-unknown}")"
 alpha_summary_health_reason="$(printf '%s' "${alpha_summary_health_reason:-}" | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g' | sed 's/^ //; s/ $//')"

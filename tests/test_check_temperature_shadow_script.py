@@ -2770,6 +2770,24 @@ def test_shadow_check_strict_fails_when_live_status_artifact_is_stale_with_non_n
     assert "STRICT CHECK FAILED: live_status artifact stale" in result.stderr
 
 
+def test_shadow_check_strict_fails_when_live_status_artifact_is_malformed_json(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    live_status_path = output_dir / "health" / "live_status_latest.json"
+    live_status_path.write_text("{not-json", encoding="utf-8")
+
+    env_file = tmp_path / "shadow.env"
+    _write_env_file(env_file=env_file, output_dir=output_dir)
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_shadow_check(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 2
+    assert "STRICT CHECK FAILED: live_status is unknown/non-green" in result.stderr
+    assert "live_status -> PARSE_ERROR" in result.stdout
+
+
 def test_shadow_check_strict_fails_when_alpha_summary_artifact_is_missing(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[1]
     output_dir = tmp_path / "out"
@@ -2785,6 +2803,24 @@ def test_shadow_check_strict_fails_when_alpha_summary_artifact_is_missing(tmp_pa
 
     assert result.returncode == 2
     assert "STRICT CHECK FAILED: alpha summary artifact unavailable" in result.stderr
+
+
+def test_shadow_check_strict_fails_when_alpha_summary_artifact_is_malformed_json(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    alpha_path = output_dir / "health" / "alpha_summary_latest.json"
+    alpha_path.write_text("{not-json", encoding="utf-8")
+
+    env_file = tmp_path / "shadow.env"
+    _write_env_file(env_file=env_file, output_dir=output_dir)
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_shadow_check(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 2
+    assert "STRICT CHECK FAILED: alpha summary artifact unavailable" in result.stderr
+    assert "alpha_summary_latest.json -> PARSE_ERROR" in result.stdout
 
 
 def test_shadow_check_strict_fails_when_alpha_worker_expected_but_not_active(tmp_path: Path) -> None:
