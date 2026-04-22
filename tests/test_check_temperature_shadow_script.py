@@ -691,6 +691,75 @@ def test_shadow_check_strict_fails_when_route_guard_expected_defaults_to_install
     assert "STRICT CHECK FAILED: discord-route-guard timer expected but not active" in result.stderr
 
 
+def test_shadow_check_strict_fails_when_route_guard_expected_is_non_numeric_with_installed_timer(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+
+    env_file = tmp_path / "shadow.env"
+    _write_env_file(
+        env_file=env_file,
+        output_dir=output_dir,
+        extra_lines=(
+            "DISCORD_ROUTE_GUARD_TIMER_EXPECTED=not-a-number",
+            "DISCORD_ROUTE_GUARD_STRICT_FAIL_ON_COLLISION=0",
+        ),
+    )
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_shadow_check(
+        script_path=script_path,
+        env_file=env_file,
+        tool_dir=tool_dir,
+        extra_env={
+            "MOCK_DISCORD_ROUTE_GUARD_TIMER_ACTIVE": "inactive",
+        },
+    )
+
+    assert result.returncode == 2
+    assert "STRICT CHECK FAILED: discord-route-guard timer expected but not active" in result.stderr
+
+
+def test_shadow_check_strict_fails_on_non_green_route_guard_when_collision_gate_flag_is_non_numeric(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    _write_json(
+        output_dir / "health" / "discord_route_guard" / "discord_route_guard_latest.json",
+        {
+            "guard_status": "yellow",
+            "shared_route_group_count": 1,
+            "route_remediations": [
+                {
+                    "route_hint": "ops_summary",
+                    "required_thread_env_keys": ["ALPHA_SUMMARY_WEBHOOK_OPS_THREAD_ID"],
+                }
+            ],
+        },
+    )
+
+    env_file = tmp_path / "shadow.env"
+    _write_env_file(
+        env_file=env_file,
+        output_dir=output_dir,
+        extra_lines=(
+            "DISCORD_ROUTE_GUARD_TIMER_EXPECTED=1",
+            "DISCORD_ROUTE_GUARD_STRICT_FAIL_ON_COLLISION=not-a-number",
+            "unset DISCORD_ROUTE_GUARD_FAIL_ON_COLLISION",
+        ),
+    )
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_shadow_check(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 2
+    assert "STRICT CHECK FAILED: discord-route-guard indicates non-green route separation" in result.stderr
+
+
 def test_shadow_check_strict_ignores_stale_route_guard_when_not_expected(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[1]
     output_dir = tmp_path / "out"

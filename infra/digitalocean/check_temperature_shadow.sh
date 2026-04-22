@@ -90,6 +90,24 @@ REPLAN_COOLDOWN_STATE_FILE="${REPLAN_COOLDOWN_STATE_FILE:-$OUTPUT_DIR/.adaptive_
 REPLAN_BACKSTOP_STATE_FILE="${REPLAN_BACKSTOP_STATE_FILE:-$OUTPUT_DIR/.adaptive_replan_backstop}"
 AUTO_PROFILE_PATH="${APPROVAL_GATE_PROFILE_AUTO_PATH:-$OUTPUT_DIR/runtime/approval_gate_profile_auto.json}"
 
+normalize_binary_flag() {
+  local raw="${1:-}"
+  local default_value="${2:-0}"
+  local lowered
+  lowered="$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+  case "$lowered" in
+    1|true|yes|on)
+      echo "1"
+      ;;
+    0|false|no|off)
+      echo "0"
+      ;;
+    *)
+      echo "$default_value"
+      ;;
+  esac
+}
+
 if ! [[ "$LIVE_STATUS_STRICT_MAX_AGE_SECONDS" =~ ^[0-9]+$ ]]; then
   LIVE_STATUS_STRICT_MAX_AGE_SECONDS=300
 fi
@@ -102,6 +120,7 @@ fi
 if ! [[ "$DISCORD_ROUTE_GUARD_STRICT_MAX_AGE_SECONDS" =~ ^[0-9]+$ ]]; then
   DISCORD_ROUTE_GUARD_STRICT_MAX_AGE_SECONDS=10800
 fi
+DECISION_MATRIX_LANE_STRICT_REQUIRE_STATE_FILE="$(normalize_binary_flag "$DECISION_MATRIX_LANE_STRICT_REQUIRE_STATE_FILE" "0")"
 
 AUTO_PROFILE_EXPECTED="0"
 if [[ "${APPROVAL_GATE_PROFILE_AUTO_ENABLED:-0}" == "1" || "${ALPHA_SUMMARY_APPROVAL_AUTO_APPLY_ENABLED:-0}" == "1" ]]; then
@@ -858,24 +877,34 @@ echo "=== journal tail ==="
 sudo journalctl -u "$SERVICE_NAME" -n 30 --no-pager || true
 
 if (( STRICT_MODE == 1 )); then
-  alpha_worker_expected="${ALPHA_WORKER_ENABLED:-0}"
-  breadth_worker_expected="${BREADTH_WORKER_ENABLED:-0}"
-  stale_metrics_drill_expected="${STALE_METRICS_DRILL_TIMER_EXPECTED:-0}"
-  if [[ -n "${DISCORD_ROUTE_GUARD_TIMER_EXPECTED+x}" ]]; then
-    discord_route_guard_expected="${DISCORD_ROUTE_GUARD_TIMER_EXPECTED}"
-  elif (( DISCORD_ROUTE_GUARD_TIMER_INSTALLED == 1 )); then
-    discord_route_guard_expected="1"
+  alpha_worker_expected="$(normalize_binary_flag "${ALPHA_WORKER_ENABLED:-0}" "0")"
+  breadth_worker_expected="$(normalize_binary_flag "${BREADTH_WORKER_ENABLED:-0}" "0")"
+  stale_metrics_drill_expected="$(normalize_binary_flag "${STALE_METRICS_DRILL_TIMER_EXPECTED:-0}" "0")"
+  if (( DISCORD_ROUTE_GUARD_TIMER_INSTALLED == 1 )); then
+    discord_route_guard_expected_default="1"
   else
-    discord_route_guard_expected="0"
+    discord_route_guard_expected_default="0"
+  fi
+  if [[ -n "${DISCORD_ROUTE_GUARD_TIMER_EXPECTED+x}" ]]; then
+    discord_route_guard_expected="$(normalize_binary_flag "${DISCORD_ROUTE_GUARD_TIMER_EXPECTED}" "$discord_route_guard_expected_default")"
+  else
+    discord_route_guard_expected="$discord_route_guard_expected_default"
+  fi
+  discord_route_guard_fail_on_collision_default="0"
+  if [[ "$discord_route_guard_expected" == "1" ]]; then
+    discord_route_guard_fail_on_collision_default="1"
+  fi
+  if [[ -n "${DISCORD_ROUTE_GUARD_FAIL_ON_COLLISION+x}" ]]; then
+    discord_route_guard_fail_on_collision_legacy="$(normalize_binary_flag "${DISCORD_ROUTE_GUARD_FAIL_ON_COLLISION}" "$discord_route_guard_fail_on_collision_default")"
+  else
+    discord_route_guard_fail_on_collision_legacy="$discord_route_guard_fail_on_collision_default"
   fi
   if [[ -n "${DISCORD_ROUTE_GUARD_STRICT_FAIL_ON_COLLISION+x}" ]]; then
-    discord_route_guard_fail_on_collision="${DISCORD_ROUTE_GUARD_STRICT_FAIL_ON_COLLISION}"
+    discord_route_guard_fail_on_collision="$(normalize_binary_flag "${DISCORD_ROUTE_GUARD_STRICT_FAIL_ON_COLLISION}" "$discord_route_guard_fail_on_collision_legacy")"
   elif [[ -n "${DISCORD_ROUTE_GUARD_FAIL_ON_COLLISION+x}" ]]; then
-    discord_route_guard_fail_on_collision="${DISCORD_ROUTE_GUARD_FAIL_ON_COLLISION}"
-  elif [[ "$discord_route_guard_expected" == "1" ]]; then
-    discord_route_guard_fail_on_collision="1"
+    discord_route_guard_fail_on_collision="$discord_route_guard_fail_on_collision_legacy"
   else
-    discord_route_guard_fail_on_collision="0"
+    discord_route_guard_fail_on_collision="$discord_route_guard_fail_on_collision_default"
   fi
   alpha_worker_active="$(sudo systemctl is-active "$ALPHA_SERVICE_NAME" 2>/dev/null || true)"
   breadth_worker_active="$(sudo systemctl is-active "$BREADTH_SERVICE_NAME" 2>/dev/null || true)"
