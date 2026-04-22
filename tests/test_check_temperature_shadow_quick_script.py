@@ -281,6 +281,36 @@ def test_quick_check_strict_fails_when_thread_map_is_incomplete(tmp_path: Path) 
     assert "next_action: fill /etc/betbot/discord-thread-map.env then run:" in result.stdout
 
 
+def test_quick_check_non_strict_reports_thread_map_incomplete_but_exits_zero(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+
+    env_file = tmp_path / "quick.env"
+    _write_env_file(env_file=env_file, output_dir=output_dir)
+    script_path, tool_dir = _prepare_script_bundle(
+        tmp_path=tmp_path,
+        root=root,
+        thread_map_json=(
+            '{"ready_for_apply": false, "route_guard_shared_route_group_count": 2, '
+            '"missing_required_in_map": ["SHADOW_ALERT_WEBHOOK_THREAD_ID"], '
+            '"missing_required_in_env": ["ALPHA_SUMMARY_WEBHOOK_OPS_THREAD_ID"]}'
+        ),
+    )
+    result = _run_quick_script(
+        script_path=script_path,
+        env_file=env_file,
+        tool_dir=tool_dir,
+        strict=False,
+    )
+
+    assert result.returncode == 0
+    assert "thread_map_incomplete" in result.stdout
+    assert "next_action: fill /etc/betbot/discord-thread-map.env then run:" in result.stdout
+    assert "quick_result: YELLOW" in result.stdout
+
+
 def test_quick_check_strict_fails_when_route_guard_status_is_not_green(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[1]
     output_dir = tmp_path / "out"

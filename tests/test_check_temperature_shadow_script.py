@@ -1542,6 +1542,36 @@ def test_shadow_check_non_strict_ignores_red_live_status_failure(tmp_path: Path)
     assert "STRICT CHECK FAILED" not in result.stderr
 
 
+def test_shadow_check_non_strict_ignores_route_guard_timer_failure(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+
+    env_file = tmp_path / "shadow.env"
+    _write_env_file(
+        env_file=env_file,
+        output_dir=output_dir,
+        extra_lines=(
+            "DISCORD_ROUTE_GUARD_TIMER_EXPECTED=1",
+            "DISCORD_ROUTE_GUARD_STRICT_FAIL_ON_COLLISION=1",
+        ),
+    )
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_shadow_check(
+        script_path=script_path,
+        env_file=env_file,
+        tool_dir=tool_dir,
+        strict=False,
+        extra_env={
+            "MOCK_DISCORD_ROUTE_GUARD_TIMER_ACTIVE": "inactive",
+        },
+    )
+
+    assert result.returncode == 0
+    assert "STRICT CHECK FAILED: discord-route-guard timer expected but not active" not in result.stderr
+
+
 def test_shadow_check_help_flag_exits_zero_and_prints_usage() -> None:
     root = Path(__file__).resolve().parents[1]
     script_path = root / "infra" / "digitalocean" / "check_temperature_shadow.sh"
