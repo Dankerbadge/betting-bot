@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 from datetime import datetime, timezone
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -11,14 +12,16 @@ def _parse_float(value: Any) -> float | None:
     if value is None:
         return None
     if isinstance(value, (int, float)):
-        return float(value)
+        parsed = float(value)
+        return parsed if math.isfinite(parsed) else None
     text = str(value).strip()
     if not text:
         return None
     try:
-        return float(text)
+        parsed = float(text)
     except ValueError:
         return None
+    return parsed if math.isfinite(parsed) else None
 
 
 def _latest_output_file(output_dir: Path, pattern: str) -> Path | None:

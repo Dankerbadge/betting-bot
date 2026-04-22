@@ -130,6 +130,42 @@ class AlphaScoreboardTests(unittest.TestCase):
             self.assertIn("No kalshi_micro_prior_plan_summary file was found.", summary["blockers"][0])
             self.assertTrue(Path(summary["output_file"]).exists())
 
+    def test_alpha_scoreboard_ignores_non_finite_plan_metrics(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            plan = {
+                "top_market_ticker": "KXTEST-26APR01",
+                "top_market_side": "yes",
+                "top_market_hours_to_close": 24.0,
+                "top_plans": [
+                    {
+                        "estimated_entry_cost_dollars": "NaN",
+                        "expected_value_net_dollars": "Infinity",
+                        "expected_value_per_day_net_dollars": "Infinity",
+                    },
+                    {
+                        "estimated_entry_cost_dollars": 2.0,
+                        "expected_value_net_dollars": 0.2,
+                        "expected_value_per_day_net_dollars": 0.2,
+                    },
+                ],
+            }
+            plan_path = base / "kalshi_micro_prior_plan_summary_20260329_120724.json"
+            plan_path.write_text(json.dumps(plan), encoding="utf-8")
+
+            summary = run_alpha_scoreboard(
+                output_dir=str(base),
+                planning_bankroll_dollars=40.0,
+                benchmark_annual_return=0.10,
+                now=datetime(2026, 3, 29, 16, 20, tzinfo=timezone.utc),
+            )
+
+            self.assertEqual(summary["status"], "ready")
+            self.assertEqual(summary["strategy_projection"]["planned_orders_count"], 1)
+            self.assertAlmostEqual(summary["strategy_projection"]["total_planned_cost_dollars"], 2.0, places=6)
+            self.assertAlmostEqual(summary["strategy_projection"]["trade_net_roi_per_cycle_pct"], 10.0, places=6)
+            self.assertTrue(Path(summary["output_file"]).exists())
+
 
 if __name__ == "__main__":
     unittest.main()

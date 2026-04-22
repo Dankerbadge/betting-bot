@@ -825,5 +825,59 @@ def test_alpha_summary_ops_webhook_includes_decision_matrix_lane_line(tmp_path: 
     assert "[streak alert fired]" in message_text
 
 
+def test_alpha_summary_flags_critical_parse_error_and_caps_confidence(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    out_dir = tmp_path / "out"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    now_utc = datetime.now(timezone.utc)
+    token = now_utc.strftime("%Y%m%d_%H%M%S")
+    malformed_intents_summary = out_dir / f"kalshi_temperature_trade_intents_summary_{token}.json"
+    malformed_intents_summary.write_text("{\n", encoding="utf-8")
+    future_epoch = (now_utc + timedelta(hours=4)).timestamp()
+    os.utime(malformed_intents_summary, (future_epoch, future_epoch))
+
+    env_file = tmp_path / "alpha_summary.env"
+    env_file.write_text(
+        "\n".join(
+            [
+                f'BETBOT_ROOT="{root}"',
+                f'OUTPUT_DIR="{out_dir}"',
+                "ALPHA_SUMMARY_SEND_WEBHOOK=0",
+                "ALPHA_SUMMARY_DISCORD_MODE=concise",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    script = root / "infra" / "digitalocean" / "run_temperature_alpha_summary.sh"
+    subprocess.run(
+        ["/bin/bash", str(script), str(env_file)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    payload = json.loads((out_dir / "health" / "alpha_summary_latest.json").read_text(encoding="utf-8"))
+    health = payload.get("health", {}) or {}
+    issues = health.get("issues") or []
+    assert "artifact_parse_error" in issues
+    assert "critical_artifact_parse_error" in issues
+
+    source_files = payload.get("source_files", {}) or {}
+    assert source_files.get("latest_intents_summary_load_status") == "parse_error"
+    critical_keys = source_files.get("critical_artifact_parse_error_keys") or []
+    assert "latest_intents_summary" in critical_keys
+
+    headline = payload.get("headline_metrics", {}) or {}
+    assert headline.get("deployment_confidence_cap_applied") is True
+    cap_reason_tokens = str(headline.get("deployment_confidence_cap_reason") or "").split("+")
+    assert "critical_artifact_parse_error" in cap_reason_tokens
+    cap_value = headline.get("deployment_confidence_cap_value")
+    assert isinstance(cap_value, (int, float))
+    assert float(cap_value) <= 35.0
+
+
 def _normalize_path(value: object) -> str:
     return str(value or "").replace("\\\\", "/")

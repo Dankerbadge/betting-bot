@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from math import isfinite
 from statistics import median, pstdev
 
 
@@ -67,12 +68,25 @@ def normalize_implied_probabilities(decimal_odds: list[float]) -> list[float]:
     return [probability / normalized_total for probability in normalized]
 
 
-def robust_consensus_probability(probabilities: list[float]) -> float:
-    """Return a trimmed consensus probability that downweights one-book outliers."""
+def _validated_probabilities(probabilities: list[float]) -> list[float]:
     if not probabilities:
         raise ValueError("probabilities cannot be empty")
+    validated: list[float] = []
+    for probability in probabilities:
+        try:
+            value = float(probability)
+        except (TypeError, ValueError):
+            raise ValueError("probabilities must be finite values between 0 and 1") from None
+        if not isfinite(value) or value < 0.0 or value > 1.0:
+            raise ValueError("probabilities must be finite values between 0 and 1")
+        validated.append(value)
+    return validated
 
-    ordered = sorted(probabilities)
+
+def robust_consensus_probability(probabilities: list[float]) -> float:
+    """Return a trimmed consensus probability that downweights one-book outliers."""
+    ordered = sorted(_validated_probabilities(probabilities))
+
     if len(ordered) <= 2:
         return sum(ordered) / len(ordered)
     if len(ordered) == 3:
@@ -83,8 +97,7 @@ def robust_consensus_probability(probabilities: list[float]) -> float:
 
 def consensus_stats(probabilities: list[float]) -> dict[str, float]:
     """Summarize consensus quality for a set of fair probabilities."""
-    if not probabilities:
-        raise ValueError("probabilities cannot be empty")
+    probabilities = _validated_probabilities(probabilities)
 
     prob_low = min(probabilities)
     prob_high = max(probabilities)

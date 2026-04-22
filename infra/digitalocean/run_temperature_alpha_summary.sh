@@ -379,19 +379,24 @@ def _fmt_age_compact(seconds: Any) -> str:
     return f"{days}d"
 
 
-def _load_json(path: str) -> dict[str, Any]:
+def _load_json_with_status(path: str) -> tuple[dict[str, Any], str]:
     text = _normalize(path)
     if not text:
-        return {}
+        return {}, "path_missing"
     file_path = Path(text)
     if not file_path.exists():
-        return {}
+        return {}, "file_missing"
     try:
         payload = json.loads(file_path.read_text(encoding="utf-8"))
     except Exception:
-        return {}
+        return {}, "parse_error"
     if not isinstance(payload, dict):
-        return {}
+        return {}, "non_object"
+    return payload, "ok"
+
+
+def _load_json(path: str) -> dict[str, Any]:
+    payload, _status = _load_json_with_status(path)
     return payload
 
 
@@ -679,6 +684,8 @@ def _humanize_reason(reason: str) -> str:
         "profitability_csv_cache_fallback_parent_unwritable": "profitability cache fallback parent unwritable",
         "settlement_state_load_failures": "settlement-state load failures observed",
         "window_summary_no_recent_shadow_or_intent_files": "no recent shadow/intent files in window",
+        "artifact_parse_error": "artifact parse errors detected",
+        "critical_artifact_parse_error": "critical alpha artifact parse errors detected",
     }
     key = _normalize(reason)
     if not key:
@@ -2037,12 +2044,13 @@ runtime_stage_seconds = {
     "total": stage_seconds_total,
 }
 
-window_summary = _load_json(str(window_summary_path))
+window_summary, window_summary_load_status = _load_json_with_status(str(window_summary_path))
 profitability_file = _normalize(window_summary.get("profitability_file"))
-profitability = _load_json(profitability_file)
-bankroll = _load_json(bankroll_path)
-alpha_gap = _load_json(alpha_gap_path)
-live_status = _load_json(live_status_path)
+profitability, profitability_load_status = _load_json_with_status(profitability_file)
+bankroll, bankroll_load_status = _load_json_with_status(bankroll_path)
+alpha_gap, alpha_gap_load_status = _load_json_with_status(alpha_gap_path)
+live_status, live_status_primary_load_status = _load_json_with_status(live_status_path)
+live_status_effective_load_status = live_status_primary_load_status
 if not live_status:
     live_status_fallback_candidates = [
         str(window_summary_path.parent / "live_status_latest.json"),
@@ -2053,22 +2061,54 @@ if not live_status:
         candidate_text = _normalize(candidate)
         if not candidate_text or candidate_text == _normalize(live_status_path):
             continue
-        candidate_payload = _load_json(candidate_text)
+        candidate_payload, candidate_load_status = _load_json_with_status(candidate_text)
         if candidate_payload:
             live_status = candidate_payload
             live_status_path = candidate_text
+            live_status_effective_load_status = candidate_load_status
             break
 if not live_status:
     derived_live_status = _derive_live_status_from_window_summary(window_summary)
     if derived_live_status:
         live_status = derived_live_status
         live_status_path = f"derived:{window_summary_path}"
-live_readiness = _load_json(live_readiness_path)
-go_live_gate = _load_json(go_live_gate_path)
-blocker_audit = _load_json(blocker_audit_path)
-latest_plan_summary = _load_json(plan_summary_path)
-intents_summary = _load_json(intents_summary_path)
-previous_alpha_summary = _load_json(str(health_latest_path))
+        live_status_effective_load_status = "derived_window_summary"
+live_readiness, live_readiness_load_status = _load_json_with_status(live_readiness_path)
+go_live_gate, go_live_gate_load_status = _load_json_with_status(go_live_gate_path)
+blocker_audit, blocker_audit_load_status = _load_json_with_status(blocker_audit_path)
+latest_plan_summary, latest_plan_summary_load_status = _load_json_with_status(plan_summary_path)
+intents_summary, intents_summary_load_status = _load_json_with_status(intents_summary_path)
+previous_alpha_summary, previous_alpha_summary_load_status = _load_json_with_status(str(health_latest_path))
+artifact_load_status = {
+    "window_summary": window_summary_load_status,
+    "profitability": profitability_load_status,
+    "bankroll_validation": bankroll_load_status,
+    "alpha_gap": alpha_gap_load_status,
+    "live_status_primary": live_status_primary_load_status,
+    "live_status_effective": live_status_effective_load_status,
+    "live_readiness": live_readiness_load_status,
+    "go_live_gate": go_live_gate_load_status,
+    "blocker_audit": blocker_audit_load_status,
+    "latest_plan_summary": latest_plan_summary_load_status,
+    "latest_intents_summary": intents_summary_load_status,
+    "previous_alpha_summary": previous_alpha_summary_load_status,
+}
+artifact_parse_error_statuses = {"parse_error", "non_object"}
+artifact_parse_error_keys = sorted(
+    key for key, status in artifact_load_status.items() if status in artifact_parse_error_statuses
+)
+critical_artifact_parse_error_keys = sorted(
+    key
+    for key in artifact_parse_error_keys
+    if key in {
+        "window_summary",
+        "bankroll_validation",
+        "alpha_gap",
+        "live_readiness",
+        "go_live_gate",
+        "latest_intents_summary",
+    }
+)
 previous_headline_metrics = (
     previous_alpha_summary.get("headline_metrics")
     if isinstance(previous_alpha_summary.get("headline_metrics"), dict)
@@ -2927,6 +2967,10 @@ if csv_cache_puts_failed_readonly > 0:
     health_reasons.append("profitability_csv_cache_readonly")
 if csv_cache_path_fallback_reason:
     health_reasons.append(f"profitability_csv_cache_fallback_{csv_cache_path_fallback_reason}")
+if artifact_parse_error_keys:
+    health_reasons.append("artifact_parse_error")
+if critical_artifact_parse_error_keys:
+    health_reasons.append("critical_artifact_parse_error")
 
 intents_total = _parse_int(totals.get("intents_total")) or 0
 intents_approved = _parse_int(totals.get("intents_approved")) or 0
@@ -4731,6 +4775,37 @@ if hysa_cap_condition:
             deployment_confidence_cap_detail = f"{deployment_confidence_cap_detail}; {hysa_detail}"
     else:
         deployment_confidence_cap_detail = hysa_detail
+
+if critical_artifact_parse_error_keys:
+    parse_error_cap = 35.0
+    if deployment_confidence_score > parse_error_cap:
+        deployment_confidence_score = float(parse_error_cap)
+    deployment_confidence_cap_applied = True
+    deployment_confidence_band = "SHADOW_ONLY"
+    deployment_confidence_guidance = (
+        "Critical alpha artifacts failed to parse; keep shadow-only until core runtime artifacts are valid."
+    )
+    if not _normalize(deployment_confidence_cap_reason):
+        deployment_confidence_cap_reason = "critical_artifact_parse_error"
+    elif "critical_artifact_parse_error" not in deployment_confidence_cap_reason.split("+"):
+        deployment_confidence_cap_reason = (
+            f"{deployment_confidence_cap_reason}+critical_artifact_parse_error"
+        )
+    if (
+        not isinstance(deployment_confidence_cap_value, float)
+        or parse_error_cap < deployment_confidence_cap_value
+    ):
+        deployment_confidence_cap_value = float(parse_error_cap)
+    parse_error_detail = (
+        "parse_error_artifacts=" + ",".join(str(item) for item in critical_artifact_parse_error_keys)
+    )
+    if _normalize(deployment_confidence_cap_detail):
+        if parse_error_detail not in deployment_confidence_cap_detail:
+            deployment_confidence_cap_detail = (
+                f"{deployment_confidence_cap_detail}; {parse_error_detail}"
+            )
+    else:
+        deployment_confidence_cap_detail = parse_error_detail
 
 deployment_confidence_score = max(0.0, min(100.0, float(deployment_confidence_score)))
 if deployment_confidence_cap_reason in {"negative_projected_bankroll_pnl", "does_not_exceed_hysa_for_window"} or (
@@ -9940,6 +10015,20 @@ payload = {
         "latest_plan_summary_file": plan_summary_path,
         "latest_intents_summary_file": intents_summary_path,
         "selection_quality_file": selection_quality_path,
+        "window_summary_load_status": window_summary_load_status,
+        "profitability_load_status": profitability_load_status,
+        "bankroll_validation_load_status": bankroll_load_status,
+        "alpha_gap_load_status": alpha_gap_load_status,
+        "live_status_primary_load_status": live_status_primary_load_status,
+        "live_status_effective_load_status": live_status_effective_load_status,
+        "live_readiness_load_status": live_readiness_load_status,
+        "go_live_gate_load_status": go_live_gate_load_status,
+        "blocker_audit_load_status": blocker_audit_load_status,
+        "latest_plan_summary_load_status": latest_plan_summary_load_status,
+        "latest_intents_summary_load_status": intents_summary_load_status,
+        "previous_alpha_summary_load_status": previous_alpha_summary_load_status,
+        "artifact_parse_error_keys": artifact_parse_error_keys,
+        "critical_artifact_parse_error_keys": critical_artifact_parse_error_keys,
         "window_intent_summary_files_in_window_count": int(len(window_intent_summary_files)),
         "window_intent_summary_files_used_count": int(intent_quality_source_summary_files_count),
         "window_intent_summary_files_used_preview": intent_quality_source_summary_files_preview,

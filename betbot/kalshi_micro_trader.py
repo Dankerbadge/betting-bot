@@ -19,6 +19,23 @@ ExecuteRunner = Callable[..., dict[str, Any]]
 ReconcileRunner = Callable[..., dict[str, Any]]
 
 
+def _coerce_gate_pass(value: Any) -> tuple[bool, bool]:
+    if isinstance(value, bool):
+        return value, True
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes"}:
+            return True, True
+        if normalized in {"false", "0", "no", ""}:
+            return False, True
+        return False, False
+    if isinstance(value, int):
+        if value in {0, 1}:
+            return bool(value), True
+        return False, False
+    return False, False
+
+
 def run_kalshi_micro_trader(
     *,
     env_file: str,
@@ -102,6 +119,13 @@ def run_kalshi_micro_trader(
         watch_history_summary=watch_history_summary,
         now=captured_at,
     )
+    gate_pass, gate_pass_valid = _coerce_gate_pass(gate_summary.get("gate_pass"))
+    gate_status = gate_summary.get("gate_status")
+    gate_blockers = list(gate_summary.get("gate_blockers") or [])
+    if not gate_pass_valid:
+        gate_pass = False
+        gate_status = "invalid_gate_pass"
+        gate_blockers.insert(0, f"Invalid gate_pass value: {gate_summary.get('gate_pass')!r}")
 
     summary = {
         "captured_at": captured_at.isoformat(),
@@ -112,10 +136,10 @@ def run_kalshi_micro_trader(
         "capture_history_csv": capture_summary.get("history_csv") if isinstance(capture_summary, dict) else effective_history_csv,
         "capture_scan_csv": effective_scan_csv,
         "allow_live_orders": allow_live_orders,
-        "gate_pass": gate_summary.get("gate_pass"),
-        "gate_status": gate_summary.get("gate_status"),
+        "gate_pass": gate_pass,
+        "gate_status": gate_status,
         "gate_score": gate_summary.get("gate_score"),
-        "gate_blockers": list(gate_summary.get("gate_blockers") or []),
+        "gate_blockers": gate_blockers,
         "gate_top_category": gate_summary.get("top_category"),
         "gate_top_category_label": gate_summary.get("top_category_label"),
         "gate_category_concentration_warning": gate_summary.get("category_concentration_warning"),

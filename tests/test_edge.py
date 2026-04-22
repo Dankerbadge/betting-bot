@@ -2,11 +2,13 @@ import unittest
 
 from betbot.edge import (
     confidence_adjusted_edge,
+    consensus_stats,
     consensus_confidence,
     edge_roi_on_cost,
     expected_value_decimal,
     full_kelly_fraction,
     normalize_implied_probabilities,
+    robust_consensus_probability,
     stale_quote_penalty,
 )
 
@@ -44,6 +46,14 @@ class EdgeTests(unittest.TestCase):
     def test_edge_roi_on_cost_uses_entry_price(self) -> None:
         self.assertAlmostEqual(edge_roi_on_cost(0.03, 0.75), 0.04, places=6)
         self.assertAlmostEqual(edge_roi_on_cost(-0.01, 0.2), -0.05, places=6)
+
+    def test_robust_consensus_probability_rejects_out_of_range_inputs(self) -> None:
+        with self.assertRaisesRegex(ValueError, "between 0 and 1"):
+            robust_consensus_probability([0.48, 55, 0.51])
+
+    def test_consensus_stats_rejects_non_finite_inputs(self) -> None:
+        with self.assertRaisesRegex(ValueError, "between 0 and 1"):
+            consensus_stats([0.49, float("nan"), 0.5])
 
 
 if __name__ == "__main__":
