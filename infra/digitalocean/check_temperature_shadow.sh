@@ -676,13 +676,17 @@ fi
 
 latest_blocker_audit="$(ls -1t "$CHECKPOINTS_DIR"/blocker_audit_*_latest.json 2>/dev/null | head -n 1 || true)"
 if [[ -n "$latest_blocker_audit" && "$HAS_JQ" == "1" ]]; then
-  jq -r '
-    "blocker_audit_latest file=\(.source_files.window_summary_file // "unknown") top=\(.headline.largest_blocker_reason // "none") count=\(.headline.largest_blocker_count // 0) blocked_total=\(.headline.blocked_total // 0)"
-  ' "$latest_blocker_audit"
-  jq -r '
-    (.top_blockers[0] // {}) as $top
-    | "blocker_audit_action " + ($top.reason_human // "none") + ": " + ($top.recommended_action // "n/a")
-  ' "$latest_blocker_audit"
+  if jq -e . "$latest_blocker_audit" >/dev/null 2>&1; then
+    jq -r '
+      "blocker_audit_latest file=\(.source_files.window_summary_file // "unknown") top=\(.headline.largest_blocker_reason // "none") count=\(.headline.largest_blocker_count // 0) blocked_total=\(.headline.blocked_total // 0)"
+    ' "$latest_blocker_audit"
+    jq -r '
+      (.top_blockers[0] // {}) as $top
+      | "blocker_audit_action " + ($top.reason_human // "none") + ": " + ($top.recommended_action // "n/a")
+    ' "$latest_blocker_audit"
+  else
+    echo "blocker_audit_latest -> PARSE_ERROR ($latest_blocker_audit)"
+  fi
 fi
 
 if [[ -f "$alpha_summary_latest_health" && "$HAS_JQ" == "1" ]]; then
