@@ -1497,6 +1497,64 @@ def test_shadow_check_non_strict_ignores_red_live_status_failure(tmp_path: Path)
     assert "STRICT CHECK FAILED" not in result.stderr
 
 
+def test_shadow_check_help_flag_exits_zero_and_prints_usage() -> None:
+    root = Path(__file__).resolve().parents[1]
+    script_path = root / "infra" / "digitalocean" / "check_temperature_shadow.sh"
+    result = subprocess.run(
+        ["/bin/bash", str(script_path), "--help"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert "Usage:" in result.stdout
+
+
+def test_shadow_check_unknown_option_fails_with_usage() -> None:
+    root = Path(__file__).resolve().parents[1]
+    script_path = root / "infra" / "digitalocean" / "check_temperature_shadow.sh"
+    result = subprocess.run(
+        ["/bin/bash", str(script_path), "--bad-option"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "Unknown option: --bad-option" in result.stderr
+    assert "Usage:" in result.stderr
+
+
+def test_shadow_check_missing_env_flag_value_fails() -> None:
+    root = Path(__file__).resolve().parents[1]
+    script_path = root / "infra" / "digitalocean" / "check_temperature_shadow.sh"
+    result = subprocess.run(
+        ["/bin/bash", str(script_path), "--env"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "Missing value for --env" in result.stderr
+
+
+def test_shadow_check_missing_env_file_fails(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    script_path = root / "infra" / "digitalocean" / "check_temperature_shadow.sh"
+    missing_env = tmp_path / "missing.env"
+    result = subprocess.run(
+        ["/bin/bash", str(script_path), "--env", str(missing_env)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert f"Missing {missing_env}" in result.stderr
+
+
 def test_shadow_check_strict_warns_when_live_status_is_yellow(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[1]
     output_dir = tmp_path / "out"

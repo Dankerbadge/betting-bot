@@ -471,3 +471,61 @@ def test_quick_check_non_strict_reports_flags_but_exits_zero(tmp_path: Path) -> 
     assert result.returncode == 0
     assert "quick_result: YELLOW" in result.stdout
     assert "discord_route_guard_not_green" in result.stdout
+
+
+def test_quick_check_help_flag_exits_zero_and_prints_usage() -> None:
+    root = Path(__file__).resolve().parents[1]
+    script_path = root / "infra" / "digitalocean" / "check_temperature_shadow_quick.sh"
+    result = subprocess.run(
+        ["/bin/bash", str(script_path), "--help"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert "Usage:" in result.stdout
+
+
+def test_quick_check_unknown_option_fails_with_usage() -> None:
+    root = Path(__file__).resolve().parents[1]
+    script_path = root / "infra" / "digitalocean" / "check_temperature_shadow_quick.sh"
+    result = subprocess.run(
+        ["/bin/bash", str(script_path), "--bad-option"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "Unknown option: --bad-option" in result.stderr
+    assert "Usage:" in result.stderr
+
+
+def test_quick_check_missing_env_flag_value_fails() -> None:
+    root = Path(__file__).resolve().parents[1]
+    script_path = root / "infra" / "digitalocean" / "check_temperature_shadow_quick.sh"
+    result = subprocess.run(
+        ["/bin/bash", str(script_path), "--env"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "Missing value for --env" in result.stderr
+
+
+def test_quick_check_missing_env_file_fails(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    script_path = root / "infra" / "digitalocean" / "check_temperature_shadow_quick.sh"
+    missing_env = tmp_path / "missing.env"
+    result = subprocess.run(
+        ["/bin/bash", str(script_path), "--env", str(missing_env)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert f"Missing {missing_env}" in result.stderr
