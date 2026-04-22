@@ -272,7 +272,7 @@ PY
 fi
 
 if [[ -f "$ROUTE_GUARD_FILE" ]]; then
-  read -r route_line < <(python3 - "$ROUTE_GUARD_FILE" <<'PY'
+  route_block="$(python3 - "$ROUTE_GUARD_FILE" <<'PY'
 import json,sys
 p=json.load(open(sys.argv[1]))
 status=str(p.get('guard_status') or 'unknown')
@@ -286,8 +286,10 @@ print(f"discord_route_guard: status={status} shared_route_groups={shared} requir
 if keys:
   print("discord_route_guard_missing_keys_hint=" + ",".join(keys[:8]))
 PY
-)
-  echo "$route_line"
+)"
+  if [[ -n "$route_block" ]]; then
+    echo "$route_block"
+  fi
   route_status="$(python3 - "$ROUTE_GUARD_FILE" <<'PY'
 import json,sys
 p=json.load(open(sys.argv[1]))
@@ -300,7 +302,7 @@ PY
 fi
 
 if [[ -f "$DISCORD_AUDIT_FILE" ]]; then
-  read -r audit_line < <(python3 - "$DISCORD_AUDIT_FILE" <<'PY'
+  audit_block="$(python3 - "$DISCORD_AUDIT_FILE" <<'PY'
 import json,sys
 p=json.load(open(sys.argv[1]))
 score=float(p.get("overall_score") or 0)
@@ -310,9 +312,11 @@ print(f"discord_message_audit: overall={score:.1f}/100 worst_stream={worst}/100 
 if score < 90 or worst < 85:
     print("discord_message_audit_warning=readability_regression")
 PY
-)
-  echo "$audit_line"
-  if [[ "$audit_line" == *"discord_message_audit_warning=readability_regression"* ]]; then
+)"
+  if [[ -n "$audit_block" ]]; then
+    echo "$audit_block"
+  fi
+  if [[ "$audit_block" == *"discord_message_audit_warning=readability_regression"* ]]; then
     action_flags+=("discord_message_readability_regression")
   fi
 fi

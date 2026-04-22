@@ -279,3 +279,102 @@ def test_quick_check_strict_fails_when_thread_map_is_incomplete(tmp_path: Path) 
     assert result.returncode == 2
     assert "thread_map_incomplete" in result.stdout
     assert "next_action: fill /etc/betbot/discord-thread-map.env then run:" in result.stdout
+
+
+def test_quick_check_strict_fails_when_route_guard_status_is_not_green(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    _write_json(
+        output_dir / "health" / "discord_route_guard" / "discord_route_guard_latest.json",
+        {
+            "guard_status": "yellow",
+            "shared_route_group_count": 2,
+            "route_remediations": [],
+        },
+    )
+
+    env_file = tmp_path / "quick.env"
+    _write_env_file(env_file=env_file, output_dir=output_dir)
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_quick_script(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 2
+    assert "discord_route_guard_not_green" in result.stdout
+
+
+def test_quick_check_strict_fails_on_discord_message_readability_regression(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    _write_json(
+        output_dir / "health" / "discord_message_audit" / "discord_message_audit_latest.json",
+        {
+            "overall_score": 82.0,
+            "streams": [
+                {"score": 80},
+            ],
+        },
+    )
+
+    env_file = tmp_path / "quick.env"
+    _write_env_file(env_file=env_file, output_dir=output_dir)
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_quick_script(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 2
+    assert "discord_message_readability_regression" in result.stdout
+
+
+def test_quick_check_strict_fails_on_confidence_pnl_divergence(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    _write_json(
+        output_dir / "health" / "alpha_summary_latest.json",
+        {
+            "headline_metrics": {
+                "health_status": "GREEN",
+                "confidence_level": "HIGH",
+                "approval_rate": 0.1,
+                "intents_total": 10,
+                "intents_approved": 1,
+                "planned_orders": 1,
+                "top_blocker_reason": "none",
+                "suggestion_impact_pool_basis_label": "settled_projection",
+                "settled_unique_market_side_total": 1,
+                "projected_pnl_on_reference_bankroll_dollars": -5.0,
+            },
+            "trader_view": {
+                "confidence_score": 60.0,
+                "selection_confidence_score": 60.0,
+            },
+        },
+    )
+
+    env_file = tmp_path / "quick.env"
+    _write_env_file(env_file=env_file, output_dir=output_dir)
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_quick_script(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 2
+    assert "confidence_pnl_divergence" in result.stdout
+
+
+def test_quick_check_strict_fails_when_live_status_artifact_is_missing(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    (output_dir / "health" / "live_status_latest.json").unlink(missing_ok=True)
+
+    env_file = tmp_path / "quick.env"
+    _write_env_file(env_file=env_file, output_dir=output_dir)
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_quick_script(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 2
+    assert "live_status_missing" in result.stdout
