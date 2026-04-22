@@ -996,6 +996,75 @@ class KalshiWeatherPriorsTests(unittest.TestCase):
             self.assertAlmostEqual(float(row["model_probability_raw"]), 0.1, places=3)
             self.assertLess(float(row["fair_yes_probability"]), 0.2)
 
+    def test_run_kalshi_weather_priors_ignores_out_of_range_rain_pop_values(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            history_csv = base / "history.csv"
+            priors_csv = base / "priors.csv"
+            _write_csv(
+                history_csv,
+                HISTORY_FIELDNAMES,
+                [
+                    {
+                        "captured_at": "2026-04-01T12:00:00+00:00",
+                        "category": "Climate and Weather",
+                        "series_ticker": "KXRAINNYC",
+                        "event_ticker": "KXRAINNYC-26APR01",
+                        "market_ticker": "KXRAINNYC-26APR01",
+                        "event_title": "Will it rain in NYC today?",
+                        "market_title": "Will it rain in NYC today?",
+                        "rules_primary": "If measurable rain is recorded at station KJFK, this market resolves to Yes.",
+                        "close_time": "2026-04-01T23:59:00+00:00",
+                        "hours_to_close": "10",
+                        "yes_bid_dollars": "0.09",
+                        "yes_ask_dollars": "0.11",
+                        "spread_dollars": "0.02",
+                    },
+                ],
+            )
+            _write_csv(priors_csv, PRIOR_FIELDNAMES, [])
+
+            summary = run_kalshi_weather_priors(
+                priors_csv=str(priors_csv),
+                history_csv=str(history_csv),
+                output_dir=str(base),
+                station_forecast_fetcher=lambda **kwargs: {
+                    "status": "ready",
+                    "station_id": "KJFK",
+                    "forecast_updated_at": "2026-04-01T12:00:00+00:00",
+                    "periods": [
+                        {
+                            "startTime": "2026-04-01T13:00:00+00:00",
+                            "temperature": 58,
+                            "probabilityOfPrecipitation": {"value": 250},
+                        },
+                        {
+                            "startTime": "2026-04-01T14:00:00+00:00",
+                            "temperature": 60,
+                            "probabilityOfPrecipitation": {"value": -15},
+                        },
+                        {
+                            "startTime": "2026-04-01T15:00:00+00:00",
+                            "temperature": 61,
+                            "probabilityOfPrecipitation": {"value": 10},
+                        },
+                    ],
+                },
+                station_history_fetcher=lambda **kwargs: {"status": "disabled_missing_token"},
+                anomaly_series_fetcher=lambda **kwargs: {"status": "ready", "values": [0.0] * 24},
+                now=datetime(2026, 4, 1, 12, 5, tzinfo=timezone.utc),
+            )
+
+            self.assertEqual(summary["status"], "ready")
+            with Path(summary["output_csv"]).open("r", newline="", encoding="utf-8") as handle:
+                rows = [dict(row) for row in csv.DictReader(handle)]
+            self.assertEqual(len(rows), 1)
+            row = rows[0]
+            self.assertEqual(row["contract_family"], "daily_rain")
+            self.assertAlmostEqual(float(row["model_probability_raw"]), 0.1, places=3)
+            self.assertLess(float(row["fair_yes_probability"]), 0.2)
+            self.assertIn("periods_used=1", row.get("source_note", ""))
+
     def test_run_kalshi_weather_priors_ignores_non_finite_temperature_values(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)

@@ -250,6 +250,15 @@ def _clamp_probability(value: float) -> float:
     return round(min(0.999, max(0.001, float(value))), 6)
 
 
+def _parse_probability_percent(value: Any) -> float | None:
+    numeric = _parse_float(value)
+    if numeric is None:
+        return None
+    if numeric < 0.0 or numeric > 100.0:
+        return None
+    return numeric / 100.0
+
+
 def _as_bool(value: Any) -> bool:
     if isinstance(value, bool):
         return value
@@ -1097,12 +1106,12 @@ def _build_daily_rain_prior(
     pop_values: list[float] = []
     for period in scoped_periods:
         probability_payload = period.get("probabilityOfPrecipitation")
-        value = None
+        probability = None
         if isinstance(probability_payload, dict):
-            value = _parse_float(probability_payload.get("value"))
-        if value is None:
+            probability = _parse_probability_percent(probability_payload.get("value"))
+        if probability is None:
             continue
-        pop_values.append(min(1.0, max(0.0, value / 100.0)))
+        pop_values.append(probability)
     if not pop_values:
         return None, "station_forecast_missing_precip_probability"
 
@@ -1126,8 +1135,10 @@ def _build_daily_rain_prior(
             observation_window_local_end=window_end,
         )
         gridpoint_pop_values = [
-            min(1.0, max(0.0, value / 100.0))
+            probability
             for value in raw_pop_values
+            for probability in [_parse_probability_percent(value)]
+            if probability is not None
         ]
         raw_qpf_values_mm = _gridpoint_numeric_values_for_target_window(
             values=[
