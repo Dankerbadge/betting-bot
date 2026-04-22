@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import time
 from typing import Iterable
 
 
@@ -680,6 +681,28 @@ def test_quick_check_strict_fails_when_live_status_artifact_is_missing(tmp_path:
     assert "live_status_missing" in result.stdout
 
 
+def test_quick_check_non_strict_reports_missing_live_status_but_exits_zero(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    (output_dir / "health" / "live_status_latest.json").unlink(missing_ok=True)
+
+    env_file = tmp_path / "quick.env"
+    _write_env_file(env_file=env_file, output_dir=output_dir)
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_quick_script(
+        script_path=script_path,
+        env_file=env_file,
+        tool_dir=tool_dir,
+        strict=False,
+    )
+
+    assert result.returncode == 0
+    assert "live_status_missing" in result.stdout
+    assert "quick_result: YELLOW" in result.stdout
+
+
 def test_quick_check_strict_fails_when_alpha_summary_artifact_is_missing(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[1]
     output_dir = tmp_path / "out"
@@ -764,6 +787,80 @@ def test_quick_check_strict_fails_when_route_guard_artifact_is_stale(tmp_path: P
 
     assert result.returncode == 2
     assert "route_guard_stale" in result.stdout
+
+
+def test_quick_check_strict_uses_default_live_max_age_when_env_value_is_non_numeric(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    live_status_file = output_dir / "health" / "live_status_latest.json"
+    now = int(time.time())
+    os.utime(live_status_file, (now - 200, now - 200))
+
+    env_file = tmp_path / "quick.env"
+    _write_env_file(
+        env_file=env_file,
+        output_dir=output_dir,
+        extra_lines=(
+            "LIVE_STATUS_STRICT_MAX_AGE_SECONDS=not-a-number",
+        ),
+    )
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_quick_script(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 0
+    assert "live_status_stale" not in result.stdout
+
+
+def test_quick_check_strict_uses_default_alpha_max_age_when_env_value_is_non_numeric(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    alpha_summary_file = output_dir / "health" / "alpha_summary_latest.json"
+    now = int(time.time())
+    os.utime(alpha_summary_file, (now - 200, now - 200))
+
+    env_file = tmp_path / "quick.env"
+    _write_env_file(
+        env_file=env_file,
+        output_dir=output_dir,
+        extra_lines=(
+            "ALPHA_SUMMARY_STRICT_MAX_AGE_SECONDS=not-a-number",
+        ),
+    )
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_quick_script(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 0
+    assert "alpha_summary_stale" not in result.stdout
+
+
+def test_quick_check_strict_uses_default_route_guard_max_age_when_env_value_is_non_numeric(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    route_guard_file = output_dir / "health" / "discord_route_guard" / "discord_route_guard_latest.json"
+    now = int(time.time())
+    os.utime(route_guard_file, (now - 200, now - 200))
+
+    env_file = tmp_path / "quick.env"
+    _write_env_file(
+        env_file=env_file,
+        output_dir=output_dir,
+        extra_lines=(
+            "DISCORD_ROUTE_GUARD_STRICT_MAX_AGE_SECONDS=not-a-number",
+        ),
+    )
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_quick_script(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 0
+    assert "route_guard_stale" not in result.stdout
 
 
 def test_quick_check_strict_allows_missing_lane_state_when_not_required(tmp_path: Path) -> None:
