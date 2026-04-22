@@ -766,6 +766,7 @@ latest_discord_route_guard="$(ls -1t "$OUTPUT_DIR"/health/discord_route_guard/di
 if [[ -n "$latest_discord_route_guard" && "$HAS_JQ" == "1" ]]; then
   discord_route_guard_age_seconds="$(( $(date +%s) - $(date -r "$latest_discord_route_guard" +%s) ))"
   discord_route_guard_status="$(jq -r '.guard_status // "unknown"' "$latest_discord_route_guard" 2>/dev/null || echo "unknown")"
+  discord_route_guard_status="$(printf '%s' "${discord_route_guard_status:-unknown}" | tr '[:upper:]' '[:lower:]')"
   discord_route_guard_shared_route_group_count="$(jq -r '.shared_route_group_count // 0' "$latest_discord_route_guard" 2>/dev/null || echo "0")"
   discord_route_guard_route_hint="$(jq -r '.route_remediations[0].route_hint // .shared_route_groups[0].route_hint // ""' "$latest_discord_route_guard" 2>/dev/null || true)"
   discord_route_guard_required_thread_keys="$(jq -r '[.route_remediations[]?.required_thread_env_keys[]?] | unique | join(",")' "$latest_discord_route_guard" 2>/dev/null || true)"
