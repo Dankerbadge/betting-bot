@@ -52,6 +52,48 @@ class KalshiMicroLedgerTests(unittest.TestCase):
             self.assertEqual(summary["canceled_submissions_today"], 1)
             self.assertEqual(summary["live_submission_budget_remaining"], 3)
 
+    def test_partial_fill_then_cancel_counts_submission_and_filled_cost(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "ledger.csv"
+            captured_at = datetime(2026, 3, 27, 21, 0, tzinfo=timezone.utc)
+            trading_day = trading_day_for_timestamp(captured_at, "America/New_York")
+            rows = ledger_rows_from_attempts(
+                attempts=[
+                    {
+                        "market_ticker": "KXTEST-1",
+                        "plan_rank": 1,
+                        "planned_yes_bid_dollars": 0.2,
+                        "planned_yes_ask_dollars": 0.21,
+                        "estimated_entry_cost_dollars": 0.6,
+                        "filled_estimated_entry_cost_dollars": 0.4,
+                        "result": "partial_fill_then_canceled",
+                        "live_write_allowed": True,
+                        "submission_http_status": 201,
+                        "order_id": "order-1",
+                        "order_status": "canceled",
+                        "cancel_http_status": 200,
+                        "cancel_reduced_by_contracts": 1.0,
+                    }
+                ],
+                captured_at=captured_at,
+                trading_day=trading_day,
+                run_mode="live",
+                resting_hold_seconds=0.0,
+            )
+            append_trade_ledger(path, rows)
+            summary = summarize_trade_ledger(
+                path=path,
+                timezone_name="America/New_York",
+                trading_day=trading_day,
+                max_live_submissions_per_day=3,
+                max_live_cost_per_day_dollars=3.0,
+            )
+            self.assertEqual(summary["live_submissions_today"], 1)
+            self.assertEqual(summary["live_submitted_cost_today"], 0.4)
+            self.assertEqual(summary["live_submitted_cost_to_date"], 0.4)
+            self.assertEqual(summary["canceled_submissions_today"], 0)
+            self.assertEqual(summary["live_submission_budget_remaining"], 2)
+
     def test_dry_run_attempts_do_not_emit_trade_ledger_rows(self) -> None:
         captured_at = datetime(2026, 3, 27, 21, 0, tzinfo=timezone.utc)
         trading_day = trading_day_for_timestamp(captured_at, "America/New_York")

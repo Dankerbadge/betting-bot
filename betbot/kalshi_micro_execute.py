@@ -1482,6 +1482,18 @@ def _signed_kalshi_request(
     return final_status, final_payload
 
 
+def _crossed_top_of_book(top: dict[str, Any]) -> bool:
+    yes_bid = _parse_float(top.get("best_yes_bid_dollars"))
+    yes_ask = _parse_float(top.get("best_yes_ask_dollars"))
+    no_bid = _parse_float(top.get("best_no_bid_dollars"))
+    no_ask = _parse_float(top.get("best_no_ask_dollars"))
+    if isinstance(yes_bid, float) and isinstance(yes_ask, float) and yes_ask + 1e-9 < yes_bid:
+        return True
+    if isinstance(no_bid, float) and isinstance(no_ask, float) and no_ask + 1e-9 < no_bid:
+        return True
+    return False
+
+
 def _fetch_orderbook_top(
     *,
     env_data: dict[str, str],
@@ -1522,6 +1534,13 @@ def _fetch_orderbook_top(
         return result
 
     result.update(derive_top_of_book(orderbook))
+    if _crossed_top_of_book(result):
+        result["http_status"] = 409
+        result["error_type"] = "crossed_orderbook"
+        result["error"] = "crossed_orderbook_top"
+        result["crossed_orderbook"] = True
+        return result
+    result["crossed_orderbook"] = False
     return result
 
 
@@ -1651,39 +1670,100 @@ def _open_order_by_client_order_id(
     http_request_json: AuthenticatedRequester,
     sign_request: KalshiSigner,
 ) -> tuple[dict[str, Any] | None, int]:
-    cursor: str | None = None
     pages_scanned = 0
     normalized_client_order_id = _normalize_text(client_order_id)
     if not normalized_client_order_id:
         return None, pages_scanned
-    for _ in range(max(1, int(max_pages))):
-        query: dict[str, str] = {"status": "resting", "limit": "200"}
-        if cursor:
-            query["cursor"] = cursor
-        status_code, payload = _signed_kalshi_request(
-            env_data=env_data,
-            method="GET",
-            path_with_query=f"/portfolio/orders?{urlencode(query)}",
-            body=None,
-            timeout_seconds=timeout_seconds,
-            http_request_json=http_request_json,
-            sign_request=sign_request,
-        )
-        pages_scanned += 1
-        if status_code != 200 or not isinstance(payload, dict):
-            return None, pages_scanned
-        orders = payload.get("orders")
-        if isinstance(orders, list):
-            for order in orders:
-                if not isinstance(order, dict):
-                    continue
-                if _normalize_text(order.get("client_order_id")) == normalized_client_order_id:
-                    return order, pages_scanned
-        next_cursor = _normalize_text(payload.get("cursor"))
-        if not next_cursor:
-            break
-        cursor = next_cursor
+    for order_status in ("resting", "executed", "canceled"):
+        cursor: str | None = None
+        for _ in range(max(1, int(max_pages))):
+            query: dict[str, str] = {"status": order_status, "limit": "200"}
+            if cursor:
+                query["cursor"] = cursor
+            status_code, payload = _signed_kalshi_request(
+                env_data=env_data,
+                method="GET",
+                path_with_query=f"/portfolio/orders?{urlencode(query)}",
+                body=None,
+                timeout_seconds=timeout_seconds,
+                http_request_json=http_request_json,
+                sign_request=sign_request,
+            )
+            pages_scanned += 1
+            if status_code != 200 or not isinstance(payload, dict):
+                return None, pages_scanned
+            orders = payload.get("orders")
+            if isinstance(orders, list):
+                for order in orders:
+                    if not isinstance(order, dict):
+                        continue
+                    if _normalize_text(order.get("client_order_id")) == normalized_client_order_id:
+                        return order, pages_scanned
+            next_cursor = _normalize_text(payload.get("cursor"))
+            if not next_cursor:
+                break
+            cursor = next_cursor
     return None, pages_scanned
+
+
+def _parse_kill_switch_until(value: Any) -> datetime | None:
+    text = _normalize_text(value)
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _load_micro_execute_kill_switch_state(
+    *,
+    output_dir: str,
+    now: datetime,
+) -> dict[str, Any]:
+    state_path = Path(
+        _normalize_text(os.environ.get("BETBOT_KILL_SWITCH_STATE_JSON"))
+        or str(Path(output_dir) / "kalshi_live_kill_switch_state.json")
+    )
+    env_active = _coerce_bool(os.environ.get("BETBOT_KILL_SWITCH"))
+    env_reason = _normalize_text(os.environ.get("BETBOT_KILL_SWITCH_REASON")) or "env_kill_switch"
+    file_present = state_path.exists()
+    file_active = False
+    file_reason = ""
+    file_until_iso = ""
+    file_error = ""
+    if file_present:
+        try:
+            payload = json.loads(state_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            file_error = f"kill_switch_state_unreadable:{exc}"
+            payload = {}
+        payload = dict(payload) if isinstance(payload, dict) else {}
+        file_reason = _normalize_text(payload.get("kill_switch_reason"))
+        until_dt = _parse_kill_switch_until(payload.get("kill_switch_until"))
+        file_until_iso = until_dt.isoformat() if isinstance(until_dt, datetime) else ""
+        file_active_flag = bool(payload.get("kill_switch_active"))
+        if isinstance(until_dt, datetime):
+            file_active = bool(until_dt > now)
+        else:
+            file_active = bool(file_active_flag)
+    active = bool(env_active or file_active)
+    reason = env_reason if env_active else (file_reason or ("state_file_kill_switch" if file_active else ""))
+    source = "env" if env_active else ("state_file" if file_active else "none")
+    return {
+        "kill_switch_state_json": str(state_path),
+        "kill_switch_env_active": bool(env_active),
+        "kill_switch_file_present": bool(file_present),
+        "kill_switch_file_active": bool(file_active),
+        "kill_switch_active": bool(active),
+        "kill_switch_reason": reason,
+        "kill_switch_source": source,
+        "kill_switch_until": file_until_iso,
+        "kill_switch_state_error": file_error,
+    }
 
 
 def _historical_order_by_client_order_id(
@@ -2022,6 +2102,12 @@ def _write_attempts_csv(path: Path, attempts: list[dict[str, Any]]) -> None:
         "orderbook_http_status",
         "orderbook_error_type",
         "orderbook_error",
+        "crossed_orderbook",
+        "kill_switch_active",
+        "kill_switch_reason",
+        "kill_switch_source",
+        "kill_switch_until",
+        "kill_switch_state_error",
         "live_write_allowed",
         "allow_live_orders_requested",
         "run_mode",
@@ -2041,6 +2127,10 @@ def _write_attempts_csv(path: Path, attempts: list[dict[str, Any]]) -> None:
         "queue_position_error",
         "cancel_http_status",
         "cancel_reduced_by_contracts",
+        "cancel_filled_contracts_estimate",
+        "cancel_unfilled_contracts_estimate",
+        "filled_estimated_entry_cost_dollars",
+        "unfilled_estimated_entry_cost_dollars",
         "estimated_entry_cost_dollars",
         "estimated_entry_fee_dollars",
         "client_order_id",
@@ -2218,6 +2308,11 @@ def run_kalshi_micro_execute(
         bool(allow_live_orders)
         and _coerce_bool(os.environ.get("BETBOT_PRE_SUBMIT_SMOKE_MODE"))
     )
+    kill_switch_state = _load_micro_execute_kill_switch_state(
+        output_dir=output_dir,
+        now=captured_at,
+    )
+    kill_switch_active = bool(kill_switch_state.get("kill_switch_active"))
     ledger_summary_before = summarize_trade_ledger(
         path=ledger_path,
         timezone_name=timezone_name,
@@ -2248,6 +2343,7 @@ def run_kalshi_micro_execute(
         and safety_env_enabled
         and sports_excluded
         and live_execution_lock_acquired
+        and not kill_switch_active
         and live_submission_budget_remaining > 0
         and live_cost_remaining > 0
     )
@@ -2807,6 +2903,12 @@ def run_kalshi_micro_execute(
                 "orderbook_http_status": orderbook.get("http_status"),
                 "orderbook_error_type": orderbook.get("error_type", ""),
                 "orderbook_error": orderbook.get("error", ""),
+                "crossed_orderbook": bool(orderbook.get("crossed_orderbook")),
+                "kill_switch_active": kill_switch_active,
+                "kill_switch_reason": str(kill_switch_state.get("kill_switch_reason") or ""),
+                "kill_switch_source": str(kill_switch_state.get("kill_switch_source") or ""),
+                "kill_switch_until": str(kill_switch_state.get("kill_switch_until") or ""),
+                "kill_switch_state_error": str(kill_switch_state.get("kill_switch_state_error") or ""),
                 "live_write_allowed": live_write_allowed,
                 "allow_live_orders_requested": bool(allow_live_orders),
                 "pre_submit_smoke_mode": pre_submit_smoke_mode,
@@ -2828,6 +2930,10 @@ def run_kalshi_micro_execute(
                 "queue_position_error": "",
                 "cancel_http_status": "",
                 "cancel_reduced_by_contracts": "",
+                "cancel_filled_contracts_estimate": "",
+                "cancel_unfilled_contracts_estimate": "",
+                "filled_estimated_entry_cost_dollars": "",
+                "unfilled_estimated_entry_cost_dollars": "",
                 "estimated_entry_cost_dollars": plan.get("estimated_entry_cost_dollars", ""),
                 "estimated_entry_fee_dollars": plan.get("estimated_entry_fee_dollars", ""),
                 "api_latency_ms": orderbook_latency_ms,
@@ -2997,6 +3103,8 @@ def run_kalshi_micro_execute(
                     attempt["result"] = "blocked_by_safety_flag"
                 elif allow_live_orders and not live_execution_lock_acquired:
                     attempt["result"] = "blocked_concurrent_live_execution"
+                elif allow_live_orders and kill_switch_active:
+                    attempt["result"] = "blocked_kill_switch"
                 elif (
                     allow_live_orders
                     and bool(order_group_auto_create)
@@ -3343,8 +3451,62 @@ def run_kalshi_micro_execute(
                     )
                     attempt["cancel_http_status"] = cancel_status
                     if cancel_status == 200 and isinstance(cancel_payload, dict):
-                        attempt["cancel_reduced_by_contracts"] = _parse_float(cancel_payload.get("reduced_by_fp")) or ""
-                        attempt["result"] = "submitted_then_canceled"
+                        reduced_by_contracts = _parse_float(cancel_payload.get("reduced_by_fp"))
+                        attempt["cancel_reduced_by_contracts"] = (
+                            reduced_by_contracts
+                            if isinstance(reduced_by_contracts, float)
+                            else ""
+                        )
+                        fill_count_contracts = _parse_float(cancel_payload.get("fill_count_fp"))
+                        nested_order = cancel_payload.get("order")
+                        if not isinstance(fill_count_contracts, float) and isinstance(nested_order, dict):
+                            fill_count_contracts = _parse_float(nested_order.get("fill_count_fp"))
+                        planned_contracts = _parse_float(attempt.get("planned_contracts"))
+                        if not isinstance(planned_contracts, float) or planned_contracts <= 0.0:
+                            planned_contracts = _parse_float(payload.get("count"))
+                        unfilled_contracts: float | None = None
+                        filled_contracts: float | None = None
+                        if isinstance(planned_contracts, float) and planned_contracts > 0.0:
+                            if isinstance(fill_count_contracts, float):
+                                filled_contracts = max(0.0, min(planned_contracts, fill_count_contracts))
+                                unfilled_contracts = max(0.0, planned_contracts - filled_contracts)
+                            elif isinstance(reduced_by_contracts, float):
+                                unfilled_contracts = max(0.0, min(planned_contracts, reduced_by_contracts))
+                                filled_contracts = max(0.0, planned_contracts - unfilled_contracts)
+                        elif isinstance(fill_count_contracts, float):
+                            filled_contracts = max(0.0, fill_count_contracts)
+                        if isinstance(unfilled_contracts, float):
+                            attempt["cancel_unfilled_contracts_estimate"] = round(unfilled_contracts, 6)
+                        if isinstance(filled_contracts, float):
+                            attempt["cancel_filled_contracts_estimate"] = round(filled_contracts, 6)
+
+                        filled_estimated_entry_cost: float | None = None
+                        unfilled_estimated_entry_cost: float | None = None
+                        if (
+                            isinstance(estimated_entry_cost, float)
+                            and isinstance(planned_contracts, float)
+                            and planned_contracts > 0.0
+                            and isinstance(unfilled_contracts, float)
+                        ):
+                            estimated_cost_per_contract = estimated_entry_cost / planned_contracts
+                            unfilled_estimated_entry_cost = round(
+                                max(0.0, min(estimated_entry_cost, estimated_cost_per_contract * unfilled_contracts)),
+                                6,
+                            )
+                            filled_estimated_entry_cost = round(
+                                max(0.0, estimated_entry_cost - unfilled_estimated_entry_cost),
+                                6,
+                            )
+                            attempt["unfilled_estimated_entry_cost_dollars"] = unfilled_estimated_entry_cost
+                            attempt["filled_estimated_entry_cost_dollars"] = filled_estimated_entry_cost
+
+                        partial_fill_then_canceled = (
+                            isinstance(filled_contracts, float) and filled_contracts > 1e-9
+                        )
+                        if partial_fill_then_canceled:
+                            attempt["result"] = "partial_fill_then_canceled"
+                        else:
+                            attempt["result"] = "submitted_then_canceled"
                         attempt["order_status"] = "canceled"
                         _append_journal_event("cancel_confirmed", attempt, status="canceled")
                         _append_book_snapshot_event(
@@ -3352,13 +3514,22 @@ def run_kalshi_micro_execute(
                             snapshot_phase="after_cancel_confirmed",
                             snapshot=orderbook,
                         )
-                        live_submission_budget_remaining = min(
-                            live_submission_budget_total,
-                            live_submission_budget_remaining + 1,
-                        )
-                        if isinstance(estimated_entry_cost, float):
+                        if attempt["result"] == "submitted_then_canceled":
+                            live_submission_budget_remaining = min(
+                                live_submission_budget_total,
+                                live_submission_budget_remaining + 1,
+                            )
+                        restored_cost = 0.0
+                        if attempt["result"] == "submitted_then_canceled":
+                            if isinstance(unfilled_estimated_entry_cost, float):
+                                restored_cost = unfilled_estimated_entry_cost
+                            elif isinstance(estimated_entry_cost, float):
+                                restored_cost = estimated_entry_cost
+                        elif isinstance(unfilled_estimated_entry_cost, float):
+                            restored_cost = unfilled_estimated_entry_cost
+                        if restored_cost > 0.0:
                             live_cost_remaining = round(
-                                min(live_cost_budget_total, live_cost_remaining + estimated_entry_cost),
+                                min(live_cost_budget_total, live_cost_remaining + restored_cost),
                                 4,
                             )
                     else:
@@ -3452,6 +3623,7 @@ def run_kalshi_micro_execute(
     blocked_submission_budget_attempts = sum(1 for attempt in attempts if attempt["result"] == "blocked_submission_budget")
     blocked_live_cost_cap_attempts = sum(1 for attempt in attempts if attempt["result"] == "blocked_live_cost_cap")
     blocked_execution_policy_attempts = sum(1 for attempt in attempts if attempt["result"] == "blocked_execution_policy")
+    blocked_kill_switch_attempts = sum(1 for attempt in attempts if attempt["result"] == "blocked_kill_switch")
     pre_submit_smoke_blocked_attempts = sum(
         1 for attempt in attempts if attempt["result"] == "blocked_pre_submit_smoke_mode"
     )
@@ -3465,6 +3637,8 @@ def run_kalshi_micro_execute(
         status = "blocked_by_safety_flag"
     elif allow_live_orders and not live_execution_lock_acquired:
         status = "blocked_concurrent_live_execution"
+    elif allow_live_orders and kill_switch_active:
+        status = "blocked_kill_switch"
     elif (
         allow_live_orders
         and bool(order_group_auto_create)
@@ -3515,12 +3689,19 @@ def run_kalshi_micro_execute(
         status = "needs_funding"
     elif allow_live_orders:
         duplicate_block_attempts = sum(1 for attempt in attempts if attempt["result"] == "blocked_duplicate_open_order")
-        if attempts and all(attempt["result"] == "submitted_then_canceled" for attempt in attempts):
-            status = "live_submitted_and_canceled"
+        if attempts and all(
+            attempt["result"] in {"submitted_then_canceled", "partial_fill_then_canceled"} for attempt in attempts
+        ):
+            if any(attempt["result"] == "partial_fill_then_canceled" for attempt in attempts):
+                status = "live_partial_fill_then_canceled"
+            else:
+                status = "live_submitted_and_canceled"
         elif attempts and all(attempt["result"] == "submitted_existing_client_order_id" for attempt in attempts):
             status = "live_recovered_existing_orders"
         elif any(attempt["result"] == "submitted" for attempt in attempts):
             status = "live_submitted"
+        elif any(attempt["result"] == "partial_fill_then_canceled" for attempt in attempts):
+            status = "live_partial_fill_then_canceled"
         elif any(attempt["result"] == "submitted_existing_client_order_id" for attempt in attempts):
             status = "live_submitted"
         elif any(attempt["result"] == "submit_failed" for attempt in attempts):
@@ -3529,6 +3710,12 @@ def run_kalshi_micro_execute(
             status = "live_orderbook_unavailable"
         elif any(attempt["result"] == "janitor_cancel_failed" for attempt in attempts):
             status = "live_janitor_cancel_failed"
+        elif blocked_kill_switch_attempts > 0 and (
+            blocked_kill_switch_attempts + duplicate_block_attempts == len(attempts)
+        ):
+            status = "blocked_kill_switch"
+        elif blocked_kill_switch_attempts > 0:
+            status = "live_partial_kill_switch_blocked"
         elif blocked_submission_budget_attempts > 0 and (
             blocked_submission_budget_attempts + duplicate_block_attempts == len(attempts)
         ):
@@ -3642,6 +3829,13 @@ def run_kalshi_micro_execute(
         "kalshi_env": (env_data.get("KALSHI_ENV") or "").strip().lower(),
         "allow_live_orders": allow_live_orders,
         "safety_env_enabled": safety_env_enabled,
+        "kill_switch_active": kill_switch_active,
+        "kill_switch_reason": kill_switch_state.get("kill_switch_reason"),
+        "kill_switch_source": kill_switch_state.get("kill_switch_source"),
+        "kill_switch_until": kill_switch_state.get("kill_switch_until"),
+        "kill_switch_state_json": kill_switch_state.get("kill_switch_state_json"),
+        "kill_switch_state_error": kill_switch_state.get("kill_switch_state_error"),
+        "kill_switch": kill_switch_state,
         "pre_submit_smoke_mode": pre_submit_smoke_mode,
         "sports_excluded": sports_excluded,
         "cancel_resting_immediately": cancel_resting_immediately,
@@ -3715,6 +3909,10 @@ def run_kalshi_micro_execute(
         "blocked_submission_budget_attempts": blocked_submission_budget_attempts,
         "blocked_live_cost_cap_attempts": blocked_live_cost_cap_attempts,
         "blocked_execution_policy_attempts": blocked_execution_policy_attempts,
+        "blocked_kill_switch_attempts": blocked_kill_switch_attempts,
+        "partial_fill_then_canceled_attempts": sum(
+            1 for attempt in attempts if attempt.get("result") == "partial_fill_then_canceled"
+        ),
         "submission_conflict_recovered_attempts": sum(
             1 for attempt in attempts if bool(attempt.get("submission_conflict_recovered"))
         ),

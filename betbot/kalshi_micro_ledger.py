@@ -33,6 +33,7 @@ REAL_ACTIVITY_RESULTS = {
     "submit_failed",
     "submitted",
     "submitted_then_canceled",
+    "partial_fill_then_canceled",
     "cancel_failed",
 }
 
@@ -228,8 +229,13 @@ def ledger_rows_from_attempts(
         if run_mode != "live" or result not in REAL_ACTIVITY_RESULTS:
             continue
         # Do not consume the live-cap budget for maker tests that were submitted
-        # and then explicitly canceled.
-        counts_toward_live_submission = result == "submitted"
+        # and then explicitly canceled without any fill.
+        counts_toward_live_submission = result in {"submitted", "partial_fill_then_canceled"}
+        estimated_entry_cost_dollars = attempt.get("estimated_entry_cost_dollars", "")
+        if result == "partial_fill_then_canceled":
+            filled_entry_cost = attempt.get("filled_estimated_entry_cost_dollars")
+            if filled_entry_cost not in (None, ""):
+                estimated_entry_cost_dollars = filled_entry_cost
         rows.append(
             {
                 "recorded_at": captured_at.isoformat(),
@@ -240,7 +246,7 @@ def ledger_rows_from_attempts(
                 "plan_rank": attempt.get("plan_rank", ""),
                 "planned_yes_bid_dollars": attempt.get("planned_yes_bid_dollars", ""),
                 "planned_yes_ask_dollars": attempt.get("planned_yes_ask_dollars", ""),
-                "estimated_entry_cost_dollars": attempt.get("estimated_entry_cost_dollars", ""),
+                "estimated_entry_cost_dollars": estimated_entry_cost_dollars,
                 "result": result,
                 "submission_http_status": attempt.get("submission_http_status", ""),
                 "order_id": attempt.get("order_id", ""),
