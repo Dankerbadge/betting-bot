@@ -2750,6 +2750,138 @@ blocker_audit_headline = (
     if isinstance(blocker_audit.get("headline"), dict)
     else {}
 )
+blocker_recovery_effectiveness = (
+    blocker_audit.get("recovery_advisor_effectiveness")
+    if isinstance(blocker_audit.get("recovery_advisor_effectiveness"), dict)
+    else {}
+)
+blocker_recovery_data_quality = (
+    blocker_audit.get("data_quality")
+    if isinstance(blocker_audit.get("data_quality"), dict)
+    else {}
+)
+recovery_effectiveness_status = _normalize(blocker_recovery_effectiveness.get("status"))
+if not recovery_effectiveness_status:
+    recovery_effectiveness_status = _normalize(
+        blocker_recovery_data_quality.get("recovery_advisor_effectiveness_artifact_status")
+    )
+recovery_effectiveness_gap_detected = _parse_bool(
+    blocker_recovery_effectiveness.get("gap_detected"),
+    _parse_bool(
+        blocker_recovery_data_quality.get("recovery_advisor_effectiveness_gap_detected"),
+        False,
+    ),
+)
+recovery_effectiveness_gap_reason = _normalize(
+    blocker_recovery_effectiveness.get("gap_reason")
+) or _normalize(
+    blocker_recovery_data_quality.get("recovery_advisor_effectiveness_gap_reason")
+)
+recovery_effectiveness_stale = _parse_bool(
+    blocker_recovery_effectiveness.get("stale"),
+    _parse_bool(
+        blocker_recovery_data_quality.get("recovery_advisor_effectiveness_stale"),
+        False,
+    ),
+)
+recovery_effectiveness_file_age_seconds = _parse_float(
+    blocker_recovery_effectiveness.get("file_age_seconds")
+)
+if not isinstance(recovery_effectiveness_file_age_seconds, float):
+    recovery_effectiveness_file_age_seconds = _parse_float(
+        blocker_recovery_data_quality.get("recovery_advisor_effectiveness_file_age_seconds")
+    )
+recovery_effectiveness_stale_threshold_seconds = _parse_float(
+    blocker_recovery_effectiveness.get("stale_threshold_seconds")
+)
+if not isinstance(recovery_effectiveness_stale_threshold_seconds, float):
+    recovery_effectiveness_stale_threshold_seconds = _parse_float(
+        blocker_recovery_data_quality.get("recovery_advisor_effectiveness_stale_threshold_seconds")
+    )
+recovery_effectiveness_route_demotion_active = _parse_bool(
+    blocker_recovery_effectiveness.get("route_demotion_active"),
+    _parse_bool(
+        blocker_recovery_data_quality.get("recovery_advisor_effectiveness_route_demotion_active"),
+        False,
+    ),
+)
+recovery_effectiveness_strict_required_raw: Any = None
+if "strict_required" in blocker_recovery_effectiveness:
+    recovery_effectiveness_strict_required_raw = blocker_recovery_effectiveness.get("strict_required")
+elif "recovery_advisor_effectiveness_strict_required" in blocker_recovery_data_quality:
+    recovery_effectiveness_strict_required_raw = blocker_recovery_data_quality.get(
+        "recovery_advisor_effectiveness_strict_required"
+    )
+recovery_effectiveness_strict_required_present = recovery_effectiveness_strict_required_raw is not None
+recovery_effectiveness_strict_required = (
+    _parse_bool(recovery_effectiveness_strict_required_raw)
+    if recovery_effectiveness_strict_required_present
+    else None
+)
+recovery_effectiveness_source_line = _normalize(blocker_recovery_effectiveness.get("line"))
+recovery_effectiveness_available = bool(blocker_recovery_effectiveness) or any(
+    key in blocker_recovery_data_quality
+    for key in (
+        "recovery_advisor_effectiveness_artifact_status",
+        "recovery_advisor_effectiveness_gap_detected",
+        "recovery_advisor_effectiveness_gap_reason",
+        "recovery_advisor_effectiveness_stale",
+        "recovery_advisor_effectiveness_file_age_seconds",
+        "recovery_advisor_effectiveness_stale_threshold_seconds",
+        "recovery_advisor_effectiveness_strict_required",
+        "recovery_advisor_effectiveness_route_demotion_active",
+    )
+)
+recovery_effectiveness_strict_gap_active = bool(
+    recovery_effectiveness_gap_detected and recovery_effectiveness_strict_required is True
+)
+recovery_effectiveness_gap_reason_human = (
+    recovery_effectiveness_gap_reason.replace("_", " ") if recovery_effectiveness_gap_reason else "unspecified"
+)
+recovery_effectiveness_status_label = (
+    recovery_effectiveness_status.replace("_", " ").lower()
+    if recovery_effectiveness_status
+    else "unknown"
+)
+recovery_effectiveness_age_label = _fmt_age_compact(recovery_effectiveness_file_age_seconds)
+recovery_effectiveness_threshold_label = _fmt_age_compact(recovery_effectiveness_stale_threshold_seconds)
+recovery_effectiveness_demotion_label = (
+    "on" if recovery_effectiveness_route_demotion_active else "off"
+)
+if recovery_effectiveness_strict_gap_active:
+    recovery_effectiveness_concise_line = (
+        "Recovery effectiveness: STRICT GAP ACTIVE "
+        f"({recovery_effectiveness_gap_reason_human}); "
+        f"evidence age {recovery_effectiveness_age_label} "
+        f"(limit {recovery_effectiveness_threshold_label}); "
+        f"route demotion {recovery_effectiveness_demotion_label}."
+    )
+elif recovery_effectiveness_gap_detected:
+    strict_label = (
+        "on"
+        if recovery_effectiveness_strict_required is True
+        else ("off" if recovery_effectiveness_strict_required is False else "unknown")
+    )
+    recovery_effectiveness_concise_line = (
+        "Recovery effectiveness: gap detected "
+        f"({recovery_effectiveness_gap_reason_human}); "
+        f"strict {strict_label}; "
+        f"route demotion {recovery_effectiveness_demotion_label}."
+    )
+elif recovery_effectiveness_available:
+    stale_label = "stale" if recovery_effectiveness_stale else "fresh"
+    recovery_effectiveness_concise_line = (
+        "Recovery effectiveness: "
+        f"{recovery_effectiveness_status_label} | "
+        f"gap no | evidence {stale_label} | "
+        f"route demotion {recovery_effectiveness_demotion_label}."
+    )
+else:
+    recovery_effectiveness_concise_line = "Recovery effectiveness: unavailable."
+recovery_effectiveness_payload_line = _clip_text_plain(
+    recovery_effectiveness_source_line or recovery_effectiveness_concise_line,
+    180,
+)
 settlement_refresh_plan = (
     live_status.get("settlement_refresh_plan")
     if isinstance(live_status.get("settlement_refresh_plan"), dict)
@@ -9223,6 +9355,7 @@ simple_concise_lines: list[str] = [
         f"top3 {top3_blockers_compact_text} | "
         f"freshness {stale_rate*100.0:.2f}% | overlap {overlap_rate*100.0:.2f}%"
     ),
+    recovery_effectiveness_concise_line,
     (
         "Limiting factor: "
         f"{display_limiting_factor.replace('_', ' ')}"
@@ -9433,6 +9566,7 @@ if len(simple_concise_lines) > concise_max_lines:
         "Confidence:",
         "Settled confidence",
         "12h flow:",
+        "Recovery effectiveness:",
         "Bankroll sim ($",
         "Check-in PnL (counterfactual):",
         "Scenario check-in PnL (stress replay):",
@@ -10980,6 +11114,31 @@ payload = {
     },
     "top_blockers": [{"reason": key, "count": count} for key, count in display_top_blockers[:5]],
     "top_blockers_raw": [{"reason": key, "count": count} for key, count in top_blockers[:5]],
+    "recovery_effectiveness_watchdog": {
+        "status": recovery_effectiveness_status or None,
+        "available": bool(recovery_effectiveness_available),
+        "gap_detected": bool(recovery_effectiveness_gap_detected),
+        "gap_reason": recovery_effectiveness_gap_reason or None,
+        "stale": bool(recovery_effectiveness_stale),
+        "file_age_seconds": (
+            round(float(recovery_effectiveness_file_age_seconds), 6)
+            if isinstance(recovery_effectiveness_file_age_seconds, float)
+            else None
+        ),
+        "stale_threshold_seconds": (
+            round(float(recovery_effectiveness_stale_threshold_seconds), 6)
+            if isinstance(recovery_effectiveness_stale_threshold_seconds, float)
+            else None
+        ),
+        "strict_required": (
+            bool(recovery_effectiveness_strict_required)
+            if recovery_effectiveness_strict_required_present
+            else None
+        ),
+        "strict_gap_active": bool(recovery_effectiveness_strict_gap_active),
+        "route_demotion_active": bool(recovery_effectiveness_route_demotion_active),
+        "line": recovery_effectiveness_payload_line or None,
+    },
     "approval_quality_risk": {
         "active": bool(quality_risk_alert_active),
         "level": quality_risk_alert_level,
@@ -12195,6 +12354,18 @@ def _to_int(value: object, default: int = 0) -> int:
     except Exception:
         return default
 
+def _to_bool(value: object) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    text = _normalize(value).lower()
+    if not text:
+        return None
+    if text in {"1", "true", "yes", "y", "on"}:
+        return True
+    if text in {"0", "false", "no", "n", "off"}:
+        return False
+    return None
+
 def _fmt_pct(value: object) -> str:
     parsed = _to_float(value)
     if parsed is None:
@@ -12258,6 +12429,61 @@ artifacts = payload.get("artifact_writes") if isinstance(payload.get("artifact_w
 artifact_ok = all(bool(v) for v in artifacts.values()) if artifacts else True
 msg_quality = payload.get("message_quality_checks") if isinstance(payload.get("message_quality_checks"), dict) else {}
 msg_quality_ok = bool(msg_quality.get("overall_pass"))
+recovery_watchdog = (
+    payload.get("recovery_effectiveness_watchdog")
+    if isinstance(payload.get("recovery_effectiveness_watchdog"), dict)
+    else {}
+)
+recovery_watchdog_status = _normalize(recovery_watchdog.get("status")).lower() or "unknown"
+recovery_watchdog_gap_detected = bool(_to_bool(recovery_watchdog.get("gap_detected")) is True)
+recovery_watchdog_gap_reason = _normalize(recovery_watchdog.get("gap_reason"))
+recovery_watchdog_stale = bool(_to_bool(recovery_watchdog.get("stale")) is True)
+recovery_watchdog_file_age_seconds = _to_float(recovery_watchdog.get("file_age_seconds"))
+recovery_watchdog_stale_threshold_seconds = _to_float(
+    recovery_watchdog.get("stale_threshold_seconds")
+)
+recovery_watchdog_strict_required = _to_bool(recovery_watchdog.get("strict_required"))
+recovery_watchdog_route_demotion_active = bool(
+    _to_bool(recovery_watchdog.get("route_demotion_active")) is True
+)
+recovery_watchdog_compact_line = _normalize(recovery_watchdog.get("line"))
+recovery_watchdog_strict_gap_active = bool(
+    recovery_watchdog_gap_detected and recovery_watchdog_strict_required is True
+)
+if recovery_watchdog_strict_gap_active:
+    reason_text = recovery_watchdog_gap_reason.replace("_", " ") if recovery_watchdog_gap_reason else "unspecified"
+    recovery_ops_line = (
+        "Recovery effectiveness: STRICT GAP "
+        f"({reason_text}) | demotion {'on' if recovery_watchdog_route_demotion_active else 'off'} | "
+        f"evidence {_fmt_secs(recovery_watchdog_file_age_seconds)}/{_fmt_secs(recovery_watchdog_stale_threshold_seconds)}."
+    )
+elif recovery_watchdog_gap_detected:
+    reason_text = recovery_watchdog_gap_reason.replace("_", " ") if recovery_watchdog_gap_reason else "unspecified"
+    strict_text = (
+        "on"
+        if recovery_watchdog_strict_required is True
+        else ("off" if recovery_watchdog_strict_required is False else "unknown")
+    )
+    recovery_ops_line = (
+        "Recovery effectiveness: gap detected "
+        f"({reason_text}) | strict {strict_text} | "
+        f"demotion {'on' if recovery_watchdog_route_demotion_active else 'off'}."
+    )
+elif recovery_watchdog_compact_line:
+    recovery_ops_line = (
+        recovery_watchdog_compact_line
+        if recovery_watchdog_compact_line.startswith("Recovery effectiveness:")
+        else f"Recovery effectiveness: {recovery_watchdog_compact_line}"
+    )
+elif recovery_watchdog:
+    stale_text = "stale" if recovery_watchdog_stale else "fresh"
+    recovery_ops_line = (
+        "Recovery effectiveness: "
+        f"{recovery_watchdog_status} | gap no | "
+        f"evidence {stale_text} | demotion {'on' if recovery_watchdog_route_demotion_active else 'off'}."
+    )
+else:
+    recovery_ops_line = "Recovery effectiveness: unavailable."
 
 output_dir = path.parent.parent
 health_dir = output_dir / "health"
@@ -12385,6 +12611,7 @@ ops_lines = [
     f"Health: {health_status} (reason: {health_reason})",
     f"Flow: intents {intents_total:,} | approved {intents_approved:,} ({approval_rate}) | planned {planned_orders:,}",
     f"Blockers: top {top_blocker_reason} ({top_blocker_count:,}) | stale {stale_rate}",
+    recovery_ops_line,
     decision_matrix_lane_line,
     decision_matrix_lane_streak_line,
     (

@@ -14,6 +14,7 @@ from betbot.live_smoke import (
     KALSHI_API_ROOTS,
     _http_get_json,
     _kalshi_sign_request,
+    build_provider_artifact_snapshot,
     kalshi_api_root_candidates,
 )
 from betbot.onboarding import _is_placeholder, _parse_env_file
@@ -210,12 +211,21 @@ def run_live_snapshot(
     provider = (data.get("ODDS_PROVIDER") or "therundown").strip().lower()
     summary["odds_provider"] = provider
     if provider != "therundown":
-        failures.append(
-            {
-                "component": "odds_provider",
-                "message": f"live-snapshot does not support ODDS_PROVIDER={provider!r} yet",
-            }
+        provider_snapshot = build_provider_artifact_snapshot(
+            provider=provider or "unknown",
+            output_dir=output_dir,
         )
+        summary["odds_provider_snapshot"] = provider_snapshot
+        if not bool(provider_snapshot.get("ready_for_smoke")):
+            failures.append(
+                {
+                    "component": "odds_provider",
+                    "message": (
+                        "Provider artifact health failed: "
+                        f"{provider_snapshot.get('failure_reason') or 'provider_artifact_unhealthy'}"
+                    ),
+                }
+            )
     else:
         api_key = data.get("THERUNDOWN_API_KEY")
         base_url = data.get("THERUNDOWN_BASE_URL") or "https://therundown.io/api/v2"

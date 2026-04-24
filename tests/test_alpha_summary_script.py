@@ -718,10 +718,93 @@ def test_alpha_summary_boosts_priority_for_measured_12h_regression(tmp_path: Pat
     assert int(tracking.get("measured_delta_regressing_count") or 0) >= 1
 
 
+def test_alpha_summary_concise_surfaces_recovery_effectiveness_watchdog_strict_gap(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    out_dir = tmp_path / "out"
+    checkpoints_dir = out_dir / "checkpoints"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    checkpoints_dir.mkdir(parents=True, exist_ok=True)
+
+    now_utc = datetime.now(timezone.utc) - timedelta(minutes=2)
+    token = now_utc.strftime("%Y%m%d_%H%M%S")
+    blocker_audit_path = checkpoints_dir / f"blocker_audit_{token}_latest.json"
+    blocker_audit_path.write_text(
+        json.dumps(
+            {
+                "status": "ready",
+                "captured_at": now_utc.isoformat(),
+                "recovery_advisor_effectiveness": {
+                    "status": "degraded",
+                    "gap_detected": True,
+                    "gap_reason": "recovery_effectiveness_summary_stale",
+                    "stale": True,
+                    "file_age_seconds": 14400,
+                    "stale_threshold_seconds": 7200,
+                    "strict_required": True,
+                    "route_demotion_active": True,
+                    "line": (
+                        "Recovery advisor effectiveness: strict gap active "
+                        "(recovery_effectiveness_summary_stale)."
+                    ),
+                },
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    now_epoch = now_utc.timestamp()
+    os.utime(blocker_audit_path, (now_epoch, now_epoch))
+
+    env_file = tmp_path / "alpha_summary.env"
+    env_file.write_text(
+        "\n".join(
+            [
+                f'BETBOT_ROOT="{root}"',
+                f'OUTPUT_DIR="{out_dir}"',
+                "ALPHA_SUMMARY_SEND_WEBHOOK=0",
+                "ALPHA_SUMMARY_DISCORD_MODE=concise",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    script = root / "infra" / "digitalocean" / "run_temperature_alpha_summary.sh"
+    subprocess.run(
+        ["/bin/bash", str(script), str(env_file)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    payload = json.loads((out_dir / "health" / "alpha_summary_latest.json").read_text(encoding="utf-8"))
+    concise = (payload.get("message_summary", {}) or {}).get("concise", "")
+    recovery_line = next((line for line in concise.splitlines() if line.startswith("Recovery effectiveness:")), "")
+    assert recovery_line, "expected recovery effectiveness line in concise summary"
+    assert "STRICT GAP ACTIVE" in recovery_line
+    assert "route demotion on" in recovery_line
+
+    watchdog = payload.get("recovery_effectiveness_watchdog", {}) or {}
+    assert watchdog.get("status") == "degraded"
+    assert watchdog.get("gap_detected") is True
+    assert watchdog.get("gap_reason") == "recovery_effectiveness_summary_stale"
+    assert watchdog.get("stale") is True
+    assert float(watchdog.get("file_age_seconds") or 0.0) == 14400.0
+    assert float(watchdog.get("stale_threshold_seconds") or 0.0) == 7200.0
+    assert watchdog.get("strict_required") is True
+    assert watchdog.get("route_demotion_active") is True
+    assert isinstance(watchdog.get("line"), str)
+    assert "strict gap active" in str(watchdog.get("line")).lower()
+
+
 def test_alpha_summary_ops_webhook_includes_decision_matrix_lane_line(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[1]
     out_dir = tmp_path / "out"
+    checkpoints_dir = out_dir / "checkpoints"
     out_dir.mkdir(parents=True, exist_ok=True)
+    checkpoints_dir.mkdir(parents=True, exist_ok=True)
     health_dir = out_dir / "health"
     health_dir.mkdir(parents=True, exist_ok=True)
 
@@ -758,6 +841,26 @@ def test_alpha_summary_ops_webhook_includes_decision_matrix_lane_line(tmp_path: 
                 "degraded_streak_threshold": 3,
                 "degraded_streak_notify_every": 3,
                 "last_notify_reason": "degraded_streak",
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    blocker_audit_path = checkpoints_dir / "blocker_audit_ops_latest.json"
+    blocker_audit_path.write_text(
+        json.dumps(
+            {
+                "status": "ready",
+                "recovery_advisor_effectiveness": {
+                    "status": "degraded",
+                    "gap_detected": True,
+                    "gap_reason": "recovery_effectiveness_summary_missing",
+                    "stale": False,
+                    "file_age_seconds": 3600,
+                    "stale_threshold_seconds": 1800,
+                    "strict_required": True,
+                    "route_demotion_active": True,
+                },
             },
             indent=2,
         ),
@@ -823,6 +926,7 @@ def test_alpha_summary_ops_webhook_includes_decision_matrix_lane_line(tmp_path: 
     assert "Decision matrix lane: bootstrap pass" in message_text
     assert "Decision matrix degraded streak: 4 run(s)" in message_text
     assert "[streak alert fired]" in message_text
+    assert "Recovery effectiveness: STRICT GAP" in message_text
 
 
 def test_alpha_summary_flags_critical_parse_error_and_caps_confidence(tmp_path: Path) -> None:

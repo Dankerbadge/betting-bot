@@ -7,6 +7,9 @@ if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
 fi
 
 REPO_DIR="${1:-$HOME/betting-bot}"
+BETBOT_ETC_DIR="${BETBOT_ETC_DIR:-/etc/betbot}"
+TEMPERATURE_ENV_PATH="$BETBOT_ETC_DIR/temperature-shadow.env"
+ACCOUNT_ENV_PATH="$BETBOT_ETC_DIR/account_onboarding.local.env"
 
 sudo apt-get update
 sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
@@ -28,24 +31,26 @@ pip install --upgrade pip wheel
 pip install -r requirements.txt
 pip install .
 
-sudo mkdir -p /etc/betbot
-sudo chmod 755 /etc/betbot
+sudo mkdir -p "$BETBOT_ETC_DIR"
+sudo chmod 755 "$BETBOT_ETC_DIR"
 
-if [[ ! -f /etc/betbot/temperature-shadow.env ]]; then
-  sudo cp infra/digitalocean/temperature-shadow.env.example /etc/betbot/temperature-shadow.env
-  sudo chown root:root /etc/betbot/temperature-shadow.env
-  sudo chmod 640 /etc/betbot/temperature-shadow.env
-  sudo python3 - "$REPO_DIR" <<'PY'
+if [[ ! -f "$TEMPERATURE_ENV_PATH" ]]; then
+  sudo cp infra/digitalocean/temperature-shadow.env.example "$TEMPERATURE_ENV_PATH"
+  sudo chown root:root "$TEMPERATURE_ENV_PATH"
+  sudo chmod 640 "$TEMPERATURE_ENV_PATH"
+  sudo python3 - "$REPO_DIR" "$TEMPERATURE_ENV_PATH" "$ACCOUNT_ENV_PATH" <<'PY'
 from pathlib import Path
 import sys
 
 repo_dir = Path(sys.argv[1]).resolve().as_posix()
-env_path = Path("/etc/betbot/temperature-shadow.env")
+env_path = Path(sys.argv[2])
+account_env_file = Path(sys.argv[3]).as_posix()
 
 updates = {
     "BETBOT_ROOT": repo_dir,
     "OUTPUT_DIR": f"{repo_dir}/outputs/pilot_candidate_do",
-    "BETBOT_ENV_FILE": "/etc/betbot/account_onboarding.local.env",
+    "BETBOT_ENV_FILE": account_env_file,
+    "RECOVERY_REQUIRE_EFFECTIVENESS_SUMMARY": "1",
 }
 
 lines = env_path.read_text(encoding="utf-8").splitlines()
@@ -68,13 +73,13 @@ for key, value in updates.items():
         new_lines.append(f"{key}={value}")
 env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
 PY
-  echo "Created /etc/betbot/temperature-shadow.env from example. Edit before starting service."
+  echo "Created $TEMPERATURE_ENV_PATH from example. Edit before starting service."
 fi
 
 echo "Bootstrap complete for $REPO_DIR"
 echo "Next:"
-echo "  1) Copy credential env to /etc/betbot/account_onboarding.local.env (chmod 600)"
-echo "  2) Edit /etc/betbot/temperature-shadow.env"
+echo "  1) Copy credential env to $ACCOUNT_ENV_PATH (chmod 600)"
+echo "  2) Edit $TEMPERATURE_ENV_PATH"
 echo "  3) Run infra/digitalocean/preflight_temperature_shadow.sh"
 echo "  4) Run infra/digitalocean/install_systemd_temperature_shadow.sh"
 echo "  5) Optional: infra/digitalocean/install_systemd_temperature_reporting.sh"

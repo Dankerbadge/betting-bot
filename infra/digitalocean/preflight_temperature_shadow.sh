@@ -2,6 +2,11 @@
 set -euo pipefail
 
 ENV_FILE="${1:-/etc/betbot/temperature-shadow.env}"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
+STRICT_FAIL_KEY="COLDMATH_RECOVERY_ENV_PERSISTENCE_STRICT_FAIL_ON_ERROR"
+REQUIRE_SUMMARY_KEY="RECOVERY_REQUIRE_EFFECTIVENESS_SUMMARY"
+RECOVERY_GATE_REMEDIATION_SCRIPT="$REPO_DIR/infra/digitalocean/set_coldmath_recovery_env_persistence_gate.sh"
 
 failures=0
 warnings=0
@@ -18,6 +23,23 @@ warn() {
 fail() {
   failures=$((failures + 1))
   echo "FAIL: $*" >&2
+}
+
+normalize_gate_toggle() {
+  local raw="${1:-}"
+  local lowered
+  lowered="$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+  case "$lowered" in
+    1|true|yes|on)
+      echo "enabled"
+      ;;
+    0|false|no|off)
+      echo "disabled"
+      ;;
+    *)
+      echo "invalid"
+      ;;
+  esac
 }
 
 require_file() {
@@ -71,6 +93,42 @@ for key in "${required_vars[@]}"; do
     pass "$key set"
   fi
 done
+
+strict_gate_raw=""
+strict_gate_state="missing"
+if [[ -n "${COLDMATH_RECOVERY_ENV_PERSISTENCE_STRICT_FAIL_ON_ERROR+x}" ]]; then
+  strict_gate_raw="${COLDMATH_RECOVERY_ENV_PERSISTENCE_STRICT_FAIL_ON_ERROR:-}"
+  strict_gate_state="$(normalize_gate_toggle "$strict_gate_raw")"
+fi
+
+effectiveness_gate_raw=""
+effectiveness_gate_state="missing"
+if [[ -n "${RECOVERY_REQUIRE_EFFECTIVENESS_SUMMARY+x}" ]]; then
+  effectiveness_gate_raw="${RECOVERY_REQUIRE_EFFECTIVENESS_SUMMARY:-}"
+  effectiveness_gate_state="$(normalize_gate_toggle "$effectiveness_gate_raw")"
+fi
+
+if [[ "$strict_gate_state" == "enabled" && "$effectiveness_gate_state" == "enabled" ]]; then
+  pass "strict recovery gates enabled: $STRICT_FAIL_KEY and $REQUIRE_SUMMARY_KEY"
+else
+  if [[ "$strict_gate_state" == "missing" ]]; then
+    warn "$STRICT_FAIL_KEY is missing in $ENV_FILE (treated as disabled)"
+  elif [[ "$strict_gate_state" == "disabled" ]]; then
+    warn "$STRICT_FAIL_KEY is disabled in $ENV_FILE (value='$strict_gate_raw')"
+  elif [[ "$strict_gate_state" == "invalid" ]]; then
+    warn "$STRICT_FAIL_KEY has invalid value '$strict_gate_raw' in $ENV_FILE (treated as disabled)"
+  fi
+
+  if [[ "$effectiveness_gate_state" == "missing" ]]; then
+    warn "$REQUIRE_SUMMARY_KEY is missing in $ENV_FILE (treated as disabled)"
+  elif [[ "$effectiveness_gate_state" == "disabled" ]]; then
+    warn "$REQUIRE_SUMMARY_KEY is disabled in $ENV_FILE (value='$effectiveness_gate_raw')"
+  elif [[ "$effectiveness_gate_state" == "invalid" ]]; then
+    warn "$REQUIRE_SUMMARY_KEY has invalid value '$effectiveness_gate_raw' in $ENV_FILE (treated as disabled)"
+  fi
+
+  warn "strict recovery gate remediation: bash $RECOVERY_GATE_REMEDIATION_SCRIPT --enable $ENV_FILE"
+fi
 
 BETBOT_ROOT="${BETBOT_ROOT:-}"
 OUTPUT_DIR="${OUTPUT_DIR:-}"

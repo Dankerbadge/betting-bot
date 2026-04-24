@@ -168,6 +168,9 @@ bash infra/digitalocean/preflight_temperature_shadow.sh
 ```
 
 Only continue if preflight has zero failures.
+Preflight also reports strict recovery-gate posture and remediation when
+`COLDMATH_RECOVERY_ENV_PERSISTENCE_STRICT_FAIL_ON_ERROR` or
+`RECOVERY_REQUIRE_EFFECTIVENESS_SUMMARY` is disabled/missing/invalid.
 
 ## 7) Install And Start systemd Service
 
@@ -176,6 +179,9 @@ cd "$HOME/betting-bot"
 export BETBOT_DEPLOY_USER=betbot
 bash infra/digitalocean/install_systemd_temperature_shadow.sh
 ```
+
+`install_systemd_temperature_shadow.sh` now prints strict-gate posture before
+service install and emits remediation when either strict recovery gate is not enabled.
 
 ## 8) Optional: Install Periodic Readiness Reporting Timer
 
@@ -405,9 +411,28 @@ This installs a dedicated passive hardening cycle focused on the ColdMath lane:
 - refreshes ColdMath wallet snapshots from Polymarket public APIs
 - rebuilds Polymarket weather-market ingest alignment against those snapshots
 - regenerates ColdMath replication plan artifacts using latest available state
+- auto-loads recovery-recommended overrides from
+  `$COLDMATH_OUTPUT_DIR/health/kalshi_temperature_recovery_recommended.env` on
+  each hardening run by default
+- disable auto-apply with
+  `COLDMATH_RECOVERY_AUTO_APPLY_RECOMMENDED_ENV=0`
+- `COLDMATH_RECOVERY_RECOMMENDED_ENV_FILE` can be used to point at an
+  alternate recommended-env file
+- optional persistence is opt-in and keeps the recommended recovery env
+  applied back into the target env file on each run when enabled
+- when persistence is enabled, the current target env file is backed up to the
+  backup dir before updates are written
+- set `COLDMATH_RECOVERY_PERSIST_RECOMMENDED_ENV=1` together with
+  `COLDMATH_RECOVERY_PERSIST_TARGET_ENV_FILE` and
+  `COLDMATH_RECOVERY_PERSIST_BACKUP_DIR` to use that path
 - writes machine-readable health artifacts to:
   - `$COLDMATH_OUTPUT_DIR/health/coldmath_hardening_latest.json`
   - `$COLDMATH_OUTPUT_DIR/health/coldmath_hardening_*.json`
+- hardening artifacts include `recovery_env_persistence` with status (`disabled`,
+  `recommended_file_missing`, `persisted`, `no_change`, `error`,
+  `execution_failed`) plus counts/target/backup/error fields
+- hardening `stages` includes `recovery_env_persistence` so skipped/error
+  persistence states are visible in stage telemetry
 
 ```bash
 cd "$HOME/betting-bot"
@@ -421,9 +446,50 @@ Custom interval example:
 bash infra/digitalocean/install_systemd_temperature_coldmath_hardening.sh 1h
 ```
 
+`install_systemd_temperature_coldmath_hardening.sh` now also prints strict-gate
+posture and remediation when either strict recovery gate is disabled/missing/invalid.
+
+Timeout guardrail bootstrap (recommended before first timer run):
+
+```bash
+cd "$HOME/betting-bot"
+bash infra/digitalocean/set_coldmath_stage_timeout_guardrails.sh \
+  --snapshot-seconds 900 \
+  --market-ingest-seconds 900 \
+  --advisor-seconds 600 \
+  --loop-seconds 900 \
+  --campaign-seconds 1200 \
+  /etc/betbot/temperature-shadow.env
+```
+
+Disable all stage timeout guardrails:
+
+```bash
+bash infra/digitalocean/set_coldmath_stage_timeout_guardrails.sh --disable-all /etc/betbot/temperature-shadow.env
+```
+
 Main env knobs in `/etc/betbot/temperature-shadow.env`:
 
 - `COLDMATH_HARDENING_ENABLED=1`
+- `COLDMATH_RECOVERY_AUTO_APPLY_RECOMMENDED_ENV=1` / `0`
+- `COLDMATH_RECOVERY_RECOMMENDED_ENV_FILE` (optional override path)
+- `COLDMATH_RECOVERY_PERSIST_RECOMMENDED_ENV=1` / `0`
+- `COLDMATH_RECOVERY_PERSIST_TARGET_ENV_FILE`
+- `COLDMATH_RECOVERY_PERSIST_BACKUP_DIR`
+- `COLDMATH_RECOVERY_ENV_PERSISTENCE_STRICT_FAIL_ON_ERROR=1` / `0` (`1` default: strict checks fail when `recovery_env_persistence.status` is `error` or `execution_failed`; set `0` to disable)
+- `RECOVERY_REQUIRE_EFFECTIVENESS_SUMMARY=1` / `0` (`1` recommended: strict checks require `recovery_latest.recovery_effectiveness` evidence and fail on missing/malformed/strict-gap states; set `0` to disable)
+- `COLDMATH_RECOVERY_ADVISOR_ENABLED=1`
+- `COLDMATH_RECOVERY_LOOP_ENABLED=1`
+- `COLDMATH_RECOVERY_LOOP_EXECUTE_ACTIONS=1`
+- `COLDMATH_RECOVERY_CAMPAIGN_ENABLED=1`
+- `COLDMATH_RECOVERY_CAMPAIGN_EXECUTE_ACTIONS=1`
+- `COLDMATH_STAGE_TIMEOUT_SECONDS` (global fallback for stage guardrails; env example default `900`, `0` disables)
+- `COLDMATH_SNAPSHOT_TIMEOUT_SECONDS` (env example default `900`)
+- `COLDMATH_MARKET_INGEST_TIMEOUT_SECONDS` (env example default `900`)
+- `COLDMATH_RECOVERY_ADVISOR_TIMEOUT_SECONDS` (env example default `600`)
+- `COLDMATH_RECOVERY_LOOP_TIMEOUT_SECONDS` (env example default `900`)
+- `COLDMATH_RECOVERY_CAMPAIGN_TIMEOUT_SECONDS` (env example default `1200`)
+- `COLDMATH_STAGE_TIMEOUT_STRICT_REQUIRED=1` / `0` (`1` default: strict checks require configured stage timeout guardrails to stay enabled; set `0` to disable this gate)
 - `COLDMATH_WALLET_ADDRESS` (required when enabled)
 - `COLDMATH_OUTPUT_DIR` / `COLDMATH_SNAPSHOT_DIR`
 - `COLDMATH_STALE_HOURS`
@@ -494,6 +560,21 @@ This installs a root-owned watchdog timer that:
 - forces readiness-report refresh when pipeline health is red
 - detects stale/red log-maintenance health and triggers
   `betbot-temperature-log-maintenance.service` (cooldowned)
+- auto-runs `set_coldmath_recovery_env_persistence_gate.sh --enable <env>`
+  when hardening reports `recovery_env_persistence.status=error|execution_failed`
+  (action code: `repair_recovery_env_persistence_gate:ok/failed/cooldown/disabled/missing_script`)
+- after successful env-persistence repair, can trigger immediate
+  `betbot-temperature-coldmath-hardening.service` start (cooldowned)
+  (action code: `trigger_coldmath_hardening_after_env_repair:ok/failed/cooldown/disabled/missing_unit`)
+- auto-runs `set_coldmath_stage_timeout_guardrails.sh --global-seconds <n> <env>` when recovery
+  detects strict stage-timeout guardrail drift/timeouts from hardening telemetry
+  (`coldmath_stage_timeout_guardrails_invalid`,
+  `coldmath_stage_timeout_guardrails_disabled`,
+  `coldmath_stage_timeout_stage_timeouts`)
+  (action code: `repair_coldmath_stage_timeout_guardrails:ok/failed/cooldown/disabled/missing_script`)
+- after successful stage-timeout guardrail repair, can trigger immediate
+  `betbot-temperature-coldmath-hardening.service` start (cooldowned)
+  (action code: `trigger_coldmath_hardening_after_stage_timeout_repair:ok/failed/cooldown/disabled/missing_unit`)
 - writes machine-readable recovery artifacts to:
   - `$OUTPUT_DIR/health/recovery/recovery_latest.json`
   - `$OUTPUT_DIR/health/recovery/recovery_event_*.json`
@@ -507,12 +588,23 @@ Useful recovery knobs in `/etc/betbot/temperature-shadow.env`:
 - `RECOVERY_ENABLE_LOG_MAINTENANCE_TRIGGER=1`
 - `RECOVERY_REQUIRE_LOG_MAINTENANCE_TIMER=1`
 - `RECOVERY_ENABLE_LOG_MAINTENANCE_TIMER_ENABLE=1`
+- `RECOVERY_ENABLE_ENV_PERSISTENCE_REPAIR=1`
+- `RECOVERY_ENABLE_COLDMATH_HARDENING_TRIGGER_ON_ENV_REPAIR=1`
+- `RECOVERY_ENABLE_COLDMATH_STAGE_TIMEOUT_GUARDRAIL_REPAIR=1`
+- `RECOVERY_COLDMATH_STAGE_TIMEOUT_GUARDRAIL_REPAIR_COOLDOWN_SECONDS=900`
+- `RECOVERY_COLDMATH_STAGE_TIMEOUT_GUARDRAIL_REPAIR_GLOBAL_SECONDS=900`
+- `RECOVERY_COLDMATH_STAGE_TIMEOUT_GUARDRAIL_REPAIR_SCRIPT` (optional override path)
+- `RECOVERY_ENABLE_COLDMATH_HARDENING_TRIGGER_ON_STAGE_TIMEOUT_REPAIR=1`
 - `RECOVERY_LOG_MAINTENANCE_STALE_CRIT_SECONDS=7200`
 - `RECOVERY_LOG_MAINTENANCE_TRIGGER_ON_YELLOW=0`
 - `RECOVERY_LOG_MAINTENANCE_TIMER_ENABLE_COOLDOWN_SECONDS=900`
 - `RECOVERY_LOG_MAINTENANCE_TRIGGER_COOLDOWN_SECONDS=900`
+- `RECOVERY_ENV_PERSISTENCE_REPAIR_COOLDOWN_SECONDS=900`
+- `RECOVERY_COLDMATH_HARDENING_TRIGGER_COOLDOWN_SECONDS=900`
 - `RECOVERY_LOG_MAINTENANCE_SERVICE_NAME=betbot-temperature-log-maintenance.service`
 - `RECOVERY_LOG_MAINTENANCE_TIMER_NAME=betbot-temperature-log-maintenance.timer`
+- `RECOVERY_ENV_PERSISTENCE_REPAIR_SCRIPT` (optional override path)
+- `RECOVERY_COLDMATH_HARDENING_SERVICE_NAME=betbot-temperature-coldmath-hardening.service`
 
 ```bash
 cd "$HOME/betting-bot"
@@ -524,6 +616,11 @@ Use a faster/slower watchdog cadence (example: every 3 minutes):
 ```bash
 bash infra/digitalocean/install_systemd_temperature_recovery.sh 3m
 ```
+
+`install_systemd_temperature_recovery.sh` now prints strict-gate posture before enabling timers:
+
+- success line when both `COLDMATH_RECOVERY_ENV_PERSISTENCE_STRICT_FAIL_ON_ERROR=1` and `RECOVERY_REQUIRE_EFFECTIVENESS_SUMMARY=1`
+- warning + remediation command when either key is missing/disabled/invalid
 
 ## 8c) Recommended: Install Nightly Recovery Chaos Check
 
@@ -792,6 +889,21 @@ bash infra/digitalocean/check_temperature_shadow_quick.sh --strict
 bash infra/digitalocean/check_temperature_shadow_quick.sh --strict --env /etc/betbot/temperature-shadow.env
 ```
 
+ColdMath recovery strict-gate rollout (upsert env + backup + strict checks):
+
+```bash
+bash infra/digitalocean/set_coldmath_recovery_env_persistence_gate.sh /etc/betbot/temperature-shadow.env
+# disable the gate explicitly:
+bash infra/digitalocean/set_coldmath_recovery_env_persistence_gate.sh --disable /etc/betbot/temperature-shadow.env
+# update only (skip strict checks):
+bash infra/digitalocean/set_coldmath_recovery_env_persistence_gate.sh --skip-checks /etc/betbot/temperature-shadow.env
+```
+
+`set_coldmath_recovery_env_persistence_gate.sh` co-manages:
+
+- `COLDMATH_RECOVERY_ENV_PERSISTENCE_STRICT_FAIL_ON_ERROR`
+- `RECOVERY_REQUIRE_EFFECTIVENESS_SUMMARY`
+
 `check_temperature_shadow.sh` now also prints:
 
 - `alpha_focus_14h`: top blocker reasons + weakest stations/hours by approval rate
@@ -803,6 +915,7 @@ bash infra/digitalocean/check_temperature_shadow_quick.sh --strict --env /etc/be
 - `alpha_focus_14h settled_quality`: default prediction headline on unique market-side outcomes (`rows_audit_only` printed separately)
 - `blocker_audit_latest`: weekly largest blocker + close action
 - `decision_matrix_lane_alert_state`: current lane status + degraded streak count/threshold + notify reason
+- `recovery_watchdog`: latest recovery issue snapshot + env/stage-timeout remediation actions + both post-repair hardening-trigger actions
 
 `check_temperature_shadow_quick.sh` is the short-form companion for operators:
 
@@ -815,6 +928,26 @@ bash infra/digitalocean/check_temperature_shadow_quick.sh --strict --env /etc/be
 - discord route/thread-map readiness (`guard status`, `missing required thread keys`)
 - explicit `confidence_pnl_divergence` warning when deploy confidence is high but projected bankroll PnL is negative
 - decision-matrix degraded streak visibility + strict warning flag (`decision_matrix_lane_degraded_streak`)
+- coldmath recovery persistence strict warning flag (`recovery_env_persistence_error`) when hardening reports `recovery_env_persistence.status=error|execution_failed`
+- recovery watchdog snapshot line (`recovery_watchdog`) with latest
+  `env_repair_action`, `hardening_trigger_action`, `stage_timeout_repair_action`, and `stage_timeout_hardening_trigger_action`
+- recovery watchdog env-persistence remediation action codes in recovery artifacts/logs
+  (`repair_recovery_env_persistence_gate:ok/failed/cooldown/disabled/missing_script`)
+- post-repair hardening-trigger action codes in recovery artifacts/logs
+  (`trigger_coldmath_hardening_after_env_repair:ok/failed/cooldown/disabled/missing_unit`)
+- recovery watchdog stage-timeout guardrail reason codes in recovery artifacts/logs
+  (`coldmath_stage_timeout_guardrails_invalid`, `coldmath_stage_timeout_guardrails_disabled`, `coldmath_stage_timeout_stage_timeouts`)
+- recovery watchdog stage-timeout remediation action codes in recovery artifacts/logs
+  (`repair_coldmath_stage_timeout_guardrails:ok/failed/cooldown/disabled/missing_script`)
+- post-repair hardening-trigger action codes for stage-timeout remediation
+  (`trigger_coldmath_hardening_after_stage_timeout_repair:ok/failed/cooldown/disabled/missing_unit`)
+- strict quick-check stall flags when recovery post-repair hardening trigger paths are unhealthy:
+  - `recovery_coldmath_hardening_trigger_failed`
+  - `recovery_coldmath_hardening_trigger_missing_unit`
+  - `recovery_coldmath_stage_timeout_repair_failed`
+  - `recovery_coldmath_stage_timeout_repair_missing_script`
+  - `recovery_coldmath_stage_timeout_hardening_trigger_failed`
+  - `recovery_coldmath_stage_timeout_hardening_trigger_missing_unit`
 
 Strict degraded-lane knobs (both health checks):
 
@@ -822,6 +955,10 @@ Strict degraded-lane knobs (both health checks):
 - `DECISION_MATRIX_LANE_STRICT_DEGRADED_STATUSES` (default `matrix_failed,bootstrap_blocked`)
 - `DECISION_MATRIX_LANE_STRICT_DEGRADED_THRESHOLD` (default `6`, `0` disables strict degraded-lane fail)
 - `DECISION_MATRIX_LANE_STRICT_REQUIRE_STATE_FILE` (`1` fails strict checks when state file is missing)
+- `COLDMATH_RECOVERY_ENV_PERSISTENCE_STRICT_FAIL_ON_ERROR` (default `1`; strict checks fail when `coldmath_hardening_latest.recovery_env_persistence.status` is `error` or `execution_failed`, set `0` to disable)
+- `RECOVERY_REQUIRE_EFFECTIVENESS_SUMMARY` (default `0`; set `1` to make strict checks fail when recovery-effectiveness evidence is missing/malformed or reports a strict gap)
+- strict checks also fail when recovery watchdog stage-timeout remediation action `repair_coldmath_stage_timeout_guardrails` reports `failed` or `missing_script`
+- strict checks also fail when recovery watchdog action `trigger_coldmath_hardening_after_env_repair` or `trigger_coldmath_hardening_after_stage_timeout_repair` reports `failed` or `missing_unit`
 
 ## 11) Operational Notes
 

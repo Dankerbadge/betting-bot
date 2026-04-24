@@ -38,6 +38,18 @@ BLOCKER_AUDIT_WEBHOOK_THREAD_ID="${BLOCKER_AUDIT_WEBHOOK_THREAD_ID:-${ALPHA_SUMM
 BLOCKER_AUDIT_WEBHOOK_TIMEOUT_SECONDS="${BLOCKER_AUDIT_WEBHOOK_TIMEOUT_SECONDS:-5}"
 BLOCKER_AUDIT_WEBHOOK_USERNAME="${BLOCKER_AUDIT_WEBHOOK_USERNAME:-BetBot Ops}"
 BLOCKER_AUDIT_STRICT_FAIL_ON_WINDOW_SUMMARY_PARSE_ERROR="${BLOCKER_AUDIT_STRICT_FAIL_ON_WINDOW_SUMMARY_PARSE_ERROR:-0}"
+COLDMATH_HARDENING_ENABLED="${COLDMATH_HARDENING_ENABLED:-1}"
+COLDMATH_MARKET_INGEST_ENABLED="${COLDMATH_MARKET_INGEST_ENABLED:-1}"
+COLDMATH_RECOVERY_ADVISOR_ENABLED="${COLDMATH_RECOVERY_ADVISOR_ENABLED:-1}"
+COLDMATH_RECOVERY_LOOP_ENABLED="${COLDMATH_RECOVERY_LOOP_ENABLED:-1}"
+COLDMATH_RECOVERY_CAMPAIGN_ENABLED="${COLDMATH_RECOVERY_CAMPAIGN_ENABLED:-1}"
+COLDMATH_STAGE_TIMEOUT_STRICT_REQUIRED="${COLDMATH_STAGE_TIMEOUT_STRICT_REQUIRED:-${COLDMATH_STAGE_TIMEOUT_GUARDRAILS_STRICT_REQUIRED:-1}}"
+COLDMATH_STAGE_TIMEOUT_SECONDS="${COLDMATH_STAGE_TIMEOUT_SECONDS:-0}"
+COLDMATH_SNAPSHOT_TIMEOUT_SECONDS="${COLDMATH_SNAPSHOT_TIMEOUT_SECONDS:-$COLDMATH_STAGE_TIMEOUT_SECONDS}"
+COLDMATH_MARKET_INGEST_TIMEOUT_SECONDS="${COLDMATH_MARKET_INGEST_TIMEOUT_SECONDS:-$COLDMATH_STAGE_TIMEOUT_SECONDS}"
+COLDMATH_RECOVERY_ADVISOR_TIMEOUT_SECONDS="${COLDMATH_RECOVERY_ADVISOR_TIMEOUT_SECONDS:-$COLDMATH_STAGE_TIMEOUT_SECONDS}"
+COLDMATH_RECOVERY_LOOP_TIMEOUT_SECONDS="${COLDMATH_RECOVERY_LOOP_TIMEOUT_SECONDS:-$COLDMATH_STAGE_TIMEOUT_SECONDS}"
+COLDMATH_RECOVERY_CAMPAIGN_TIMEOUT_SECONDS="${COLDMATH_RECOVERY_CAMPAIGN_TIMEOUT_SECONDS:-$COLDMATH_STAGE_TIMEOUT_SECONDS}"
 export BLOCKER_AUDIT_DISCORD_MODE BLOCKER_AUDIT_STRICT_FAIL_ON_WINDOW_SUMMARY_PARSE_ERROR
 
 build_discord_target_url() {
@@ -105,7 +117,7 @@ echo "=== $(date -u +"%Y-%m-%dT%H:%M:%SZ") blocker audit cycle start (window=${w
   --label "blocker_audit_${window_label}" \
   --output "$window_summary_file" >> "$LOG_FILE" 2>&1
 
-"$PYTHON_BIN" - "$window_summary_file" "$audit_file" "$audit_latest_file" "$BLOCKER_AUDIT_TOP_N" "$window_label" <<'PY'
+"$PYTHON_BIN" - "$window_summary_file" "$audit_file" "$audit_latest_file" "$BLOCKER_AUDIT_TOP_N" "$window_label" "$COLDMATH_STAGE_TIMEOUT_STRICT_REQUIRED" "$COLDMATH_HARDENING_ENABLED" "$COLDMATH_MARKET_INGEST_ENABLED" "$COLDMATH_RECOVERY_ADVISOR_ENABLED" "$COLDMATH_RECOVERY_LOOP_ENABLED" "$COLDMATH_RECOVERY_CAMPAIGN_ENABLED" "$COLDMATH_STAGE_TIMEOUT_SECONDS" "$COLDMATH_SNAPSHOT_TIMEOUT_SECONDS" "$COLDMATH_MARKET_INGEST_TIMEOUT_SECONDS" "$COLDMATH_RECOVERY_ADVISOR_TIMEOUT_SECONDS" "$COLDMATH_RECOVERY_LOOP_TIMEOUT_SECONDS" "$COLDMATH_RECOVERY_CAMPAIGN_TIMEOUT_SECONDS" <<'PY'
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -135,6 +147,33 @@ def _parse_float(value: Any) -> float | None:
         return None
 
 
+def _parse_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return _normalize(value).lower() in {"1", "true", "yes", "on"}
+
+
+def _parse_non_negative_timeout_seconds(value: Any) -> tuple[float | None, str]:
+    text = _normalize(value)
+    if not text:
+        return (None, "missing")
+    try:
+        parsed = float(text)
+    except Exception:
+        return (None, "invalid")
+    if parsed < 0:
+        return (None, "invalid")
+    return (parsed, "ok")
+
+
+def _latest_action_suffix(actions: list[str], prefix: str) -> str:
+    for item in reversed(actions):
+        text = _normalize(item)
+        if text.startswith(prefix):
+            return _normalize(text[len(prefix):]).lower() or "unknown"
+    return ""
+
+
 def _humanize_reason(reason: str) -> str:
     key = _normalize(reason).lower()
     mapping = {
@@ -151,6 +190,8 @@ def _humanize_reason(reason: str) -> str:
         "expected_edge_below_min": "Expected edge below min",
         "historical_quality_global_only_pressure": "Historical quality global-only pressure",
         "below_min_alpha_strength": "Below minimum alpha strength",
+        "coldmath_stage_timeout_guardrail_repair_failed": "ColdMath stage timeout guardrail repair failed",
+        "coldmath_stage_timeout_guardrail_repair_script_missing": "ColdMath stage timeout guardrail repair script missing",
     }
     return mapping.get(key, key.replace("_", " "))
 
@@ -171,6 +212,15 @@ def _reason_action(reason: str) -> str:
         "expected_edge_below_min": "Re-tune edge model terms (friction, urgency, consensus) to realistic fill economics.",
         "historical_quality_global_only_pressure": "Reduce global-only adjustments: expand bucket-backed evidence and tighten weak-evidence approvals before throughput changes.",
         "below_min_alpha_strength": "Tune alpha thresholds by station/hour; avoid global over-suppression.",
+        "coldmath_stage_timeout_guardrail_repair_failed": (
+            "Investigate and fix the stage-timeout guardrail remediation script failure, then rerun hardening with timeout telemetry checks."
+        ),
+        "coldmath_stage_timeout_guardrail_repair_script_missing": (
+            "Restore the stage-timeout guardrail remediation script path and rerun hardening before strategy threshold tuning."
+        ),
+        "coldmath_stage_timeout_guardrail_drift": (
+            "Apply stage timeout guardrails, rerun coldmath hardening, and keep timeout telemetry stable before tuning strategy thresholds."
+        ),
     }
     return action_map.get(key, "Audit sample rows for this reason and close the largest data-quality or gating bottleneck before threshold changes.")
 
@@ -183,11 +233,45 @@ def _load_json_dict(path: Path) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
+def _load_json_dict_with_status(path: Path) -> tuple[dict[str, Any], str]:
+    if not path.is_file():
+        return {}, "missing"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}, "malformed"
+    if not isinstance(payload, dict):
+        return {}, "malformed"
+    return payload, "ok"
+
+
+def _latest_existing_file(paths: list[Path]) -> Path | None:
+    existing: list[Path] = []
+    for path in paths:
+        if path.is_file():
+            existing.append(path)
+    if not existing:
+        return None
+    return max(existing, key=lambda p: (p.stat().st_mtime, p.name))
+
+
 window_summary_path = Path(sys.argv[1])
 output_path = Path(sys.argv[2])
 latest_path = Path(sys.argv[3])
 top_n = max(1, int(float(sys.argv[4])))
 window_label = _normalize(sys.argv[5]) or "168h"
+timeout_strict_required = _parse_bool(sys.argv[6])
+hardening_enabled = _parse_bool(sys.argv[7])
+market_ingest_enabled = _parse_bool(sys.argv[8])
+recovery_advisor_enabled = _parse_bool(sys.argv[9])
+recovery_loop_enabled = _parse_bool(sys.argv[10])
+recovery_campaign_enabled = _parse_bool(sys.argv[11])
+global_timeout_seconds_raw = _normalize(sys.argv[12])
+snapshot_timeout_seconds_raw = _normalize(sys.argv[13])
+market_ingest_timeout_seconds_raw = _normalize(sys.argv[14])
+recovery_advisor_timeout_seconds_raw = _normalize(sys.argv[15])
+recovery_loop_timeout_seconds_raw = _normalize(sys.argv[16])
+recovery_campaign_timeout_seconds_raw = _normalize(sys.argv[17])
 discord_mode = _normalize(os.environ.get("BLOCKER_AUDIT_DISCORD_MODE")).lower() or "concise"
 if discord_mode not in {"concise", "detailed"}:
     discord_mode = "concise"
@@ -258,14 +342,257 @@ health_dir = out_dir / "health"
 coldmath_hardening_path = health_dir / "coldmath_hardening_latest.json"
 decision_matrix_path = health_dir / "decision_matrix_hardening_latest.json"
 lane_alert_state_path = health_dir / ".decision_matrix_lane_alert_state.json"
+recovery_latest_path = health_dir / "recovery" / "recovery_latest.json"
+recovery_advisor_candidates: list[Path] = [
+    health_dir / "recovery" / "kalshi_temperature_recovery_advisor_latest.json",
+    health_dir / "kalshi_temperature_recovery_advisor_latest.json",
+]
+recovery_advisor_candidates.extend(
+    path for path in (health_dir / "recovery").glob("kalshi_temperature_recovery_advisor_*.json")
+)
+recovery_advisor_candidates.extend(
+    path for path in health_dir.glob("kalshi_temperature_recovery_advisor_*.json")
+)
+recovery_advisor_path = _latest_existing_file(recovery_advisor_candidates)
 coldmath_hardening_payload = _load_json_dict(coldmath_hardening_path)
 decision_matrix_payload = _load_json_dict(decision_matrix_path)
 lane_alert_state = _load_json_dict(lane_alert_state_path)
+recovery_latest_payload = _load_json_dict(recovery_latest_path)
+if isinstance(recovery_advisor_path, Path):
+    recovery_advisor_payload, recovery_advisor_artifact_status = _load_json_dict_with_status(
+        recovery_advisor_path
+    )
+else:
+    recovery_advisor_payload, recovery_advisor_artifact_status = ({}, "missing")
+recovery_actions_raw = (
+    recovery_latest_payload.get("actions_attempted")
+    if isinstance(recovery_latest_payload.get("actions_attempted"), list)
+    else []
+)
+recovery_actions_attempted = [
+    _normalize(item)
+    for item in recovery_actions_raw
+    if _normalize(item)
+]
+recovery_latest_effectiveness = (
+    recovery_latest_payload.get("recovery_effectiveness")
+    if isinstance(recovery_latest_payload.get("recovery_effectiveness"), dict)
+    else {}
+)
+recovery_latest_effectiveness_gap_detected = _parse_bool(
+    recovery_latest_effectiveness.get("gap_detected")
+)
+recovery_latest_effectiveness_gap_reason = _normalize(
+    recovery_latest_effectiveness.get("gap_reason")
+).lower()
+recovery_latest_effectiveness_stale = _parse_bool(
+    recovery_latest_effectiveness.get("stale")
+)
+recovery_latest_effectiveness_file_age_seconds = _parse_float(
+    recovery_latest_effectiveness.get("file_age_seconds")
+)
+recovery_latest_effectiveness_stale_threshold_seconds = _parse_float(
+    recovery_latest_effectiveness.get("stale_threshold_seconds")
+)
+recovery_latest_effectiveness_strict_required_raw: Any = None
+if "strict_required" in recovery_latest_effectiveness:
+    recovery_latest_effectiveness_strict_required_raw = recovery_latest_effectiveness.get("strict_required")
+elif "strict_required" in recovery_latest_payload:
+    recovery_latest_effectiveness_strict_required_raw = recovery_latest_payload.get("strict_required")
+recovery_latest_effectiveness_strict_required_present = (
+    recovery_latest_effectiveness_strict_required_raw is not None
+)
+recovery_latest_effectiveness_strict_required = (
+    _parse_bool(recovery_latest_effectiveness_strict_required_raw)
+    if recovery_latest_effectiveness_strict_required_present
+    else None
+)
+timeout_guardrail_latest_repair_status = _latest_action_suffix(
+    recovery_actions_attempted,
+    "repair_coldmath_stage_timeout_guardrails:",
+)
+timeout_guardrail_latest_repair_action = (
+    f"repair_coldmath_stage_timeout_guardrails:{timeout_guardrail_latest_repair_status}"
+    if timeout_guardrail_latest_repair_status
+    else ""
+)
+advisor_metrics = (
+    recovery_advisor_payload.get("metrics")
+    if isinstance(recovery_advisor_payload.get("metrics"), dict)
+    else {}
+)
+advisor_recovery_effectiveness = (
+    advisor_metrics.get("recovery_effectiveness")
+    if isinstance(advisor_metrics.get("recovery_effectiveness"), dict)
+    else {}
+)
+advisor_remediation_plan = (
+    recovery_advisor_payload.get("remediation_plan")
+    if isinstance(recovery_advisor_payload.get("remediation_plan"), dict)
+    else {}
+)
+advisor_effectiveness_summary_available = _parse_bool(
+    advisor_recovery_effectiveness.get("summary_available")
+)
+advisor_effectiveness_summary_source = _normalize(
+    advisor_recovery_effectiveness.get("summary_source")
+).lower()
+advisor_effectiveness_summary_file_used = _normalize(
+    advisor_recovery_effectiveness.get("summary_file_used")
+)
+advisor_effectiveness_persistently_harmful_actions_raw = (
+    advisor_recovery_effectiveness.get("persistently_harmful_actions")
+    if isinstance(advisor_recovery_effectiveness.get("persistently_harmful_actions"), list)
+    else []
+)
+advisor_effectiveness_demoted_actions_raw = (
+    advisor_remediation_plan.get("demoted_actions_for_effectiveness")
+    if isinstance(advisor_remediation_plan.get("demoted_actions_for_effectiveness"), list)
+    else []
+)
+recovery_latest_effectiveness_summary_available = _parse_bool(
+    recovery_latest_effectiveness.get("summary_available")
+)
+recovery_latest_effectiveness_summary_source = _normalize(
+    recovery_latest_effectiveness.get("summary_source")
+).lower()
+recovery_latest_effectiveness_summary_file_used = _normalize(
+    recovery_latest_effectiveness.get("summary_file_used")
+)
+recovery_latest_effectiveness_persistently_harmful_actions_raw = (
+    recovery_latest_effectiveness.get("persistently_harmful_actions")
+    if isinstance(recovery_latest_effectiveness.get("persistently_harmful_actions"), list)
+    else []
+)
+recovery_latest_effectiveness_demoted_actions_raw = (
+    recovery_latest_effectiveness.get("demoted_actions_for_effectiveness")
+    if isinstance(recovery_latest_effectiveness.get("demoted_actions_for_effectiveness"), list)
+    else []
+)
+advisor_effectiveness_payload_available = bool(
+    advisor_recovery_effectiveness or advisor_remediation_plan
+)
+recovery_latest_effectiveness_payload_available = bool(recovery_latest_effectiveness)
+if advisor_effectiveness_payload_available:
+    recovery_advisor_effectiveness_source_used = "advisor"
+    recovery_advisor_effectiveness_summary_available = advisor_effectiveness_summary_available
+    recovery_advisor_effectiveness_summary_source = advisor_effectiveness_summary_source
+    recovery_advisor_effectiveness_summary_file_used = advisor_effectiveness_summary_file_used
+    recovery_advisor_effectiveness_persistently_harmful_actions_raw = (
+        advisor_effectiveness_persistently_harmful_actions_raw
+    )
+    recovery_advisor_effectiveness_demoted_actions_raw = advisor_effectiveness_demoted_actions_raw
+elif recovery_latest_effectiveness_payload_available:
+    recovery_advisor_effectiveness_source_used = "recovery_latest"
+    recovery_advisor_effectiveness_summary_available = recovery_latest_effectiveness_summary_available
+    recovery_advisor_effectiveness_summary_source = recovery_latest_effectiveness_summary_source
+    recovery_advisor_effectiveness_summary_file_used = recovery_latest_effectiveness_summary_file_used
+    recovery_advisor_effectiveness_persistently_harmful_actions_raw = (
+        recovery_latest_effectiveness_persistently_harmful_actions_raw
+    )
+    recovery_advisor_effectiveness_demoted_actions_raw = (
+        recovery_latest_effectiveness_demoted_actions_raw
+    )
+else:
+    recovery_advisor_effectiveness_source_used = "none"
+    recovery_advisor_effectiveness_summary_available = False
+    recovery_advisor_effectiveness_summary_source = ""
+    recovery_advisor_effectiveness_summary_file_used = ""
+    recovery_advisor_effectiveness_persistently_harmful_actions_raw = []
+    recovery_advisor_effectiveness_demoted_actions_raw = []
+
+recovery_advisor_effectiveness_persistently_harmful_actions = [
+    _normalize(item)
+    for item in recovery_advisor_effectiveness_persistently_harmful_actions_raw
+    if _normalize(item)
+]
+recovery_advisor_effectiveness_demoted_actions = [
+    _normalize(item)
+    for item in recovery_advisor_effectiveness_demoted_actions_raw
+    if _normalize(item)
+]
+recovery_advisor_effectiveness_persistently_harmful_count = len(
+    recovery_advisor_effectiveness_persistently_harmful_actions
+)
+recovery_advisor_effectiveness_demoted_count = len(
+    recovery_advisor_effectiveness_demoted_actions
+)
+recovery_advisor_effectiveness_route_demotion_active = (
+    recovery_advisor_effectiveness_demoted_count > 0
+)
+recovery_advisor_effectiveness_gap_required = bool(
+    recovery_latest_effectiveness_gap_detected
+    and recovery_latest_effectiveness_strict_required is True
+)
+if recovery_advisor_effectiveness_demoted_count > 0:
+    recovery_advisor_effectiveness_status = "demoted_for_effectiveness"
+elif recovery_advisor_effectiveness_persistently_harmful_count > 0:
+    recovery_advisor_effectiveness_status = "harmful_actions_detected"
+elif recovery_advisor_effectiveness_summary_available:
+    recovery_advisor_effectiveness_status = "no_demotion"
+elif recovery_advisor_effectiveness_gap_required:
+    recovery_advisor_effectiveness_status = "missing_or_stale_effectiveness_evidence"
+elif recovery_advisor_effectiveness_source_used != "none":
+    recovery_advisor_effectiveness_status = "no_effectiveness_summary"
+else:
+    recovery_advisor_effectiveness_status = "unavailable"
+if recovery_advisor_effectiveness_status == "demoted_for_effectiveness":
+    recovery_advisor_effectiveness_line = (
+        "Recovery advisor effectiveness: demoted "
+        f"{recovery_advisor_effectiveness_demoted_count:,} action(s) for effectiveness."
+    )
+elif recovery_advisor_effectiveness_status == "harmful_actions_detected":
+    recovery_advisor_effectiveness_line = (
+        "Recovery advisor effectiveness: harmful actions flagged "
+        f"({recovery_advisor_effectiveness_persistently_harmful_count:,}), no active demotion."
+    )
+elif recovery_advisor_effectiveness_status == "no_demotion":
+    recovery_advisor_effectiveness_line = (
+        "Recovery advisor effectiveness: no active demotion (effectiveness summary available)."
+    )
+elif recovery_advisor_effectiveness_status == "missing_or_stale_effectiveness_evidence":
+    gap_reason = recovery_latest_effectiveness_gap_reason or (
+        "stale_effectiveness_evidence"
+        if recovery_latest_effectiveness_stale
+        else "missing_effectiveness_evidence"
+    )
+    recovery_advisor_effectiveness_line = (
+        "Recovery advisor effectiveness: missing/stale effectiveness evidence "
+        f"({gap_reason.replace('_', ' ')}); rerun coldmath hardening and "
+        "kalshi-temperature-recovery-loop before trusting recovery routing."
+    )
+elif recovery_advisor_effectiveness_status == "no_effectiveness_summary":
+    recovery_advisor_effectiveness_line = "Recovery advisor effectiveness: summary unavailable."
+else:
+    recovery_advisor_effectiveness_line = "Recovery advisor effectiveness: unavailable."
 
 targeted_trading_support = (
     coldmath_hardening_payload.get("targeted_trading_support")
     if isinstance(coldmath_hardening_payload.get("targeted_trading_support"), dict)
     else {}
+)
+recovery_env_persistence = (
+    coldmath_hardening_payload.get("recovery_env_persistence")
+    if isinstance(coldmath_hardening_payload.get("recovery_env_persistence"), dict)
+    else {}
+)
+recovery_env_persistence_status = _normalize(
+    recovery_env_persistence.get("status")
+).lower()
+recovery_env_persistence_changed = _parse_bool(
+    recovery_env_persistence.get("changed")
+)
+recovery_env_persistence_target_file = _normalize(
+    recovery_env_persistence.get("target_file")
+)
+recovery_env_persistence_backup_file = _normalize(
+    recovery_env_persistence.get("backup_file")
+)
+recovery_env_persistence_error = _normalize(
+    recovery_env_persistence.get("error")
+)
+recovery_env_persistence_has_error = (
+    recovery_env_persistence_status in {"error", "execution_failed"}
 )
 lane_checks = (
     targeted_trading_support.get("checks")
@@ -400,6 +727,104 @@ if lane_alert_streak_count > 0 and lane_status_is_degraded:
         decision_matrix_lane_streak_line += " [streak alert fired]"
     decision_matrix_lane_streak_line += "."
 
+timeout_stage_specs: list[tuple[str, str, str, bool]] = [
+    (
+        "coldmath_snapshot_summary",
+        "COLDMATH_SNAPSHOT_TIMEOUT_SECONDS",
+        snapshot_timeout_seconds_raw,
+        bool(hardening_enabled),
+    ),
+    (
+        "polymarket_market_ingest",
+        "COLDMATH_MARKET_INGEST_TIMEOUT_SECONDS",
+        market_ingest_timeout_seconds_raw,
+        bool(hardening_enabled and market_ingest_enabled),
+    ),
+    (
+        "kalshi_temperature_recovery_advisor",
+        "COLDMATH_RECOVERY_ADVISOR_TIMEOUT_SECONDS",
+        recovery_advisor_timeout_seconds_raw,
+        bool(hardening_enabled and recovery_advisor_enabled),
+    ),
+    (
+        "kalshi_temperature_recovery_loop",
+        "COLDMATH_RECOVERY_LOOP_TIMEOUT_SECONDS",
+        recovery_loop_timeout_seconds_raw,
+        bool(hardening_enabled and recovery_loop_enabled),
+    ),
+    (
+        "kalshi_temperature_recovery_campaign",
+        "COLDMATH_RECOVERY_CAMPAIGN_TIMEOUT_SECONDS",
+        recovery_campaign_timeout_seconds_raw,
+        bool(hardening_enabled and recovery_campaign_enabled),
+    ),
+]
+required_timeout_stage_names = [name for name, _, _, required in timeout_stage_specs if required]
+timeout_effective_seconds_by_stage: dict[str, float | None] = {}
+timeout_effective_raw_by_stage: dict[str, str] = {}
+timeout_invalid_keys: list[str] = []
+timeout_disabled_keys: list[str] = []
+timeout_invalid_or_disabled_required_stages: list[str] = []
+for stage_name, timeout_key, stage_timeout_raw, required in timeout_stage_specs:
+    effective_raw = _normalize(stage_timeout_raw) or global_timeout_seconds_raw
+    timeout_effective_raw_by_stage[stage_name] = effective_raw
+    effective_timeout_value, timeout_value_status = _parse_non_negative_timeout_seconds(effective_raw)
+    timeout_effective_seconds_by_stage[stage_name] = (
+        float(effective_timeout_value) if isinstance(effective_timeout_value, float) else None
+    )
+    if not required:
+        continue
+    if timeout_value_status != "ok":
+        timeout_invalid_keys.append(timeout_key)
+        timeout_invalid_or_disabled_required_stages.append(stage_name)
+        continue
+    if effective_timeout_value is None or effective_timeout_value <= 0:
+        timeout_disabled_keys.append(timeout_key)
+        timeout_invalid_or_disabled_required_stages.append(stage_name)
+
+hardening_stages = (
+    coldmath_hardening_payload.get("stages")
+    if isinstance(coldmath_hardening_payload.get("stages"), list)
+    else []
+)
+hardening_stage_statuses: dict[str, str] = {}
+for row in hardening_stages:
+    if not isinstance(row, dict):
+        continue
+    stage_name = _normalize(row.get("stage"))
+    if not stage_name:
+        continue
+    hardening_stage_statuses[stage_name] = _normalize(row.get("status")).lower()
+
+timeout_required_stage_timeouts = sorted(
+    stage_name
+    for stage_name in required_timeout_stage_names
+    if hardening_stage_statuses.get(stage_name) == "timeout"
+)
+timeout_config_issue = bool(
+    hardening_enabled
+    and timeout_strict_required
+    and timeout_invalid_or_disabled_required_stages
+)
+timeout_stage_issue = bool(timeout_required_stage_timeouts)
+timeout_guardrail_issue = bool(timeout_config_issue or timeout_stage_issue)
+if not hardening_enabled:
+    timeout_guardrail_status = "not_required"
+elif timeout_stage_issue and timeout_config_issue:
+    timeout_guardrail_status = "timeout_and_guardrail_drift"
+elif timeout_stage_issue:
+    timeout_guardrail_status = "required_stage_timeout"
+elif timeout_config_issue:
+    timeout_guardrail_status = "guardrail_drift"
+else:
+    timeout_guardrail_status = "ok"
+timeout_guardrail_remediation_command = (
+    "bash infra/digitalocean/set_coldmath_stage_timeout_guardrails.sh "
+    "--global-seconds 900 --snapshot-seconds 900 --market-ingest-seconds 900 "
+    "--advisor-seconds 600 --loop-seconds 900 --campaign-seconds 1200 "
+    "/etc/betbot/temperature-shadow.env"
+)
+
 non_approved_items: list[tuple[str, int]] = []
 for key, raw_count in reason_counts.items():
     reason = _normalize(key)
@@ -437,6 +862,41 @@ for rank, (reason, count) in enumerate(non_approved_items[:top_n], start=1):
             "recommended_action": _reason_action(reason),
         }
     )
+
+if timeout_guardrail_issue:
+    timeout_guardrail_reason = "coldmath_stage_timeout_guardrail_drift"
+    timeout_guardrail_recommended_action = (
+        "Apply stage timeout guardrails and rerun coldmath hardening. "
+        f"{timeout_guardrail_remediation_command}"
+    )
+    if timeout_guardrail_latest_repair_status == "missing_script":
+        timeout_guardrail_reason = "coldmath_stage_timeout_guardrail_repair_script_missing"
+        timeout_guardrail_recommended_action = _reason_action(timeout_guardrail_reason)
+    elif timeout_guardrail_latest_repair_status == "failed":
+        timeout_guardrail_reason = "coldmath_stage_timeout_guardrail_repair_failed"
+        timeout_guardrail_recommended_action = _reason_action(timeout_guardrail_reason)
+    synthetic_timeout_count = max(
+        [max(0, _parse_int(row.get("count"))) for row in top_blockers] + [0]
+    ) + 1
+    synthetic_timeout_share_intents = (
+        min(1.0, synthetic_timeout_count / float(intents_total))
+        if intents_total > 0
+        else 1.0
+    )
+    top_blockers.insert(
+        0,
+        {
+            "rank": 1,
+            "reason": timeout_guardrail_reason,
+            "reason_human": _humanize_reason(timeout_guardrail_reason),
+            "count": int(synthetic_timeout_count),
+            "share_of_blocked": 1.0,
+            "share_of_intents": round(float(synthetic_timeout_share_intents), 6),
+            "recommended_action": timeout_guardrail_recommended_action,
+        },
+    )
+    for updated_rank, row in enumerate(top_blockers, start=1):
+        row["rank"] = int(updated_rank)
 
 # Avoid misleading action guidance when settlement backlog is currently zero.
 if current_settlement_unresolved <= 0:
@@ -498,6 +958,35 @@ if window_summary_parse_error:
     base_lines.append(
         "Data quality check: blocker window summary malformed; review summarize_window output before trusting blocker guidance."
     )
+if recovery_env_persistence_has_error:
+    persistence_error_suffix = (
+        f", error={recovery_env_persistence_error}"
+        if recovery_env_persistence_error
+        else ""
+    )
+    base_lines.append(
+        "Data quality check: recovery env persistence failed "
+        f"(status={recovery_env_persistence_status or 'unknown'}{persistence_error_suffix}); "
+        "review hardening env-write path."
+    )
+if timeout_guardrail_issue:
+    timeout_issue_parts: list[str] = []
+    if timeout_config_issue:
+        timeout_issue_parts.append(
+            "strict timeout guardrails invalid/disabled for "
+            + ", ".join(timeout_invalid_or_disabled_required_stages[:5])
+        )
+    if timeout_stage_issue:
+        timeout_issue_parts.append(
+            "required hardening stage timeout observed for "
+            + ", ".join(timeout_required_stage_timeouts[:5])
+        )
+    timeout_issue_summary = "; ".join(part for part in timeout_issue_parts if part) or "timeout drift detected"
+    base_lines.append(f"Data quality check: ColdMath timeout issue detected ({timeout_issue_summary}).")
+    base_lines.append(
+        "Remediation: apply stage timeout guardrails and rerun coldmath hardening. "
+        f"{timeout_guardrail_remediation_command}"
+    )
 if not largest_blocker_present_if_blocked:
     base_lines.append(
         "Data quality check: blocked flow exists but no blocker rows were produced; review reason parsing."
@@ -515,6 +1004,7 @@ base_lines.append(
     f"blocked underlyings {current_settlement_blocked_underlyings:,} | "
     f"pending final reports {current_settlement_pending_final_report:,}"
 )
+base_lines.append(recovery_advisor_effectiveness_line)
 base_lines.append(decision_matrix_lane_line)
 if decision_matrix_lane_streak_line:
     base_lines.append(decision_matrix_lane_streak_line)
@@ -554,6 +1044,12 @@ message_quality_checks = {
     "window_summary_loaded": bool(window_summary_loaded),
     "window_summary_parse_error_present": bool(window_summary_parse_error),
     "window_summary_parse_error": window_summary_parse_error,
+    "recovery_env_persistence_status": recovery_env_persistence_status or "unknown",
+    "recovery_env_persistence_has_error": bool(recovery_env_persistence_has_error),
+    "recovery_env_persistence_ok": not recovery_env_persistence_has_error,
+    "coldmath_stage_timeout_guardrails_status": timeout_guardrail_status,
+    "coldmath_stage_timeout_guardrails_issue_present": bool(timeout_guardrail_issue),
+    "coldmath_stage_timeout_guardrails_ok": not timeout_guardrail_issue,
     "flow_totals_consistent": bool(flow_totals_consistent),
     "largest_blocker_present_if_blocked": bool(largest_blocker_present_if_blocked),
 }
@@ -562,6 +1058,8 @@ message_quality_checks["overall_pass"] = bool(
     and message_quality_checks["concise_message_length_ok"]
     and message_quality_checks["detailed_message_length_ok"]
     and message_quality_checks["contains_performance_basis_line"]
+    and message_quality_checks["recovery_env_persistence_ok"]
+    and message_quality_checks["coldmath_stage_timeout_guardrails_ok"]
     and message_quality_checks["flow_totals_consistent"]
     and message_quality_checks["largest_blocker_present_if_blocked"]
 )
@@ -577,11 +1075,113 @@ result = {
         "coldmath_hardening_latest": str(coldmath_hardening_path),
         "decision_matrix_hardening_latest": str(decision_matrix_path),
         "decision_matrix_lane_alert_state": str(lane_alert_state_path),
+        "recovery_latest": str(recovery_latest_path),
+        "recovery_advisor_latest": str(recovery_advisor_path) if isinstance(recovery_advisor_path, Path) else "",
     },
     "data_quality": {
         "window_summary_loaded": bool(window_summary_loaded),
         "window_summary_parse_error_present": bool(window_summary_parse_error),
         "window_summary_parse_error": window_summary_parse_error,
+        "recovery_env_persistence_status": recovery_env_persistence_status or "unknown",
+        "recovery_env_persistence_has_error": bool(recovery_env_persistence_has_error),
+        "coldmath_stage_timeout_guardrails_status": timeout_guardrail_status,
+        "coldmath_stage_timeout_guardrails_issue_present": bool(timeout_guardrail_issue),
+        "coldmath_stage_timeout_guardrails_config_issue": bool(timeout_config_issue),
+        "coldmath_stage_timeout_guardrails_required_stage_timeout_present": bool(timeout_stage_issue),
+        "coldmath_stage_timeout_guardrails_required_stage_timeout_stages": timeout_required_stage_timeouts,
+        "coldmath_stage_timeout_guardrails_invalid_or_disabled_required_stages": timeout_invalid_or_disabled_required_stages,
+        "coldmath_stage_timeout_guardrails_latest_repair_action": timeout_guardrail_latest_repair_action,
+        "coldmath_stage_timeout_guardrails_latest_repair_status": timeout_guardrail_latest_repair_status or "none",
+        "recovery_advisor_effectiveness_artifact_status": recovery_advisor_artifact_status,
+        "recovery_advisor_effectiveness_source_used": recovery_advisor_effectiveness_source_used,
+        "recovery_advisor_effectiveness_route_demotion_active": bool(
+            recovery_advisor_effectiveness_route_demotion_active
+        ),
+        "recovery_advisor_effectiveness_gap_detected": bool(
+            recovery_latest_effectiveness_gap_detected
+        ),
+        "recovery_advisor_effectiveness_gap_reason": recovery_latest_effectiveness_gap_reason,
+        "recovery_advisor_effectiveness_stale": bool(recovery_latest_effectiveness_stale),
+        "recovery_advisor_effectiveness_file_age_seconds": (
+            round(float(recovery_latest_effectiveness_file_age_seconds), 6)
+            if isinstance(recovery_latest_effectiveness_file_age_seconds, float)
+            else None
+        ),
+        "recovery_advisor_effectiveness_stale_threshold_seconds": (
+            round(float(recovery_latest_effectiveness_stale_threshold_seconds), 6)
+            if isinstance(recovery_latest_effectiveness_stale_threshold_seconds, float)
+            else None
+        ),
+        "recovery_advisor_effectiveness_strict_required": (
+            bool(recovery_latest_effectiveness_strict_required)
+            if recovery_latest_effectiveness_strict_required_present
+            else None
+        ),
+    },
+    "coldmath_stage_timeout_guardrails": {
+        "status": timeout_guardrail_status,
+        "issue_present": bool(timeout_guardrail_issue),
+        "strict_required": bool(timeout_strict_required),
+        "hardening_enabled": bool(hardening_enabled),
+        "config_issue_present": bool(timeout_config_issue),
+        "required_stage_timeout_present": bool(timeout_stage_issue),
+        "required_stage_names": required_timeout_stage_names,
+        "invalid_timeout_keys": timeout_invalid_keys,
+        "disabled_timeout_keys": timeout_disabled_keys,
+        "invalid_or_disabled_required_stages": timeout_invalid_or_disabled_required_stages,
+        "required_stage_timeout_stages": timeout_required_stage_timeouts,
+        "stage_statuses": hardening_stage_statuses,
+        "effective_timeout_seconds_by_stage": {
+            key: (round(float(value), 6) if isinstance(value, float) else None)
+            for key, value in timeout_effective_seconds_by_stage.items()
+        },
+        "effective_timeout_raw_by_stage": timeout_effective_raw_by_stage,
+        "remediation_command": timeout_guardrail_remediation_command,
+        "latest_repair_action": timeout_guardrail_latest_repair_action,
+        "latest_repair_status": timeout_guardrail_latest_repair_status or "none",
+    },
+    "recovery_env_persistence": {
+        "status": recovery_env_persistence_status or "unknown",
+        "changed": bool(recovery_env_persistence_changed),
+        "target_file": recovery_env_persistence_target_file,
+        "backup_file": recovery_env_persistence_backup_file,
+        "error": recovery_env_persistence_error,
+        "has_error": bool(recovery_env_persistence_has_error),
+    },
+    "recovery_advisor_effectiveness": {
+        "status": recovery_advisor_effectiveness_status,
+        "line": recovery_advisor_effectiveness_line,
+        "artifact_status": recovery_advisor_artifact_status,
+        "source_used": recovery_advisor_effectiveness_source_used,
+        "artifact_file_used": str(recovery_advisor_path) if isinstance(recovery_advisor_path, Path) else "",
+        "summary_available": bool(recovery_advisor_effectiveness_summary_available),
+        "summary_source": recovery_advisor_effectiveness_summary_source,
+        "summary_file_used": recovery_advisor_effectiveness_summary_file_used,
+        "route_demotion_active": bool(recovery_advisor_effectiveness_route_demotion_active),
+        "demoted_actions_for_effectiveness": recovery_advisor_effectiveness_demoted_actions,
+        "demoted_actions_for_effectiveness_count": int(recovery_advisor_effectiveness_demoted_count),
+        "persistently_harmful_actions": recovery_advisor_effectiveness_persistently_harmful_actions,
+        "persistently_harmful_actions_count": int(
+            recovery_advisor_effectiveness_persistently_harmful_count
+        ),
+        "gap_detected": bool(recovery_latest_effectiveness_gap_detected),
+        "gap_reason": recovery_latest_effectiveness_gap_reason,
+        "stale": bool(recovery_latest_effectiveness_stale),
+        "file_age_seconds": (
+            round(float(recovery_latest_effectiveness_file_age_seconds), 6)
+            if isinstance(recovery_latest_effectiveness_file_age_seconds, float)
+            else None
+        ),
+        "stale_threshold_seconds": (
+            round(float(recovery_latest_effectiveness_stale_threshold_seconds), 6)
+            if isinstance(recovery_latest_effectiveness_stale_threshold_seconds, float)
+            else None
+        ),
+        "strict_required": (
+            bool(recovery_latest_effectiveness_strict_required)
+            if recovery_latest_effectiveness_strict_required_present
+            else None
+        ),
     },
     "headline": {
         "prediction_quality_basis": "unique_market_side",

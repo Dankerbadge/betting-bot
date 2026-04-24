@@ -417,6 +417,134 @@ class ColdMathReplicationTests(unittest.TestCase):
             self.assertIn("yes", sides)
             self.assertIn("no", sides)
 
+    def test_run_plan_applies_excluded_market_tickers_from_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            (out_dir / "coldmath_snapshot_summary_latest.json").write_text(
+                json.dumps(
+                    {
+                        "status": "ready",
+                        "family_behavior": {
+                            "behavior_tags": ["no_side_bias"],
+                            "no_outcome_ratio": 0.58,
+                            "positions_with_high_price_no": 5,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (out_dir / "polymarket_temperature_markets_summary_20260421_000001.json").write_text(
+                json.dumps({"status": "ready", "coldmath_temperature_alignment": {"matched_ratio": 0.4}}),
+                encoding="utf-8",
+            )
+            (out_dir / "kalshi_ws_state_collect_summary_20260421_000001.json").write_text(
+                json.dumps(
+                    {
+                        "status": "ready",
+                        "market_tickers": [
+                            "KXHIGHPHL-26APR21-B76",
+                            "KXHIGHPHL-26APR21-B77",
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (out_dir / "kalshi_ws_state_latest.json").write_text(
+                json.dumps(
+                    {
+                        "markets": {
+                            "KXHIGHPHL-26APR21-B76": {
+                                "top_of_book": {
+                                    "best_no_bid_dollars": 0.58,
+                                    "best_no_ask_dollars": 0.61,
+                                    "best_yes_bid_dollars": 0.39,
+                                    "best_yes_ask_dollars": 0.42,
+                                    "yes_spread_dollars": 0.03,
+                                }
+                            },
+                            "KXHIGHPHL-26APR21-B77": {
+                                "top_of_book": {
+                                    "best_no_bid_dollars": 0.59,
+                                    "best_no_ask_dollars": 0.62,
+                                    "best_yes_bid_dollars": 0.38,
+                                    "best_yes_ask_dollars": 0.41,
+                                    "yes_spread_dollars": 0.03,
+                                }
+                            },
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            exclusions_file = out_dir / "health" / "execution_cost_tape_latest.json"
+            exclusions_file.parent.mkdir(parents=True, exist_ok=True)
+            exclusions_file.write_text(
+                json.dumps(
+                    {
+                        "status": "ready",
+                        "recommended_exclusions": {
+                            "market_tickers": ["KXHIGHPHL-26APR21-B76"],
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            payload = run_coldmath_replication_plan(
+                output_dir=str(out_dir),
+                top_n=3,
+                excluded_market_tickers_file=str(exclusions_file),
+            )
+
+            self.assertEqual(payload["status"], "ready")
+            self.assertEqual(payload["excluded_market_tickers_source_status"], "loaded_json")
+            self.assertEqual(payload["excluded_market_ticker_count"], 1)
+            self.assertEqual(payload["market_ticker_count"], 1)
+            markets = [str(row.get("market") or "") for row in (payload.get("candidates") or [])]
+            self.assertNotIn("KXHIGHPHL-26APR21-B76", markets)
+
+    def test_run_plan_discovers_market_tickers_from_temperature_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            (out_dir / "coldmath_snapshot_summary_latest.json").write_text(
+                json.dumps(
+                    {
+                        "status": "ready",
+                        "family_behavior": {
+                            "behavior_tags": ["no_side_bias"],
+                            "no_outcome_ratio": 0.6,
+                            "positions_with_high_price_no": 6,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (out_dir / "polymarket_temperature_markets_summary_20260421_000001.json").write_text(
+                json.dumps({"status": "ready", "coldmath_temperature_alignment": {"matched_ratio": 0.4}}),
+                encoding="utf-8",
+            )
+            (out_dir / "kalshi_ws_state_collect_summary_20260421_000001.json").write_text(
+                json.dumps({"status": "ready", "market_tickers": ["KXHIGHNYC-26APR21-B80"]}),
+                encoding="utf-8",
+            )
+            (out_dir / "kalshi_temperature_contract_specs_20260421_000001.csv").write_text(
+                "market_ticker\n"
+                "KXHIGHNYC-26APR21-B81\n"
+                "KXHIGHNYC-26APR21-B82\n",
+                encoding="utf-8",
+            )
+
+            payload = run_coldmath_replication_plan(
+                output_dir=str(out_dir),
+                top_n=3,
+                require_liquidity_filter=False,
+            )
+
+            self.assertEqual(payload["status"], "ready")
+            self.assertGreaterEqual(int(payload.get("artifact_discovered_market_ticker_count") or 0), 2)
+            self.assertGreaterEqual(int(payload.get("market_ticker_count") or 0), 3)
+            self.assertGreaterEqual(int(payload.get("candidate_count") or 0), 3)
+
     def test_run_plan_handles_missing_sources(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             out_dir = Path(tmp)

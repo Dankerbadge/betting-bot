@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import argparse
+import csv
+import inspect
 import json
 from datetime import datetime
 from pathlib import Path
+import shutil
 import sys
+import tempfile
+from typing import Any
 
 from betbot.adapters import (
     CuratedNewsAdapter,
@@ -16,6 +21,7 @@ from betbot.alpha_scoreboard import run_alpha_scoreboard
 from betbot.backtest import run_backtest
 from betbot.bayes import conservative_planning_p
 from betbot.canonical_universe import run_canonical_universe
+from betbot.decision_matrix_hardening import run_decision_matrix_hardening
 from betbot.coldmath_snapshot import run_coldmath_snapshot_summary
 from betbot.coldmath_replication import run_coldmath_replication_plan
 from betbot.commands.runtime_ops import run_effective_config, run_policy_check, run_render_board
@@ -60,6 +66,7 @@ from betbot.kalshi_temperature_profitability import (
     run_kalshi_temperature_profitability,
     run_kalshi_temperature_refill_trial_balance,
 )
+from betbot.kalshi_temperature_execution_cost_tape import run_kalshi_temperature_execution_cost_tape
 from betbot.kalshi_temperature_selection_quality import run_kalshi_temperature_selection_quality
 from betbot.kalshi_temperature_bankroll_validation import (
     run_kalshi_temperature_alpha_gap_report,
@@ -68,6 +75,18 @@ from betbot.kalshi_temperature_bankroll_validation import (
     run_kalshi_temperature_live_readiness,
 )
 from betbot.kalshi_temperature_settlement_state import run_kalshi_temperature_settlement_state
+from betbot.kalshi_temperature_coverage_velocity_report import (
+    run_kalshi_temperature_coverage_velocity_report,
+    summarize_kalshi_temperature_coverage_velocity_report,
+)
+try:
+    from betbot.kalshi_temperature_settled_outcome_throughput import (
+        run_kalshi_temperature_settled_outcome_throughput,
+        summarize_kalshi_temperature_settled_outcome_throughput,
+    )
+except ImportError:
+    run_kalshi_temperature_settled_outcome_throughput = None
+    summarize_kalshi_temperature_settled_outcome_throughput = None
 from betbot.kalshi_temperature_trader import run_kalshi_temperature_shadow_watch, run_kalshi_temperature_trader
 from betbot.kalshi_weather_catalog import run_kalshi_weather_catalog
 from betbot.kalshi_weather_priors import run_kalshi_weather_priors, run_kalshi_weather_station_history_prewarm
@@ -90,6 +109,817 @@ from betbot.probability_path import (
 )
 from betbot.research_audit import run_research_audit
 from betbot.runtime.cycle_runner import CycleRunner, CycleRunnerConfig
+
+
+def _load_json_dict(path_text: str | None) -> dict[str, Any] | None:
+    if not path_text:
+        return None
+    try:
+        payload = json.loads(Path(path_text).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _normalize_text(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _parse_float(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_int(value: Any) -> int | None:
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_boolish(value: Any) -> bool | None:
+    text = _normalize_text(value).lower()
+    if text in {"1", "true", "yes", "y"}:
+        return True
+    if text in {"0", "false", "no", "n"}:
+        return False
+    return None
+
+
+def _coerce_optimizer_profile_settings(payload: dict[str, Any]) -> dict[str, Any]:
+    candidate: dict[str, Any] = payload
+    for key in ("optimizer_profile", "profile", "selection_quality_profile", "settings"):
+        nested = payload.get(key)
+        if isinstance(nested, dict):
+            candidate = nested
+            break
+    settings: dict[str, Any] = {}
+    aliases: dict[str, tuple[str, ...]] = {
+        "historical_selection_quality_enabled": ("historical_selection_quality_enabled", "enabled"),
+        "historical_selection_quality_lookback_hours": ("historical_selection_quality_lookback_hours", "lookback_hours"),
+        "historical_selection_quality_min_resolved_market_sides": (
+            "historical_selection_quality_min_resolved_market_sides",
+            "min_resolved_market_sides",
+        ),
+        "historical_selection_quality_min_bucket_samples": (
+            "historical_selection_quality_min_bucket_samples",
+            "min_bucket_samples",
+        ),
+        "historical_selection_quality_probability_penalty_max": (
+            "historical_selection_quality_probability_penalty_max",
+            "probability_penalty_max",
+        ),
+        "historical_selection_quality_expected_edge_penalty_max": (
+            "historical_selection_quality_expected_edge_penalty_max",
+            "expected_edge_penalty_max",
+        ),
+        "historical_selection_quality_score_adjust_scale": (
+            "historical_selection_quality_score_adjust_scale",
+            "score_adjust_scale",
+        ),
+        "historical_selection_quality_profile_max_age_hours": (
+            "historical_selection_quality_profile_max_age_hours",
+            "max_profile_age_hours",
+        ),
+        "historical_selection_quality_preferred_model": (
+            "historical_selection_quality_preferred_model",
+            "preferred_attribution_model",
+            "preferred_model",
+        ),
+    }
+    for dest_key, source_keys in aliases.items():
+        for source_key in source_keys:
+            if source_key in candidate:
+                settings[dest_key] = candidate[source_key]
+                break
+    return settings
+
+
+def _load_optimizer_profile_reference(profile_json_path: str | None) -> dict[str, Any]:
+    resolved_path = _normalize_text(profile_json_path)
+    if not resolved_path:
+        return {"status": "not_provided", "source_file": "", "applied": False, "settings": {}}
+    path = Path(resolved_path)
+    payload = _load_json_dict(str(path))
+    if payload is None:
+        return {
+            "status": "optimizer_profile_parse_failed",
+            "source_file": str(path),
+            "applied": False,
+            "settings": {},
+        }
+    settings = _coerce_optimizer_profile_settings(payload)
+    if not settings:
+        return {
+            "status": "optimizer_profile_no_settings",
+            "source_file": str(path),
+            "applied": False,
+            "settings": {},
+        }
+    return {"status": "applied", "source_file": str(path), "applied": True, "settings": settings}
+
+
+def _load_weather_pattern_profile_reference(profile_json_path: str | None) -> dict[str, Any]:
+    resolved_path = _normalize_text(profile_json_path)
+    if not resolved_path:
+        return {"status": "not_provided", "source_file": "", "applied": False, "profile": {}}
+    path = Path(resolved_path)
+    payload = _load_json_dict(str(path))
+    if payload is None:
+        return {
+            "status": "weather_pattern_profile_parse_failed",
+            "source_file": str(path),
+            "applied": False,
+            "profile": {},
+        }
+    return {"status": "applied", "source_file": str(path), "applied": True, "profile": payload}
+
+
+def _invoke_runner_with_supported_kwargs(
+    runner: Any,
+    kwargs: dict[str, Any],
+) -> tuple[dict[str, Any], tuple[str, ...]]:
+    filtered_kwargs = dict(kwargs)
+    ignored_keys: list[str] = []
+    try:
+        signature = inspect.signature(runner)
+    except (TypeError, ValueError):
+        signature = None
+    if signature is not None:
+        accepts_var_kwargs = any(
+            parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in signature.parameters.values()
+        )
+        if not accepts_var_kwargs:
+            supported_names = set(signature.parameters.keys())
+            filtered_kwargs = {}
+            for key, value in kwargs.items():
+                if key in supported_names:
+                    filtered_kwargs[key] = value
+                else:
+                    ignored_keys.append(key)
+    return runner(**filtered_kwargs), tuple(ignored_keys)
+
+
+def _apply_micro_live_50_temperature_profile(args: argparse.Namespace) -> dict[str, Any] | None:
+    if not bool(getattr(args, "micro_live_50", False)):
+        return None
+
+    # Enforce strict micro-live caps for a $50 pilot and only allow equal-or-more
+    # conservative overrides from CLI.
+    args.planning_bankroll = 50.0
+    args.daily_risk_cap = min(float(args.daily_risk_cap), 3.0)
+    args.max_total_deployed_pct = min(float(args.max_total_deployed_pct), 0.2)
+    args.max_live_cost_per_day_dollars = min(float(args.max_live_cost_per_day_dollars), 3.0)
+    args.max_live_submissions_per_day = min(int(args.max_live_submissions_per_day), 3)
+    args.max_orders = min(int(args.max_orders), 3)
+    args.contracts_per_order = 1
+    # Keep micro-live entries away from expensive strikes where edge is most
+    # likely to get siphoned by slippage/fees.
+    args.yes_max_entry_price = min(float(args.yes_max_entry_price), 0.85)
+    args.no_max_entry_price = min(float(args.no_max_entry_price), 0.85)
+    micro_min_metar_ingest_quality_score = 0.85
+    micro_min_metar_fresh_station_coverage_ratio = 0.75
+    if hasattr(args, "min_metar_ingest_quality_score"):
+        if args.min_metar_ingest_quality_score is None:
+            args.min_metar_ingest_quality_score = micro_min_metar_ingest_quality_score
+        else:
+            args.min_metar_ingest_quality_score = max(
+                float(args.min_metar_ingest_quality_score),
+                micro_min_metar_ingest_quality_score,
+            )
+    if hasattr(args, "min_metar_fresh_station_coverage_ratio"):
+        if args.min_metar_fresh_station_coverage_ratio is None:
+            args.min_metar_fresh_station_coverage_ratio = micro_min_metar_fresh_station_coverage_ratio
+        else:
+            args.min_metar_fresh_station_coverage_ratio = max(
+                float(args.min_metar_fresh_station_coverage_ratio),
+                micro_min_metar_fresh_station_coverage_ratio,
+            )
+    if hasattr(args, "require_metar_ingest_status_ready"):
+        args.require_metar_ingest_status_ready = True
+    if hasattr(args, "high_price_edge_guard_enabled"):
+        args.high_price_edge_guard_enabled = True
+    if hasattr(args, "high_price_edge_guard_min_entry_price_dollars"):
+        current_entry_floor = _parse_float(getattr(args, "high_price_edge_guard_min_entry_price_dollars", None))
+        if current_entry_floor is None:
+            args.high_price_edge_guard_min_entry_price_dollars = 0.85
+        else:
+            # Lower trigger floor is stricter because more entries are screened.
+            args.high_price_edge_guard_min_entry_price_dollars = min(float(current_entry_floor), 0.85)
+    if hasattr(args, "high_price_edge_guard_min_expected_edge_net"):
+        current_min_edge = _parse_float(getattr(args, "high_price_edge_guard_min_expected_edge_net", None))
+        if current_min_edge is None:
+            args.high_price_edge_guard_min_expected_edge_net = 0.0
+        else:
+            args.high_price_edge_guard_min_expected_edge_net = max(float(current_min_edge), 0.0)
+    if hasattr(args, "high_price_edge_guard_min_edge_to_risk_ratio"):
+        current_min_ratio = _parse_float(getattr(args, "high_price_edge_guard_min_edge_to_risk_ratio", None))
+        if current_min_ratio is None:
+            args.high_price_edge_guard_min_edge_to_risk_ratio = 0.02
+        else:
+            args.high_price_edge_guard_min_edge_to_risk_ratio = max(float(current_min_ratio), 0.02)
+
+    max_open_exposure_dollars = round(float(args.planning_bankroll) * float(args.max_total_deployed_pct), 6)
+    return {
+        "planning_bankroll_dollars": round(float(args.planning_bankroll), 6),
+        "max_daily_loss_dollars": round(float(args.daily_risk_cap), 6),
+        "max_total_open_exposure_dollars": max_open_exposure_dollars,
+        "max_total_deployed_pct": round(float(args.max_total_deployed_pct), 6),
+        "max_live_cost_per_day_dollars": round(float(args.max_live_cost_per_day_dollars), 6),
+        "max_live_submissions_per_day": int(args.max_live_submissions_per_day),
+        "max_orders_per_loop": int(args.max_orders),
+        "contracts_per_order": int(args.contracts_per_order),
+        "yes_max_entry_price_dollars": round(float(args.yes_max_entry_price), 6),
+        "no_max_entry_price_dollars": round(float(args.no_max_entry_price), 6),
+        "min_metar_ingest_quality_score": round(float(args.min_metar_ingest_quality_score), 6)
+        if getattr(args, "min_metar_ingest_quality_score", None) is not None
+        else None,
+        "min_metar_fresh_station_coverage_ratio": round(float(args.min_metar_fresh_station_coverage_ratio), 6)
+        if getattr(args, "min_metar_fresh_station_coverage_ratio", None) is not None
+        else None,
+        "require_metar_ingest_status_ready": bool(getattr(args, "require_metar_ingest_status_ready", False)),
+        "high_price_edge_guard_enabled": bool(getattr(args, "high_price_edge_guard_enabled", False)),
+        "high_price_edge_guard_min_entry_price_dollars": round(
+            float(args.high_price_edge_guard_min_entry_price_dollars),
+            6,
+        )
+        if getattr(args, "high_price_edge_guard_min_entry_price_dollars", None) is not None
+        else None,
+        "high_price_edge_guard_min_expected_edge_net": round(
+            float(args.high_price_edge_guard_min_expected_edge_net),
+            6,
+        )
+        if getattr(args, "high_price_edge_guard_min_expected_edge_net", None) is not None
+        else None,
+        "high_price_edge_guard_min_edge_to_risk_ratio": round(
+            float(args.high_price_edge_guard_min_edge_to_risk_ratio),
+            6,
+        )
+        if getattr(args, "high_price_edge_guard_min_edge_to_risk_ratio", None) is not None
+        else None,
+    }
+
+
+def _run_settled_outcome_throughput_cli(
+    *,
+    output_dir: str,
+    summarize_only: bool,
+) -> dict[str, Any]:
+    kwargs = {"output_dir": output_dir}
+
+    def _invoke_optional_runner(runner: Any) -> tuple[dict[str, Any] | None, tuple[str, ...]]:
+        if not callable(runner):
+            return None, ()
+        payload, ignored = _invoke_runner_with_supported_kwargs(runner, kwargs)
+        if isinstance(payload, dict):
+            return payload, ignored
+        if isinstance(payload, str):
+            try:
+                decoded = json.loads(payload)
+            except json.JSONDecodeError:
+                decoded = None
+            if isinstance(decoded, dict):
+                return decoded, ignored
+        return {"status": "invalid_runner_payload", "payload_type": type(payload).__name__}, ignored
+
+    if summarize_only:
+        summary, ignored = _invoke_optional_runner(summarize_kalshi_temperature_settled_outcome_throughput)
+        if summary is None:
+            summary, ignored = _invoke_optional_runner(run_kalshi_temperature_settled_outcome_throughput)
+            if summary is None:
+                return {
+                    "status": "runner_unavailable",
+                    "mode": "summarize_only",
+                    "runner_module": "betbot.kalshi_temperature_settled_outcome_throughput",
+                    "message": "Settled-outcome throughput runner is unavailable in this environment.",
+                }
+            summary.setdefault("mode", "summarize_only_fallback_run")
+        else:
+            summary.setdefault("mode", "summarize_only")
+    else:
+        summary, ignored = _invoke_optional_runner(run_kalshi_temperature_settled_outcome_throughput)
+        if summary is None:
+            summary, ignored = _invoke_optional_runner(summarize_kalshi_temperature_settled_outcome_throughput)
+            if summary is None:
+                return {
+                    "status": "runner_unavailable",
+                    "mode": "run",
+                    "runner_module": "betbot.kalshi_temperature_settled_outcome_throughput",
+                    "message": "Settled-outcome throughput runner is unavailable in this environment.",
+                }
+            summary.setdefault("mode", "run_fallback_summary")
+        else:
+            summary.setdefault("mode", "run")
+
+    if ignored:
+        summary["runner_ignored_cli_kwargs"] = sorted(ignored)
+    return summary
+
+
+def _run_coverage_velocity_report_cli(
+    *,
+    output_dir: str,
+    history_limit: int,
+    summarize_only: bool,
+) -> dict[str, Any]:
+    kwargs = {"output_dir": output_dir, "history_limit": history_limit}
+
+    def _invoke_optional_runner(runner: Any) -> tuple[dict[str, Any] | None, tuple[str, ...]]:
+        if not callable(runner):
+            return None, ()
+        payload, ignored = _invoke_runner_with_supported_kwargs(runner, kwargs)
+        if isinstance(payload, dict):
+            return payload, ignored
+        if isinstance(payload, str):
+            try:
+                decoded = json.loads(payload)
+            except json.JSONDecodeError:
+                decoded = None
+            if isinstance(decoded, dict):
+                return decoded, ignored
+        return {"status": "invalid_runner_payload", "payload_type": type(payload).__name__}, ignored
+
+    if summarize_only:
+        summary, ignored = _invoke_optional_runner(summarize_kalshi_temperature_coverage_velocity_report)
+        if summary is None:
+            summary, ignored = _invoke_optional_runner(run_kalshi_temperature_coverage_velocity_report)
+            if summary is None:
+                return {
+                    "status": "runner_unavailable",
+                    "mode": "summarize_only",
+                    "runner_module": "betbot.kalshi_temperature_coverage_velocity_report",
+                    "message": "Coverage-velocity report runner is unavailable in this environment.",
+                }
+            summary.setdefault("mode", "summarize_only_fallback_run")
+        else:
+            summary.setdefault("mode", "summarize_only")
+    else:
+        summary, ignored = _invoke_optional_runner(run_kalshi_temperature_coverage_velocity_report)
+        if summary is None:
+            summary, ignored = _invoke_optional_runner(summarize_kalshi_temperature_coverage_velocity_report)
+            if summary is None:
+                return {
+                    "status": "runner_unavailable",
+                    "mode": "run",
+                    "runner_module": "betbot.kalshi_temperature_coverage_velocity_report",
+                    "message": "Coverage-velocity report runner is unavailable in this environment.",
+                }
+            summary.setdefault("mode", "run_fallback_summary")
+        else:
+            summary.setdefault("mode", "run")
+
+    if ignored:
+        summary["runner_ignored_cli_kwargs"] = sorted(ignored)
+    return summary
+
+
+def _promote_weather_pattern_risk_off_summary(summary: dict[str, Any]) -> None:
+    sources: list[dict[str, Any]] = [summary]
+    for key in ("bridge_plan_summary", "plan_summary", "intent_summary", "weather_pattern_summary"):
+        candidate = summary.get(key)
+        if isinstance(candidate, dict):
+            sources.append(candidate)
+    for source in list(sources):
+        for container_key in ("weather_pattern_risk_off", "weather_pattern_risk_off_summary", "risk_off"):
+            candidate = source.get(container_key)
+            if isinstance(candidate, dict):
+                sources.append(candidate)
+    aliases: dict[str, tuple[str, ...]] = {
+        "weather_pattern_risk_off_enabled": ("weather_pattern_risk_off_enabled", "enabled"),
+        "weather_pattern_risk_off_applied": ("weather_pattern_risk_off_applied", "applied"),
+        "weather_pattern_risk_off_status": ("weather_pattern_risk_off_status", "status"),
+        "weather_pattern_risk_off_application_status": (
+            "weather_pattern_risk_off_application_status",
+            "application_status",
+        ),
+        "weather_pattern_risk_off_triggered": ("weather_pattern_risk_off_triggered", "triggered"),
+        "weather_pattern_risk_off_concentration_threshold": (
+            "weather_pattern_risk_off_concentration_threshold",
+            "concentration_threshold",
+        ),
+        "weather_pattern_risk_off_min_attempts": ("weather_pattern_risk_off_min_attempts", "min_attempts"),
+        "weather_pattern_risk_off_stale_metar_share_threshold": (
+            "weather_pattern_risk_off_stale_metar_share_threshold",
+            "stale_metar_share_threshold",
+        ),
+    }
+    for destination_key, source_keys in aliases.items():
+        if summary.get(destination_key) is not None:
+            continue
+        direct_value = summary.get(destination_key)
+        if direct_value is not None:
+            summary[destination_key] = direct_value
+            continue
+        for source in sources[1:]:
+            direct_source_value = source.get(destination_key)
+            if direct_source_value is not None:
+                summary[destination_key] = direct_source_value
+                break
+        if summary.get(destination_key) is not None:
+            continue
+        fallback_keys = source_keys[1:]
+        for source in sources[1:]:
+            for source_key in fallback_keys:
+                value = source.get(source_key)
+                if value is not None:
+                    summary[destination_key] = value
+                    break
+            if summary.get(destination_key) is not None:
+                break
+
+
+def run_kalshi_temperature_weather_pattern(
+    **kwargs: Any,
+) -> dict[str, Any]:
+    from betbot.kalshi_temperature_weather_pattern import run_kalshi_temperature_weather_pattern as _runner
+
+    return _runner(**kwargs)
+
+
+def run_kalshi_temperature_recovery_advisor(
+    **kwargs: Any,
+) -> dict[str, Any]:
+    from betbot.kalshi_temperature_recovery_advisor import run_kalshi_temperature_recovery_advisor as _runner
+
+    return _runner(**kwargs)
+
+
+def run_kalshi_temperature_recovery_loop(
+    **kwargs: Any,
+) -> dict[str, Any]:
+    from betbot.kalshi_temperature_recovery_loop import run_kalshi_temperature_recovery_loop as _runner
+
+    return _runner(**kwargs)
+
+
+def run_kalshi_temperature_recovery_campaign(
+    **kwargs: Any,
+) -> dict[str, Any]:
+    from betbot.kalshi_temperature_recovery_campaign import run_kalshi_temperature_recovery_campaign as _runner
+
+    return _runner(**kwargs)
+
+
+def _stage_optimizer_intent_files(intent_files: list[str], staging_dir: Path) -> tuple[list[str], list[str]]:
+    staged_files: list[str] = []
+    warnings: list[str] = []
+    for index, raw_path in enumerate(intent_files, start=1):
+        source_path = Path(str(raw_path))
+        if not source_path.exists():
+            warnings.append(f"missing:{source_path}")
+            continue
+        if source_path.is_dir():
+            warnings.append(f"directory_skipped:{source_path}")
+            continue
+        suffix = source_path.suffix or ".csv"
+        staged_name = f"kalshi_temperature_trade_intents_{index:02d}_{source_path.stem}{suffix}"
+        staged_path = staging_dir / staged_name
+        try:
+            shutil.copy2(source_path, staged_path)
+        except OSError as exc:
+            warnings.append(f"copy_failed:{source_path}:{exc}")
+            continue
+        staged_files.append(str(staged_path))
+    return staged_files, warnings
+
+
+def _optimizer_metric_key(summary: dict[str, Any]) -> tuple[float, float, float, int]:
+    intent_window = summary.get("intent_window") if isinstance(summary.get("intent_window"), dict) else {}
+    profile = summary.get("profile") if isinstance(summary.get("profile"), dict) else {}
+    return (
+        float(_parse_float(intent_window.get("approved_adjusted_rate")) or 0.0),
+        float(_parse_float(intent_window.get("adjusted_rate")) or 0.0),
+        float(_parse_float(profile.get("evidence_confidence")) or 0.0),
+        int(_parse_int(intent_window.get("rows_total")) or 0),
+    )
+
+
+def _optimizer_candidate_configs(
+    *,
+    lookback_hours_min: float,
+    lookback_hours_max: float,
+    lookback_hours_step: float,
+    intent_hours_min: float,
+    intent_hours_max: float,
+    intent_hours_step: float,
+    min_resolved_market_sides_min: int,
+    min_resolved_market_sides_max: int,
+    min_bucket_samples_min: int,
+    min_bucket_samples_max: int,
+    probability_penalty_max_min: float,
+    probability_penalty_max_max: float,
+    expected_edge_penalty_max_min: float,
+    expected_edge_penalty_max_max: float,
+    score_adjust_scale_min: float,
+    score_adjust_scale_max: float,
+    score_adjust_scale_step: float,
+    preferred_attribution_model: str,
+    top_n: int,
+) -> list[dict[str, Any]]:
+    def _clamp_bounds(lo: float, hi: float) -> tuple[float, float]:
+        lo = float(lo)
+        hi = float(hi)
+        if hi < lo:
+            lo, hi = hi, lo
+        return lo, hi
+
+    def _mid(lo: float, hi: float) -> float:
+        return lo + ((hi - lo) / 2.0)
+
+    lb_min, lb_max = _clamp_bounds(lookback_hours_min, lookback_hours_max)
+    ih_min, ih_max = _clamp_bounds(intent_hours_min, intent_hours_max)
+    pp_min, pp_max = _clamp_bounds(probability_penalty_max_min, probability_penalty_max_max)
+    ee_min, ee_max = _clamp_bounds(expected_edge_penalty_max_min, expected_edge_penalty_max_max)
+    sa_min, sa_max = _clamp_bounds(score_adjust_scale_min, score_adjust_scale_max)
+
+    configs = [
+        {
+            "lookback_hours": round(lb_min, 3),
+            "intent_hours": round(ih_min, 3),
+            "min_resolved_market_sides": max(1, int(min_resolved_market_sides_min)),
+            "min_bucket_samples": max(1, int(min_bucket_samples_min)),
+            "probability_penalty_max": round(pp_min, 6),
+            "expected_edge_penalty_max": round(ee_min, 6),
+            "score_adjust_scale": round(sa_min, 6),
+            "preferred_attribution_model": preferred_attribution_model,
+            "top_n": int(top_n),
+        },
+        {
+            "lookback_hours": round(_mid(lb_min, lb_max), 3),
+            "intent_hours": round(_mid(ih_min, ih_max), 3),
+            "min_resolved_market_sides": max(
+                1, int(_mid(float(min_resolved_market_sides_min), float(min_resolved_market_sides_max)))
+            ),
+            "min_bucket_samples": max(1, int(_mid(float(min_bucket_samples_min), float(min_bucket_samples_max)))),
+            "probability_penalty_max": round(_mid(pp_min, pp_max), 6),
+            "expected_edge_penalty_max": round(_mid(ee_min, ee_max), 6),
+            "score_adjust_scale": round(_mid(sa_min, sa_max), 6),
+            "preferred_attribution_model": preferred_attribution_model,
+            "top_n": int(top_n),
+        },
+        {
+            "lookback_hours": round(lb_max, 3),
+            "intent_hours": round(ih_max, 3),
+            "min_resolved_market_sides": max(1, int(min_resolved_market_sides_max)),
+            "min_bucket_samples": max(1, int(min_bucket_samples_max)),
+            "probability_penalty_max": round(pp_max, 6),
+            "expected_edge_penalty_max": round(ee_max, 6),
+            "score_adjust_scale": round(sa_max, 6),
+            "preferred_attribution_model": preferred_attribution_model,
+            "top_n": int(top_n),
+        },
+    ]
+    if lb_min != lb_max or ih_min != ih_max:
+        configs.append(
+            {
+                "lookback_hours": round(lb_max, 3),
+                "intent_hours": round(ih_min, 3),
+                "min_resolved_market_sides": max(1, int(min_resolved_market_sides_max)),
+                "min_bucket_samples": max(1, int(min_bucket_samples_min)),
+                "probability_penalty_max": round(pp_min, 6),
+                "expected_edge_penalty_max": round(ee_max, 6),
+                "score_adjust_scale": round(_mid(sa_min, sa_max), 6),
+                "preferred_attribution_model": preferred_attribution_model,
+                "top_n": int(top_n),
+            }
+        )
+
+    unique_configs: list[dict[str, Any]] = []
+    seen: set[tuple[Any, ...]] = set()
+    for config in configs:
+        signature = tuple(sorted(config.items()))
+        if signature in seen:
+            continue
+        seen.add(signature)
+        unique_configs.append(config)
+    return unique_configs
+
+
+def run_temperature_growth_optimizer(
+    *,
+    output_dir: str,
+    intent_files: list[str],
+    lookback_hours_min: float,
+    lookback_hours_max: float,
+    lookback_hours_step: float,
+    intent_hours_min: float,
+    intent_hours_max: float,
+    intent_hours_step: float,
+    min_resolved_market_sides_min: int,
+    min_resolved_market_sides_max: int,
+    min_bucket_samples_min: int,
+    min_bucket_samples_max: int,
+    probability_penalty_max_min: float,
+    probability_penalty_max_max: float,
+    expected_edge_penalty_max_min: float,
+    expected_edge_penalty_max_max: float,
+    score_adjust_scale_min: float,
+    score_adjust_scale_max: float,
+    score_adjust_scale_step: float,
+    preferred_attribution_model: str,
+    top_n: int = 10,
+    search_bounds_json: str | None = None,
+) -> dict[str, Any]:
+    captured_at = datetime.now().astimezone()
+    out_dir = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    bounds_payload = _load_json_dict(search_bounds_json) if _normalize_text(search_bounds_json) else None
+    if isinstance(bounds_payload, dict):
+        bounds_source = bounds_payload.get("bounds") if isinstance(bounds_payload.get("bounds"), dict) else bounds_payload
+        lookback_hours_min = _parse_float(bounds_source.get("lookback_hours_min")) or lookback_hours_min
+        lookback_hours_max = _parse_float(bounds_source.get("lookback_hours_max")) or lookback_hours_max
+        lookback_hours_step = _parse_float(bounds_source.get("lookback_hours_step")) or lookback_hours_step
+        intent_hours_min = _parse_float(bounds_source.get("intent_hours_min")) or intent_hours_min
+        intent_hours_max = _parse_float(bounds_source.get("intent_hours_max")) or intent_hours_max
+        intent_hours_step = _parse_float(bounds_source.get("intent_hours_step")) or intent_hours_step
+        min_resolved_market_sides_min = (
+            _parse_int(bounds_source.get("min_resolved_market_sides_min")) or min_resolved_market_sides_min
+        )
+        min_resolved_market_sides_max = (
+            _parse_int(bounds_source.get("min_resolved_market_sides_max")) or min_resolved_market_sides_max
+        )
+        min_bucket_samples_min = _parse_int(bounds_source.get("min_bucket_samples_min")) or min_bucket_samples_min
+        min_bucket_samples_max = _parse_int(bounds_source.get("min_bucket_samples_max")) or min_bucket_samples_max
+        probability_penalty_max_min = (
+            _parse_float(bounds_source.get("probability_penalty_max_min")) or probability_penalty_max_min
+        )
+        probability_penalty_max_max = (
+            _parse_float(bounds_source.get("probability_penalty_max_max")) or probability_penalty_max_max
+        )
+        expected_edge_penalty_max_min = (
+            _parse_float(bounds_source.get("expected_edge_penalty_max_min")) or expected_edge_penalty_max_min
+        )
+        expected_edge_penalty_max_max = (
+            _parse_float(bounds_source.get("expected_edge_penalty_max_max")) or expected_edge_penalty_max_max
+        )
+        score_adjust_scale_min = _parse_float(bounds_source.get("score_adjust_scale_min")) or score_adjust_scale_min
+        score_adjust_scale_max = _parse_float(bounds_source.get("score_adjust_scale_max")) or score_adjust_scale_max
+        score_adjust_scale_step = (
+            _parse_float(bounds_source.get("score_adjust_scale_step")) or score_adjust_scale_step
+        )
+        preferred_attribution_model = _normalize_text(
+            bounds_source.get("preferred_attribution_model") or bounds_source.get("preferred_model")
+        ) or preferred_attribution_model
+        top_n = _parse_int(bounds_source.get("top_n")) or top_n
+
+    with tempfile.TemporaryDirectory(prefix=".temperature_growth_optimizer_", dir=str(out_dir)) as temp_dir:
+        staging_dir = Path(temp_dir) / "intents"
+        staging_dir.mkdir(parents=True, exist_ok=True)
+        staged_files, stage_warnings = _stage_optimizer_intent_files(intent_files, staging_dir)
+        if not staged_files:
+            return {
+                "status": "no_intent_files",
+                "captured_at": captured_at.isoformat(),
+                "output_dir": str(out_dir),
+                "profile_application_status": "not_applied",
+                "profile_json": "",
+                "warnings": stage_warnings,
+                "intent_files": [str(Path(item)) for item in intent_files],
+            }
+
+        candidate_configs = _optimizer_candidate_configs(
+            lookback_hours_min=lookback_hours_min,
+            lookback_hours_max=lookback_hours_max,
+            lookback_hours_step=lookback_hours_step,
+            intent_hours_min=intent_hours_min,
+            intent_hours_max=intent_hours_max,
+            intent_hours_step=intent_hours_step,
+            min_resolved_market_sides_min=min_resolved_market_sides_min,
+            min_resolved_market_sides_max=min_resolved_market_sides_max,
+            min_bucket_samples_min=min_bucket_samples_min,
+            min_bucket_samples_max=min_bucket_samples_max,
+            probability_penalty_max_min=probability_penalty_max_min,
+            probability_penalty_max_max=probability_penalty_max_max,
+            expected_edge_penalty_max_min=expected_edge_penalty_max_min,
+            expected_edge_penalty_max_max=expected_edge_penalty_max_max,
+            score_adjust_scale_min=score_adjust_scale_min,
+            score_adjust_scale_max=score_adjust_scale_max,
+            score_adjust_scale_step=score_adjust_scale_step,
+            preferred_attribution_model=preferred_attribution_model,
+            top_n=top_n,
+        )
+
+        evaluations: list[dict[str, Any]] = []
+        best_summary: dict[str, Any] | None = None
+        best_config: dict[str, Any] | None = None
+        best_score: tuple[float, float, float, int] | None = None
+        for index, config in enumerate(candidate_configs, start=1):
+            summary = run_kalshi_temperature_selection_quality(
+                output_dir=str(staging_dir),
+                lookback_hours=config["lookback_hours"],
+                min_resolved_market_sides=config["min_resolved_market_sides"],
+                min_bucket_samples=config["min_bucket_samples"],
+                preferred_attribution_model=config["preferred_attribution_model"],
+                max_profile_age_hours=max(0.0, float(max(lookback_hours_max, intent_hours_max))),
+                probability_penalty_max=config["probability_penalty_max"],
+                expected_edge_penalty_max=config["expected_edge_penalty_max"],
+                score_adjust_scale=config["score_adjust_scale"],
+                intent_hours=config["intent_hours"],
+                top_n=max(1, int(config["top_n"])),
+            )
+            metric = _optimizer_metric_key(summary)
+            evaluations.append(
+                {
+                    "index": index,
+                    "config": config,
+                    "metric": {
+                        "approved_adjusted_rate": metric[0],
+                        "adjusted_rate": metric[1],
+                        "evidence_confidence": metric[2],
+                        "rows_total": metric[3],
+                    },
+                    "selection_quality_output_file": summary.get("output_file"),
+                }
+            )
+            if best_score is None or metric > best_score:
+                best_score = metric
+                best_summary = summary
+                best_config = config
+
+        assert best_summary is not None
+        assert best_config is not None
+
+        profile_payload = {
+            "status": "ready",
+            "captured_at": captured_at.isoformat(),
+            "source": "kalshi-temperature-growth-optimizer",
+            "profile_application_status": "applied" if bool(best_summary.get("profile")) else "not_applied",
+            "search_bounds": {
+                "lookback_hours_min": float(lookback_hours_min),
+                "lookback_hours_max": float(lookback_hours_max),
+                "lookback_hours_step": float(lookback_hours_step),
+                "intent_hours_min": float(intent_hours_min),
+                "intent_hours_max": float(intent_hours_max),
+                "intent_hours_step": float(intent_hours_step),
+                "min_resolved_market_sides_min": int(min_resolved_market_sides_min),
+                "min_resolved_market_sides_max": int(min_resolved_market_sides_max),
+                "min_bucket_samples_min": int(min_bucket_samples_min),
+                "min_bucket_samples_max": int(min_bucket_samples_max),
+                "probability_penalty_max_min": float(probability_penalty_max_min),
+                "probability_penalty_max_max": float(probability_penalty_max_max),
+                "expected_edge_penalty_max_min": float(expected_edge_penalty_max_min),
+                "expected_edge_penalty_max_max": float(expected_edge_penalty_max_max),
+                "score_adjust_scale_min": float(score_adjust_scale_min),
+                "score_adjust_scale_max": float(score_adjust_scale_max),
+                "score_adjust_scale_step": float(score_adjust_scale_step),
+                "preferred_attribution_model": preferred_attribution_model,
+                "top_n": int(top_n),
+            },
+            "selected_profile": best_summary.get("profile") if isinstance(best_summary.get("profile"), dict) else {},
+            "optimizer_profile": {
+                "historical_selection_quality_enabled": True,
+                "historical_selection_quality_lookback_hours": float(best_config["lookback_hours"]),
+                "historical_selection_quality_min_resolved_market_sides": int(best_config["min_resolved_market_sides"]),
+                "historical_selection_quality_min_bucket_samples": int(best_config["min_bucket_samples"]),
+                "historical_selection_quality_probability_penalty_max": float(best_config["probability_penalty_max"]),
+                "historical_selection_quality_expected_edge_penalty_max": float(best_config["expected_edge_penalty_max"]),
+                "historical_selection_quality_score_adjust_scale": float(best_config["score_adjust_scale"]),
+                "historical_selection_quality_profile_max_age_hours": max(
+                    0.0,
+                    float(max(lookback_hours_max, intent_hours_max)),
+                ),
+                "historical_selection_quality_preferred_model": preferred_attribution_model,
+            },
+            "best_candidate": best_config,
+            "best_metric": {
+                "approved_adjusted_rate": best_score[0] if best_score else 0.0,
+                "adjusted_rate": best_score[1] if best_score else 0.0,
+                "evidence_confidence": best_score[2] if best_score else 0.0,
+                "rows_total": best_score[3] if best_score else 0,
+            },
+            "candidate_count": len(candidate_configs),
+            "evaluations": evaluations[: max(1, int(top_n))],
+            "intent_files": staged_files,
+            "warnings": stage_warnings,
+        }
+        profile_stamp = captured_at.strftime("%Y%m%d_%H%M%S")
+        profile_path = out_dir / f"kalshi_temperature_growth_optimizer_profile_{profile_stamp}.json"
+        profile_path.write_text(json.dumps(profile_payload, indent=2, sort_keys=True), encoding="utf-8")
+
+        summary = {
+            "status": "ready",
+            "captured_at": captured_at.isoformat(),
+            "output_dir": str(out_dir),
+            "profile_application_status": profile_payload["profile_application_status"],
+            "profile_json": str(profile_path),
+            "profile": profile_payload,
+            "search_bounds": profile_payload["search_bounds"],
+            "best_candidate": best_config,
+            "best_metric": profile_payload["best_metric"],
+            "candidate_count": len(candidate_configs),
+            "intent_files": staged_files,
+            "warnings": stage_warnings,
+            "evaluations": evaluations[: max(1, int(top_n))],
+            "selection_quality_output_file": best_summary.get("output_file"),
+        }
+        summary_path = out_dir / f"kalshi_temperature_growth_optimizer_summary_{profile_stamp}.json"
+        summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
+        summary["output_file"] = str(summary_path)
+        summary["profile_json"] = str(profile_path)
+        return summary
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -398,6 +1228,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--coldmath-replication-market-tickers",
         default="",
         help="Optional comma-separated ticker override for runtime-cycle replication plan build",
+    )
+    runtime_cycle.add_argument(
+        "--coldmath-replication-excluded-market-tickers",
+        default="",
+        help="Optional comma-separated ticker exclusions for runtime-cycle replication plan build",
+    )
+    runtime_cycle.add_argument(
+        "--coldmath-replication-excluded-market-tickers-file",
+        default="",
+        help="Optional JSON/text exclusion file for runtime-cycle replication plan build",
     )
     runtime_cycle.add_argument(
         "--coldmath-replication-disable-liquidity-filter",
@@ -1734,6 +2574,44 @@ def build_parser() -> argparse.ArgumentParser:
     )
     kalshi_temperature_settlement_state.add_argument("--output-dir", default="outputs", help="Output directory")
 
+    kalshi_temperature_coverage_velocity_report = subparsers.add_parser(
+        "kalshi-temperature-coverage-velocity-report",
+        aliases=("temperature-coverage-velocity-report",),
+        help="Build or summarize coverage-velocity trend artifacts for recovery hardening",
+    )
+    kalshi_temperature_coverage_velocity_report.add_argument(
+        "--output-dir",
+        default="outputs",
+        help="Output directory",
+    )
+    kalshi_temperature_coverage_velocity_report.add_argument(
+        "--history-limit",
+        type=int,
+        default=24,
+        help="Maximum decision-matrix hardening history files to include in the trend report",
+    )
+    kalshi_temperature_coverage_velocity_report.add_argument(
+        "--summarize-only",
+        action="store_true",
+        help="Summarize latest coverage-velocity artifacts without requesting a fresh rebuild",
+    )
+
+    kalshi_temperature_settled_outcome_throughput = subparsers.add_parser(
+        "kalshi-temperature-settled-outcome-throughput",
+        aliases=("temperature-settled-outcome-throughput",),
+        help="Build or summarize settled-outcome throughput coverage artifacts for recovery hardening",
+    )
+    kalshi_temperature_settled_outcome_throughput.add_argument(
+        "--output-dir",
+        default="outputs",
+        help="Output directory",
+    )
+    kalshi_temperature_settled_outcome_throughput.add_argument(
+        "--summarize-only",
+        action="store_true",
+        help="Summarize latest throughput artifacts without requesting a fresh rebuild",
+    )
+
     kalshi_temperature_metar_ingest = subparsers.add_parser(
         "kalshi-temperature-metar-ingest",
         help="Ingest AviationWeather METAR cache files and update per-station local-day maxima for Kalshi temperature workflows",
@@ -1755,6 +2633,39 @@ def build_parser() -> argparse.ArgumentParser:
         help="HTTP timeout per METAR cache request",
     )
     kalshi_temperature_metar_ingest.add_argument("--output-dir", default="outputs", help="Output directory")
+
+    kalshi_temperature_weather_pattern = subparsers.add_parser(
+        "kalshi-temperature-weather-pattern",
+        aliases=["temperature-weather-pattern"],
+        help="Build weather-pattern diagnostics for temperature pipeline readiness",
+    )
+    kalshi_temperature_weather_pattern.add_argument(
+        "--output-dir",
+        default="outputs",
+        help="Output directory",
+    )
+    kalshi_temperature_weather_pattern.add_argument(
+        "--window-hours",
+        type=float,
+        default=24.0,
+        help="Rolling lookback window in hours",
+    )
+    kalshi_temperature_weather_pattern.add_argument(
+        "--min-samples",
+        "--min-bucket-samples",
+        dest="min_bucket_samples",
+        type=int,
+        default=25,
+        help="Minimum sample count required for pattern summaries",
+    )
+    kalshi_temperature_weather_pattern.add_argument(
+        "--max-age-hours",
+        "--max-profile-age-hours",
+        dest="max_profile_age_hours",
+        type=float,
+        default=72.0,
+        help="Maximum allowed age in hours for source weather-pattern inputs",
+    )
 
     kalshi_temperature_trader = subparsers.add_parser(
         "kalshi-temperature-trader",
@@ -1784,6 +2695,46 @@ def build_parser() -> argparse.ArgumentParser:
         "--metar-state-json",
         default=None,
         help="Optional explicit METAR state JSON; inferred from summary or output-dir when omitted",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--min-metar-ingest-quality-score",
+        type=float,
+        default=None,
+        help="Optional minimum METAR ingest quality score required for approvals",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--min-metar-fresh-station-coverage-ratio",
+        type=float,
+        default=None,
+        help="Optional minimum fresh-station coverage ratio required from METAR ingest",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--require-metar-ingest-status-ready",
+        action="store_true",
+        help="Require METAR ingest summary status=ready before approvals",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--high-price-edge-guard-enabled",
+        action="store_true",
+        help="Enable high-entry-price fail-safe gate even when broader edge thresholds are disabled",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--high-price-edge-guard-min-entry-price-dollars",
+        type=float,
+        default=0.85,
+        help="Entry-price trigger where high-price fail-safe checks activate",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--high-price-edge-guard-min-expected-edge-net",
+        type=float,
+        default=0.0,
+        help="Minimum expected edge required once high-price fail-safe checks activate",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--high-price-edge-guard-min-edge-to-risk-ratio",
+        type=float,
+        default=0.02,
+        help="Minimum edge-to-risk ratio required once high-price fail-safe checks activate",
     )
     kalshi_temperature_trader.add_argument(
         "--ws-state-json",
@@ -2047,6 +2998,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Allow live order writes (still subject to existing micro-execute safety gates)",
     )
     kalshi_temperature_trader.add_argument(
+        "--micro-live-50",
+        action="store_true",
+        help=(
+            "Apply strict $50 micro-live caps (bankroll=50, daily risk<=3, "
+            "max deployed<=20%%, live cost/day<=3, max submissions/day<=3, "
+            "max orders/loop<=3, contracts/order=1, max entry<=0.85)."
+        ),
+    )
+    kalshi_temperature_trader.add_argument(
         "--intents-only",
         action="store_true",
         help="Build intents and bridge plans only; skip micro-execution",
@@ -2227,6 +3187,95 @@ def build_parser() -> argparse.ArgumentParser:
         help="Preferred bankroll-validation attribution model used for historical quality bucket penalties/boosts",
     )
     kalshi_temperature_trader.add_argument(
+        "--optimizer-profile-json",
+        "--optimizer-profile-json-path",
+        dest="optimizer_profile_json",
+        default=None,
+        help="Optional optimizer profile JSON path used to seed historical selection-quality settings",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--weather-pattern-profile-json",
+        dest="weather_pattern_profile_json",
+        default=None,
+        help="Optional weather-pattern profile JSON path used to seed temperature trader weather-pattern settings",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--weather-pattern-hardening-enabled",
+        dest="weather_pattern_hardening_enabled",
+        action="store_true",
+        default=None,
+        help="Enable weather-pattern hardening controls when supported by the trader runner",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--no-weather-pattern-hardening-enabled",
+        "--disable-weather-pattern-hardening",
+        dest="weather_pattern_hardening_enabled",
+        action="store_false",
+        help="Disable weather-pattern hardening controls when supported by the trader runner",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--weather-pattern-risk-off-enabled",
+        dest="weather_pattern_risk_off_enabled",
+        action="store_true",
+        default=None,
+        help="Enable weather-pattern risk-off controls when supported by the trader runner",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--no-weather-pattern-risk-off-enabled",
+        dest="weather_pattern_risk_off_enabled",
+        action="store_false",
+        help="Disable weather-pattern risk-off controls when supported by the trader runner",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--weather-pattern-risk-off-concentration-threshold",
+        type=float,
+        default=None,
+        help="Optional concentration threshold used by weather-pattern risk-off controls",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--weather-pattern-risk-off-min-attempts",
+        type=int,
+        default=None,
+        help="Optional minimum attempts threshold used by weather-pattern risk-off controls",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--weather-pattern-risk-off-stale-metar-share-threshold",
+        type=float,
+        default=None,
+        help="Optional stale-METAR share threshold used by weather-pattern risk-off controls",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--weather-pattern-negative-bucket-suppression-enabled",
+        dest="weather_pattern_negative_bucket_suppression_enabled",
+        action="store_true",
+        default=None,
+        help="Enable weather-pattern negative bucket suppression controls when supported by the trader runner",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--no-weather-pattern-negative-bucket-suppression-enabled",
+        dest="weather_pattern_negative_bucket_suppression_enabled",
+        action="store_false",
+        help="Disable weather-pattern negative bucket suppression controls when supported by the trader runner",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--weather-pattern-negative-bucket-suppression-top-n",
+        type=int,
+        default=None,
+        help="Optional cap for strongest negative weather-pattern buckets used for suppression",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--weather-pattern-negative-bucket-suppression-min-samples",
+        type=int,
+        default=None,
+        help="Optional minimum sample count for weather-pattern negative bucket suppression",
+    )
+    kalshi_temperature_trader.add_argument(
+        "--weather-pattern-negative-bucket-suppression-negative-expectancy-threshold",
+        type=float,
+        default=None,
+        help="Optional negative expectancy threshold used by weather-pattern negative bucket suppression",
+    )
+    kalshi_temperature_trader.add_argument(
         "--cancel-resting-immediately",
         action="store_true",
         help="Forwarded to micro-execute cancel behavior",
@@ -2283,6 +3332,46 @@ def build_parser() -> argparse.ArgumentParser:
         "--metar-state-json",
         default=None,
         help="Optional explicit METAR state JSON",
+    )
+    kalshi_temperature_shadow_watch.add_argument(
+        "--min-metar-ingest-quality-score",
+        type=float,
+        default=None,
+        help="Optional minimum METAR ingest quality score required for approvals",
+    )
+    kalshi_temperature_shadow_watch.add_argument(
+        "--min-metar-fresh-station-coverage-ratio",
+        type=float,
+        default=None,
+        help="Optional minimum fresh-station coverage ratio required from METAR ingest",
+    )
+    kalshi_temperature_shadow_watch.add_argument(
+        "--require-metar-ingest-status-ready",
+        action="store_true",
+        help="Require METAR ingest summary status=ready before approvals",
+    )
+    kalshi_temperature_shadow_watch.add_argument(
+        "--high-price-edge-guard-enabled",
+        action="store_true",
+        help="Enable high-entry-price fail-safe gate even when broader edge thresholds are disabled",
+    )
+    kalshi_temperature_shadow_watch.add_argument(
+        "--high-price-edge-guard-min-entry-price-dollars",
+        type=float,
+        default=0.85,
+        help="Entry-price trigger where high-price fail-safe checks activate",
+    )
+    kalshi_temperature_shadow_watch.add_argument(
+        "--high-price-edge-guard-min-expected-edge-net",
+        type=float,
+        default=0.0,
+        help="Minimum expected edge required once high-price fail-safe checks activate",
+    )
+    kalshi_temperature_shadow_watch.add_argument(
+        "--high-price-edge-guard-min-edge-to-risk-ratio",
+        type=float,
+        default=0.02,
+        help="Minimum edge-to-risk ratio required once high-price fail-safe checks activate",
     )
     kalshi_temperature_shadow_watch.add_argument(
         "--ws-state-json",
@@ -2558,6 +3647,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Allow live order writes (default is shadow mode)",
     )
     kalshi_temperature_shadow_watch.add_argument(
+        "--micro-live-50",
+        action="store_true",
+        help=(
+            "Apply strict $50 micro-live caps (bankroll=50, daily risk<=3, "
+            "max deployed<=20%%, live cost/day<=3, max submissions/day<=3, "
+            "max orders/loop<=3, contracts/order=1, max entry<=0.85)."
+        ),
+    )
+    kalshi_temperature_shadow_watch.add_argument(
         "--planning-bankroll",
         type=float,
         default=40.0,
@@ -2733,6 +3831,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="Preferred bankroll-validation attribution model used for historical quality bucket penalties/boosts",
     )
     kalshi_temperature_shadow_watch.add_argument(
+        "--weather-pattern-hardening-enabled",
+        dest="weather_pattern_hardening_enabled",
+        action="store_true",
+        default=None,
+        help="Enable weather-pattern hardening controls when supported by the trader runner",
+    )
+    kalshi_temperature_shadow_watch.add_argument(
+        "--no-weather-pattern-hardening-enabled",
+        "--disable-weather-pattern-hardening",
+        dest="weather_pattern_hardening_enabled",
+        action="store_false",
+        help="Disable weather-pattern hardening controls when supported by the trader runner",
+    )
+    kalshi_temperature_shadow_watch.add_argument(
         "--cancel-resting-immediately",
         action="store_true",
         help="Forwarded cancel behavior",
@@ -2795,6 +3907,521 @@ def build_parser() -> argparse.ArgumentParser:
         help="Number of top settled orders by absolute realized PnL in summary",
     )
     kalshi_temperature_profitability.add_argument("--output-dir", default="outputs", help="Output directory")
+
+    kalshi_temperature_recovery_advisor = subparsers.add_parser(
+        "kalshi-temperature-recovery-advisor",
+        aliases=("temperature-recovery-advisor",),
+        help="recovery hardening pass for weather risk-off blockers",
+    )
+    kalshi_temperature_recovery_advisor.add_argument(
+        "--output-dir",
+        default="outputs",
+        help="Output directory",
+    )
+    kalshi_temperature_recovery_advisor.add_argument(
+        "--weather-window-hours",
+        type=float,
+        default=720.0,
+        help="Lookback window in hours for weather-pattern profile refresh",
+    )
+    kalshi_temperature_recovery_advisor.add_argument(
+        "--weather-min-bucket-samples",
+        type=int,
+        default=10,
+        help="Minimum bucket samples for weather-pattern profile usage",
+    )
+    kalshi_temperature_recovery_advisor.add_argument(
+        "--weather-max-profile-age-hours",
+        type=float,
+        default=336.0,
+        help="Maximum age in hours for weather-pattern profile inputs",
+    )
+    kalshi_temperature_recovery_advisor.add_argument(
+        "--weather-negative-expectancy-attempt-share-target",
+        type=float,
+        default=0.50,
+        help="Target ceiling for negative expectancy attempt share",
+    )
+    kalshi_temperature_recovery_advisor.add_argument(
+        "--weather-stale-metar-negative-attempt-share-target",
+        type=float,
+        default=0.60,
+        help="Target ceiling for stale-METAR negative expectancy attempt share",
+    )
+    kalshi_temperature_recovery_advisor.add_argument(
+        "--weather-stale-metar-attempt-share-target",
+        type=float,
+        default=0.65,
+        help="Target ceiling for stale-METAR attempt share",
+    )
+    kalshi_temperature_recovery_advisor.add_argument(
+        "--weather-min-attempts-target",
+        type=int,
+        default=200,
+        help="Minimum attempt count target for recovery readiness",
+    )
+    kalshi_temperature_recovery_advisor.add_argument(
+        "--optimizer-top-n",
+        type=int,
+        default=5,
+        help="Top-N optimizer candidates considered for recovery recommendations",
+    )
+
+    kalshi_temperature_recovery_loop = subparsers.add_parser(
+        "kalshi-temperature-recovery-loop",
+        aliases=("temperature-recovery-loop",),
+        help="Run automated weather-risk remediation loop until gaps clear or progress stalls",
+    )
+    kalshi_temperature_recovery_loop.add_argument(
+        "--output-dir",
+        default="outputs",
+        help="Output directory",
+    )
+    kalshi_temperature_recovery_loop.add_argument(
+        "--trader-env-file",
+        default="data/research/account_onboarding.env.template",
+        help="Env file path used for trader remediation action",
+    )
+    kalshi_temperature_recovery_loop.add_argument(
+        "--max-iterations",
+        type=int,
+        default=4,
+        help="Maximum number of remediation loop iterations",
+    )
+    kalshi_temperature_recovery_loop.add_argument(
+        "--stall-iterations",
+        type=int,
+        default=2,
+        help="Maximum number of consecutive non-improving iterations before stop",
+    )
+    kalshi_temperature_recovery_loop.add_argument(
+        "--min-gap-improvement",
+        type=float,
+        default=0.01,
+        help="Minimum aggregate gap improvement required to reset stall counter",
+    )
+    kalshi_temperature_recovery_loop.add_argument(
+        "--weather-window-hours",
+        type=float,
+        default=720.0,
+        help="Lookback window in hours for weather-pattern profile refresh",
+    )
+    kalshi_temperature_recovery_loop.add_argument(
+        "--weather-min-bucket-samples",
+        type=int,
+        default=10,
+        help="Minimum bucket samples for weather-pattern profile usage",
+    )
+    kalshi_temperature_recovery_loop.add_argument(
+        "--weather-max-profile-age-hours",
+        type=float,
+        default=336.0,
+        help="Maximum age in hours for weather-pattern profile inputs",
+    )
+    kalshi_temperature_recovery_loop.add_argument(
+        "--weather-negative-expectancy-attempt-share-target",
+        type=float,
+        default=0.50,
+        help="Target ceiling for negative expectancy attempt share",
+    )
+    kalshi_temperature_recovery_loop.add_argument(
+        "--weather-stale-metar-negative-attempt-share-target",
+        type=float,
+        default=0.60,
+        help="Target ceiling for stale-METAR negative expectancy attempt share",
+    )
+    kalshi_temperature_recovery_loop.add_argument(
+        "--weather-stale-metar-attempt-share-target",
+        type=float,
+        default=0.65,
+        help="Target ceiling for stale-METAR attempt share",
+    )
+    kalshi_temperature_recovery_loop.add_argument(
+        "--weather-min-attempts-target",
+        type=int,
+        default=200,
+        help="Minimum attempt count target for recovery readiness",
+    )
+    kalshi_temperature_recovery_loop.add_argument(
+        "--optimizer-top-n",
+        type=int,
+        default=5,
+        help="Top-N optimizer candidates considered for recovery recommendations",
+    )
+    plateau_negative_regime_suppression_group = kalshi_temperature_recovery_loop.add_mutually_exclusive_group()
+    plateau_negative_regime_suppression_group.add_argument(
+        "--plateau-negative-regime-suppression-enabled",
+        dest="plateau_negative_regime_suppression_enabled",
+        action="store_true",
+        help="Enable negative-regime suppression during plateau break remediation",
+    )
+    plateau_negative_regime_suppression_group.add_argument(
+        "--no-plateau-negative-regime-suppression-enabled",
+        dest="plateau_negative_regime_suppression_enabled",
+        action="store_false",
+        help="Disable negative-regime suppression during plateau break remediation",
+    )
+    kalshi_temperature_recovery_loop.set_defaults(plateau_negative_regime_suppression_enabled=True)
+    kalshi_temperature_recovery_loop.add_argument(
+        "--plateau-negative-regime-suppression-min-bucket-samples",
+        type=int,
+        default=18,
+        help="Minimum bucket samples required for negative-regime suppression candidates",
+    )
+    kalshi_temperature_recovery_loop.add_argument(
+        "--plateau-negative-regime-suppression-expectancy-threshold",
+        type=float,
+        default=-0.06,
+        help="Expectancy threshold used to identify negative-regime suppression buckets",
+    )
+    kalshi_temperature_recovery_loop.add_argument(
+        "--plateau-negative-regime-suppression-top-n",
+        type=int,
+        default=10,
+        help="Top-N negative-regime suppression buckets to enforce",
+    )
+    kalshi_temperature_recovery_loop.add_argument(
+        "--retune-weather-window-hours-cap",
+        type=float,
+        default=336.0,
+        help="Maximum weather-pattern lookback window used during retune remediation actions",
+    )
+    kalshi_temperature_recovery_loop.add_argument(
+        "--retune-overblocking-blocked-share-threshold",
+        type=float,
+        default=0.25,
+        help="Blocked-share threshold above which retune actions classify suppression as overblocking",
+    )
+    kalshi_temperature_recovery_loop.add_argument(
+        "--retune-underblocking-min-top-n",
+        type=int,
+        default=16,
+        help="Minimum suppression top-N used when retune actions classify suppression as underblocking",
+    )
+    kalshi_temperature_recovery_loop.add_argument(
+        "--retune-overblocking-max-top-n",
+        type=int,
+        default=4,
+        help="Maximum suppression top-N used when retune actions classify suppression as overblocking",
+    )
+    kalshi_temperature_recovery_loop.add_argument(
+        "--retune-min-bucket-samples-target",
+        type=int,
+        default=14,
+        help="Retune target minimum bucket samples for suppression profile adjustments",
+    )
+    kalshi_temperature_recovery_loop.add_argument(
+        "--retune-expectancy-threshold-target",
+        type=float,
+        default=-0.045,
+        help="Retune target expectancy threshold for suppression profile adjustments",
+    )
+    execute_actions_group = kalshi_temperature_recovery_loop.add_mutually_exclusive_group()
+    execute_actions_group.add_argument(
+        "--execute-actions",
+        dest="execute_actions",
+        action="store_true",
+        help="Execute remediation actions each iteration",
+    )
+    execute_actions_group.add_argument(
+        "--no-execute-actions",
+        dest="execute_actions",
+        action="store_false",
+        help="Do not execute remediation actions",
+    )
+    kalshi_temperature_recovery_loop.set_defaults(execute_actions=True)
+
+    kalshi_temperature_recovery_campaign = subparsers.add_parser(
+        "kalshi-temperature-recovery-campaign",
+        aliases=("temperature-recovery-campaign",),
+        help="Run multi-profile recovery campaign and recommend best convergence settings",
+    )
+    kalshi_temperature_recovery_campaign.add_argument(
+        "--output-dir",
+        default="outputs",
+        help="Output directory",
+    )
+    kalshi_temperature_recovery_campaign.add_argument(
+        "--trader-env-file",
+        default="data/research/account_onboarding.env.template",
+        help="Env file path used for trader remediation actions",
+    )
+    campaign_execute_actions_group = kalshi_temperature_recovery_campaign.add_mutually_exclusive_group()
+    campaign_execute_actions_group.add_argument(
+        "--execute-actions",
+        dest="execute_actions",
+        action="store_true",
+        help="Execute remediation actions in campaign profiles",
+    )
+    campaign_execute_actions_group.add_argument(
+        "--no-execute-actions",
+        dest="execute_actions",
+        action="store_false",
+        help="Do not execute remediation actions in campaign profiles",
+    )
+    kalshi_temperature_recovery_campaign.set_defaults(execute_actions=True)
+    kalshi_temperature_recovery_campaign.add_argument(
+        "--profiles-json",
+        default=None,
+        help="Optional JSON file containing a top-level profiles list or a direct profiles list payload",
+    )
+    kalshi_temperature_recovery_campaign.add_argument(
+        "--weather-window-hours",
+        type=float,
+        default=720.0,
+        help="Lookback window in hours for weather-pattern profile refresh",
+    )
+    kalshi_temperature_recovery_campaign.add_argument(
+        "--weather-min-bucket-samples",
+        type=int,
+        default=10,
+        help="Minimum bucket samples for weather-pattern profile usage",
+    )
+    kalshi_temperature_recovery_campaign.add_argument(
+        "--weather-max-profile-age-hours",
+        type=float,
+        default=336.0,
+        help="Maximum age in hours for weather-pattern profile inputs",
+    )
+    kalshi_temperature_recovery_campaign.add_argument(
+        "--weather-negative-expectancy-attempt-share-target",
+        type=float,
+        default=0.50,
+        help="Target ceiling for negative expectancy attempt share",
+    )
+    kalshi_temperature_recovery_campaign.add_argument(
+        "--weather-stale-metar-negative-attempt-share-target",
+        type=float,
+        default=0.60,
+        help="Target ceiling for stale-METAR negative expectancy attempt share",
+    )
+    kalshi_temperature_recovery_campaign.add_argument(
+        "--weather-stale-metar-attempt-share-target",
+        type=float,
+        default=0.65,
+        help="Target ceiling for stale-METAR attempt share",
+    )
+    kalshi_temperature_recovery_campaign.add_argument(
+        "--weather-min-attempts-target",
+        type=int,
+        default=200,
+        help="Minimum attempt count target for recovery readiness",
+    )
+    kalshi_temperature_recovery_campaign.add_argument(
+        "--optimizer-top-n",
+        type=int,
+        default=5,
+        help="Top-N optimizer candidates considered for recovery recommendations",
+    )
+    campaign_plateau_negative_regime_suppression_group = (
+        kalshi_temperature_recovery_campaign.add_mutually_exclusive_group()
+    )
+    campaign_plateau_negative_regime_suppression_group.add_argument(
+        "--plateau-negative-regime-suppression-enabled",
+        dest="plateau_negative_regime_suppression_enabled",
+        action="store_true",
+        help="Enable negative-regime suppression during plateau break remediation",
+    )
+    campaign_plateau_negative_regime_suppression_group.add_argument(
+        "--no-plateau-negative-regime-suppression-enabled",
+        dest="plateau_negative_regime_suppression_enabled",
+        action="store_false",
+        help="Disable negative-regime suppression during plateau break remediation",
+    )
+    kalshi_temperature_recovery_campaign.set_defaults(plateau_negative_regime_suppression_enabled=True)
+    kalshi_temperature_recovery_campaign.add_argument(
+        "--plateau-negative-regime-suppression-min-bucket-samples",
+        type=int,
+        default=18,
+        help="Minimum bucket samples required for negative-regime suppression candidates",
+    )
+    kalshi_temperature_recovery_campaign.add_argument(
+        "--plateau-negative-regime-suppression-expectancy-threshold",
+        type=float,
+        default=-0.06,
+        help="Expectancy threshold used to identify negative-regime suppression buckets",
+    )
+    kalshi_temperature_recovery_campaign.add_argument(
+        "--plateau-negative-regime-suppression-top-n",
+        type=int,
+        default=10,
+        help="Top-N negative-regime suppression buckets to enforce",
+    )
+    kalshi_temperature_recovery_campaign.add_argument(
+        "--retune-weather-window-hours-cap",
+        type=float,
+        default=336.0,
+        help="Maximum weather-pattern lookback window used during retune remediation actions",
+    )
+    kalshi_temperature_recovery_campaign.add_argument(
+        "--retune-overblocking-blocked-share-threshold",
+        type=float,
+        default=0.25,
+        help="Blocked-share threshold above which retune actions classify suppression as overblocking",
+    )
+    kalshi_temperature_recovery_campaign.add_argument(
+        "--retune-underblocking-min-top-n",
+        type=int,
+        default=16,
+        help="Minimum suppression top-N used when retune actions classify suppression as underblocking",
+    )
+    kalshi_temperature_recovery_campaign.add_argument(
+        "--retune-overblocking-max-top-n",
+        type=int,
+        default=4,
+        help="Maximum suppression top-N used when retune actions classify suppression as overblocking",
+    )
+    kalshi_temperature_recovery_campaign.add_argument(
+        "--retune-min-bucket-samples-target",
+        type=int,
+        default=14,
+        help="Retune target minimum bucket samples for suppression profile adjustments",
+    )
+    kalshi_temperature_recovery_campaign.add_argument(
+        "--retune-expectancy-threshold-target",
+        type=float,
+        default=-0.045,
+        help="Retune target expectancy threshold for suppression profile adjustments",
+    )
+
+    kalshi_temperature_growth_optimizer = subparsers.add_parser(
+        "kalshi-temperature-growth-optimizer",
+        aliases=("temperature-growth-optimizer",),
+        help="Search a temperature selection-quality profile from supplied intent files",
+    )
+    kalshi_temperature_growth_optimizer.add_argument(
+        "--output-dir",
+        default="outputs",
+        help="Output directory for optimizer artifacts",
+    )
+    kalshi_temperature_growth_optimizer.add_argument(
+        "--intent-files",
+        "--intent-file",
+        dest="intent_files",
+        nargs="+",
+        required=True,
+        help="One or more intent CSV files to use as optimizer input",
+    )
+    kalshi_temperature_growth_optimizer.add_argument(
+        "--search-bounds-json",
+        "--search-bounds",
+        dest="search_bounds_json",
+        default=None,
+        help="Optional JSON file that overrides the optimizer search bounds",
+    )
+    kalshi_temperature_growth_optimizer.add_argument(
+        "--lookback-hours-min",
+        type=float,
+        default=7.0 * 24.0,
+        help="Minimum lookback-hours bound",
+    )
+    kalshi_temperature_growth_optimizer.add_argument(
+        "--lookback-hours-max",
+        type=float,
+        default=21.0 * 24.0,
+        help="Maximum lookback-hours bound",
+    )
+    kalshi_temperature_growth_optimizer.add_argument(
+        "--lookback-hours-step",
+        type=float,
+        default=24.0,
+        help="Lookback-hours search step",
+    )
+    kalshi_temperature_growth_optimizer.add_argument(
+        "--intent-hours-min",
+        type=float,
+        default=12.0,
+        help="Minimum intent-hours bound",
+    )
+    kalshi_temperature_growth_optimizer.add_argument(
+        "--intent-hours-max",
+        type=float,
+        default=72.0,
+        help="Maximum intent-hours bound",
+    )
+    kalshi_temperature_growth_optimizer.add_argument(
+        "--intent-hours-step",
+        type=float,
+        default=12.0,
+        help="Intent-hours search step",
+    )
+    kalshi_temperature_growth_optimizer.add_argument(
+        "--min-resolved-market-sides-min",
+        type=int,
+        default=12,
+        help="Minimum resolved-market-sides bound",
+    )
+    kalshi_temperature_growth_optimizer.add_argument(
+        "--min-resolved-market-sides-max",
+        type=int,
+        default=24,
+        help="Maximum resolved-market-sides bound",
+    )
+    kalshi_temperature_growth_optimizer.add_argument(
+        "--min-bucket-samples-min",
+        type=int,
+        default=4,
+        help="Minimum bucket-samples bound",
+    )
+    kalshi_temperature_growth_optimizer.add_argument(
+        "--min-bucket-samples-max",
+        type=int,
+        default=8,
+        help="Maximum bucket-samples bound",
+    )
+    kalshi_temperature_growth_optimizer.add_argument(
+        "--probability-penalty-max-min",
+        type=float,
+        default=0.03,
+        help="Minimum probability-penalty bound",
+    )
+    kalshi_temperature_growth_optimizer.add_argument(
+        "--probability-penalty-max-max",
+        type=float,
+        default=0.08,
+        help="Maximum probability-penalty bound",
+    )
+    kalshi_temperature_growth_optimizer.add_argument(
+        "--expected-edge-penalty-max-min",
+        type=float,
+        default=0.004,
+        help="Minimum expected-edge-penalty bound",
+    )
+    kalshi_temperature_growth_optimizer.add_argument(
+        "--expected-edge-penalty-max-max",
+        type=float,
+        default=0.01,
+        help="Maximum expected-edge-penalty bound",
+    )
+    kalshi_temperature_growth_optimizer.add_argument(
+        "--score-adjust-scale-min",
+        type=float,
+        default=0.25,
+        help="Minimum score-adjust-scale bound",
+    )
+    kalshi_temperature_growth_optimizer.add_argument(
+        "--score-adjust-scale-max",
+        type=float,
+        default=0.5,
+        help="Maximum score-adjust-scale bound",
+    )
+    kalshi_temperature_growth_optimizer.add_argument(
+        "--score-adjust-scale-step",
+        type=float,
+        default=0.05,
+        help="Score-adjust-scale search step",
+    )
+    kalshi_temperature_growth_optimizer.add_argument(
+        "--preferred-attribution-model",
+        default="fixed_fraction_per_underlying_family",
+        help="Preferred attribution model to seed the optimizer",
+    )
+    kalshi_temperature_growth_optimizer.add_argument(
+        "--top-n",
+        type=int,
+        default=10,
+        help="Number of candidate evaluations retained in the summary",
+    )
 
     kalshi_temperature_selection_quality = subparsers.add_parser(
         "kalshi-temperature-selection-quality",
@@ -2863,6 +4490,75 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=10,
         help="Top source count to include in adjustment attribution diagnostics",
+    )
+
+    kalshi_temperature_execution_cost_tape = subparsers.add_parser(
+        "kalshi-temperature-execution-cost-tape",
+        help="Build execution-cost calibration tape from blocker, intents, ws-state, and journal telemetry",
+    )
+    kalshi_temperature_execution_cost_tape.add_argument(
+        "--output-dir",
+        default="outputs",
+        help="Output directory containing temperature artifacts",
+    )
+    kalshi_temperature_execution_cost_tape.add_argument(
+        "--window-hours",
+        type=float,
+        default=168.0,
+        help="Rolling window in hours for execution-journal cost telemetry",
+    )
+    kalshi_temperature_execution_cost_tape.add_argument(
+        "--min-candidate-samples",
+        type=int,
+        default=200,
+        help="Minimum candidate rows required before calibration status can pass",
+    )
+    kalshi_temperature_execution_cost_tape.add_argument(
+        "--min-quote-coverage-ratio",
+        type=float,
+        default=0.60,
+        help="Minimum two-sided quote coverage ratio (0-1) required for calibration readiness",
+    )
+    kalshi_temperature_execution_cost_tape.add_argument(
+        "--journal-db-path",
+        default=None,
+        help="Optional execution-journal SQLite path; defaults to outputs/kalshi_execution_journal.sqlite3",
+    )
+    kalshi_temperature_execution_cost_tape.add_argument(
+        "--max-tickers",
+        type=int,
+        default=25,
+        help="Maximum top tickers included in execution-cost concentration diagnostics",
+    )
+    kalshi_temperature_execution_cost_tape.add_argument(
+        "--min-global-expected-edge-share-for-exclusion",
+        type=float,
+        default=0.45,
+        help="Minimum global expected-edge blocker share required before ticker exclusions activate",
+    )
+    kalshi_temperature_execution_cost_tape.add_argument(
+        "--min-ticker-rows-for-exclusion",
+        type=int,
+        default=200,
+        help="Minimum ticker rows required before ticker can be excluded",
+    )
+    kalshi_temperature_execution_cost_tape.add_argument(
+        "--exclusion-max-quote-coverage-ratio",
+        type=float,
+        default=0.20,
+        help="Maximum ticker quote-coverage ratio to qualify for exclusion recommendation",
+    )
+    kalshi_temperature_execution_cost_tape.add_argument(
+        "--max-ticker-mean-spread-for-exclusion",
+        type=float,
+        default=0.10,
+        help="Maximum ticker mean spread threshold used by exclusion recommendation logic",
+    )
+    kalshi_temperature_execution_cost_tape.add_argument(
+        "--max-excluded-tickers",
+        type=int,
+        default=12,
+        help="Maximum exclusion recommendation list size",
     )
 
     kalshi_temperature_refill_trial_balance = subparsers.add_parser(
@@ -3359,6 +5055,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional comma-separated market ticker override (defaults to latest ws-state summary)",
     )
     coldmath_replication_plan.add_argument(
+        "--excluded-market-tickers",
+        default="",
+        help="Optional comma-separated market tickers to drop before ranking",
+    )
+    coldmath_replication_plan.add_argument(
+        "--excluded-market-tickers-file",
+        default="",
+        help="Optional JSON/text file containing market tickers to drop (supports execution_cost_tape_latest.json)",
+    )
+    coldmath_replication_plan.add_argument(
         "--disable-liquidity-filter",
         action="store_true",
         help="Disable top-of-book liquidity gating for replication candidates",
@@ -3391,6 +5097,60 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=0.6,
         help="Maximum share of selected slots allocated to one family (0.1-1.0)",
+    )
+
+    decision_matrix_hardening = subparsers.add_parser(
+        "decision-matrix-hardening",
+        help="Diagnose consistency/profitability blockers and emit hardening backlog signals",
+    )
+    decision_matrix_hardening.add_argument("--output-dir", default="outputs", help="Output directory")
+    decision_matrix_hardening.add_argument(
+        "--window-hours",
+        type=float,
+        default=168.0,
+        help="Window size used to align blocker-audit artifact selection",
+    )
+    decision_matrix_hardening.add_argument(
+        "--min-settled-outcomes",
+        type=int,
+        default=25,
+        help="Minimum settled independent outcomes required for confidence",
+    )
+    decision_matrix_hardening.add_argument(
+        "--max-top-blocker-share",
+        type=float,
+        default=0.55,
+        help="Maximum allowed share of blocked flow captured by one blocker",
+    )
+    decision_matrix_hardening.add_argument(
+        "--min-approval-rate",
+        type=float,
+        default=0.03,
+        help="Minimum approval-rate floor before throughput is considered too constrained",
+    )
+    decision_matrix_hardening.add_argument(
+        "--min-intents-sample",
+        type=int,
+        default=1000,
+        help="Minimum intents sample required before approval/PnL blocker checks apply",
+    )
+    decision_matrix_hardening.add_argument(
+        "--max-sparse-edge-block-share",
+        type=float,
+        default=0.80,
+        help="Maximum allowed sparse hardening expected-edge block share",
+    )
+    decision_matrix_hardening.add_argument(
+        "--min-execution-cost-candidate-samples",
+        type=int,
+        default=200,
+        help="Minimum execution-cost tape candidate rows required for expected-edge recalibration readiness",
+    )
+    decision_matrix_hardening.add_argument(
+        "--min-execution-cost-quote-coverage-ratio",
+        type=float,
+        default=0.60,
+        help="Minimum execution-cost tape two-sided quote coverage ratio required for expected-edge recalibration readiness",
     )
 
     kalshi_focus_dossier = subparsers.add_parser(
@@ -6280,6 +8040,18 @@ def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
     exit_code = 0
+    optimizer_profile_meta = _load_optimizer_profile_reference(getattr(args, "optimizer_profile_json", None))
+    optimizer_profile_settings = (
+        optimizer_profile_meta.get("settings") if isinstance(optimizer_profile_meta.get("settings"), dict) else {}
+    )
+    weather_pattern_profile_meta = _load_weather_pattern_profile_reference(
+        getattr(args, "weather_pattern_profile_json", None)
+    )
+    weather_pattern_profile = (
+        weather_pattern_profile_meta.get("profile")
+        if isinstance(weather_pattern_profile_meta.get("profile"), dict)
+        else {}
+    )
 
     if args.command == "backtest":
         cfg = load_config(args.config)
@@ -6442,6 +8214,14 @@ def main() -> None:
                     for item in str(args.coldmath_replication_market_tickers or "").split(",")
                     if item.strip()
                 ],
+                excluded_market_tickers=[
+                    item.strip()
+                    for item in str(args.coldmath_replication_excluded_market_tickers or "").split(",")
+                    if item.strip()
+                ],
+                excluded_market_tickers_file=(
+                    str(args.coldmath_replication_excluded_market_tickers_file or "").strip() or None
+                ),
                 require_liquidity_filter=not args.coldmath_replication_disable_liquidity_filter,
                 require_two_sided_quotes=not args.coldmath_replication_disable_require_two_sided_quotes,
                 max_spread_dollars=args.coldmath_replication_max_spread_dollars,
@@ -6835,6 +8615,23 @@ def main() -> None:
             final_report_cache_ttl_minutes=args.final_report_cache_ttl_minutes,
             final_report_timeout_seconds=args.final_report_timeout_seconds,
         )
+    elif args.command in {
+        "kalshi-temperature-settled-outcome-throughput",
+        "temperature-settled-outcome-throughput",
+    }:
+        summary = _run_settled_outcome_throughput_cli(
+            output_dir=args.output_dir,
+            summarize_only=bool(args.summarize_only),
+        )
+    elif args.command in {
+        "kalshi-temperature-coverage-velocity-report",
+        "temperature-coverage-velocity-report",
+    }:
+        summary = _run_coverage_velocity_report_cli(
+            output_dir=args.output_dir,
+            history_limit=args.history_limit,
+            summarize_only=bool(args.summarize_only),
+        )
     elif args.command == "kalshi-temperature-metar-ingest":
         summary = run_kalshi_temperature_metar_ingest(
             output_dir=args.output_dir,
@@ -6842,190 +8639,414 @@ def main() -> None:
             cache_url=args.cache_url,
             timeout_seconds=args.timeout_seconds,
         )
-    elif args.command == "kalshi-temperature-trader":
-        summary = run_kalshi_temperature_trader(
-            env_file=args.env_file,
+    elif args.command in {"kalshi-temperature-weather-pattern", "temperature-weather-pattern"}:
+        summary = run_kalshi_temperature_weather_pattern(
             output_dir=args.output_dir,
-            specs_csv=args.specs_csv,
-            constraint_csv=args.constraint_csv,
-            metar_summary_json=args.metar_summary_json,
-            metar_state_json=args.metar_state_json,
-            ws_state_json=args.ws_state_json,
-            alpha_consensus_json=args.alpha_consensus_json,
-            settlement_state_json=args.settlement_state_json,
-            book_db_path=args.book_db_path,
-            policy_version=args.policy_version,
-            contracts_per_order=args.contracts_per_order,
-            max_orders=args.max_orders,
-            max_markets=args.max_markets,
-            timeout_seconds=args.timeout_seconds,
-            allow_live_orders=args.allow_live_orders,
-            intents_only=args.intents_only,
-            min_settlement_confidence=args.min_settlement_confidence,
-            max_metar_age_minutes=args.max_metar_age_minutes,
-            metar_age_policy_json=args.metar_age_policy_json,
-            speci_calibration_json=args.speci_calibration_json,
-            min_alpha_strength=args.min_alpha_strength,
-            min_probability_confidence=args.min_probability_confidence,
-            min_expected_edge_net=args.min_expected_edge_net,
-            min_edge_to_risk_ratio=args.min_edge_to_risk_ratio,
-            min_base_edge_net=args.min_base_edge_net,
-            min_probability_breakeven_gap=args.min_probability_breakeven_gap,
-            enforce_probability_edge_thresholds=not args.disable_enforce_probability_edge_thresholds,
-            enforce_entry_price_probability_floor=args.enforce_entry_price_probability_floor,
-            fallback_min_probability_confidence=args.fallback_min_probability_confidence,
-            fallback_min_expected_edge_net=args.fallback_min_expected_edge_net,
-            fallback_min_edge_to_risk_ratio=args.fallback_min_edge_to_risk_ratio,
-            enforce_interval_consistency=not args.disable_interval_consistency_gate,
-            max_yes_possible_gap_for_yes_side=args.max_yes_possible_gap_for_yes_side,
-            min_hours_to_close=args.min_hours_to_close,
-            max_hours_to_close=args.max_hours_to_close,
-            max_intents_per_underlying=args.max_intents_per_underlying,
-            taf_stale_grace_minutes=args.taf_stale_grace_minutes,
-            taf_stale_grace_max_volatility_score=args.taf_stale_grace_max_volatility_score,
-            taf_stale_grace_max_range_width=args.taf_stale_grace_max_range_width,
-            metar_freshness_quality_boundary_ratio=args.metar_freshness_quality_boundary_ratio,
-            metar_freshness_quality_probability_margin=args.metar_freshness_quality_probability_margin,
-            metar_freshness_quality_expected_edge_margin=args.metar_freshness_quality_expected_edge_margin,
-            yes_max_entry_price_dollars=args.yes_max_entry_price,
-            no_max_entry_price_dollars=args.no_max_entry_price,
-            require_market_snapshot_seq=not args.disable_require_market_snapshot_seq,
-            require_metar_snapshot_sha=args.require_metar_snapshot_sha,
-            enforce_underlying_netting=not args.disable_underlying_netting,
-            planning_bankroll_dollars=args.planning_bankroll,
-            daily_risk_cap_dollars=args.daily_risk_cap,
-            cancel_resting_immediately=args.cancel_resting_immediately,
-            resting_hold_seconds=args.resting_hold_seconds,
-            max_live_submissions_per_day=args.max_live_submissions_per_day,
-            max_live_cost_per_day_dollars=args.max_live_cost_per_day_dollars,
-            enforce_trade_gate=args.enforce_trade_gate,
-            enforce_ws_state_authority=args.enforce_ws_state_authority,
-            ws_state_max_age_seconds=args.ws_state_max_age_seconds,
-            max_total_deployed_pct=args.max_total_deployed_pct,
-            max_same_station_exposure_pct=args.max_same_station_exposure_pct,
-            max_same_hour_cluster_exposure_pct=args.max_same_hour_cluster_exposure_pct,
-            max_same_underlying_exposure_pct=args.max_same_underlying_exposure_pct,
-            max_orders_per_station=args.max_orders_per_station,
-            max_orders_per_underlying=args.max_orders_per_underlying,
-            min_unique_stations_per_loop=args.min_unique_stations_per_loop,
-            min_unique_underlyings_per_loop=args.min_unique_underlyings_per_loop,
-            min_unique_local_hours_per_loop=args.min_unique_local_hours_per_loop,
-            replan_market_side_cooldown_minutes=args.replan_market_side_cooldown_minutes,
-            replan_market_side_price_change_override_dollars=args.replan_market_side_price_change_override_dollars,
-            replan_market_side_alpha_change_override=args.replan_market_side_alpha_change_override,
-            replan_market_side_confidence_change_override=args.replan_market_side_confidence_change_override,
-            replan_market_side_min_observation_advance_minutes=args.replan_market_side_min_observation_advance_minutes,
-            replan_market_side_repeat_window_minutes=args.replan_market_side_repeat_window_minutes,
-            replan_market_side_max_plans_per_window=args.replan_market_side_max_plans_per_window,
-            replan_market_side_history_files=args.replan_market_side_history_files,
-            replan_market_side_min_orders_backstop=args.replan_market_side_min_orders_backstop,
-            historical_selection_quality_enabled=not args.disable_historical_selection_quality,
-            historical_selection_quality_lookback_hours=args.historical_selection_quality_lookback_hours,
-            historical_selection_quality_min_resolved_market_sides=args.historical_selection_quality_min_resolved_market_sides,
-            historical_selection_quality_min_bucket_samples=args.historical_selection_quality_min_bucket_samples,
-            historical_selection_quality_probability_penalty_max=args.historical_selection_quality_probability_penalty_max,
-            historical_selection_quality_expected_edge_penalty_max=args.historical_selection_quality_expected_edge_penalty_max,
-            historical_selection_quality_score_adjust_scale=args.historical_selection_quality_score_adjust_scale,
-            historical_selection_quality_profile_max_age_hours=args.historical_selection_quality_profile_max_age_hours,
-            historical_selection_quality_preferred_model=args.historical_selection_quality_preferred_model,
+            window_hours=args.window_hours,
+            min_bucket_samples=args.min_bucket_samples,
+            max_profile_age_hours=args.max_profile_age_hours,
         )
+    elif args.command == "kalshi-temperature-trader":
+        micro_live_profile_caps = _apply_micro_live_50_temperature_profile(args)
+        historical_selection_quality_enabled = not args.disable_historical_selection_quality
+        historical_selection_quality_lookback_hours = args.historical_selection_quality_lookback_hours
+        historical_selection_quality_min_resolved_market_sides = args.historical_selection_quality_min_resolved_market_sides
+        historical_selection_quality_min_bucket_samples = args.historical_selection_quality_min_bucket_samples
+        historical_selection_quality_probability_penalty_max = args.historical_selection_quality_probability_penalty_max
+        historical_selection_quality_expected_edge_penalty_max = args.historical_selection_quality_expected_edge_penalty_max
+        historical_selection_quality_score_adjust_scale = args.historical_selection_quality_score_adjust_scale
+        historical_selection_quality_profile_max_age_hours = args.historical_selection_quality_profile_max_age_hours
+        historical_selection_quality_preferred_model = args.historical_selection_quality_preferred_model
+        if optimizer_profile_meta.get("applied"):
+            enabled_override = _parse_boolish(
+                optimizer_profile_settings.get("historical_selection_quality_enabled")
+            )
+            if enabled_override is not None:
+                historical_selection_quality_enabled = bool(enabled_override)
+            historical_selection_quality_lookback_hours = (
+                _parse_float(optimizer_profile_settings.get("historical_selection_quality_lookback_hours"))
+                or historical_selection_quality_lookback_hours
+            )
+            historical_selection_quality_min_resolved_market_sides = (
+                _parse_int(optimizer_profile_settings.get("historical_selection_quality_min_resolved_market_sides"))
+                or historical_selection_quality_min_resolved_market_sides
+            )
+            historical_selection_quality_min_bucket_samples = (
+                _parse_int(optimizer_profile_settings.get("historical_selection_quality_min_bucket_samples"))
+                or historical_selection_quality_min_bucket_samples
+            )
+            historical_selection_quality_probability_penalty_max = (
+                _parse_float(optimizer_profile_settings.get("historical_selection_quality_probability_penalty_max"))
+                or historical_selection_quality_probability_penalty_max
+            )
+            historical_selection_quality_expected_edge_penalty_max = (
+                _parse_float(optimizer_profile_settings.get("historical_selection_quality_expected_edge_penalty_max"))
+                or historical_selection_quality_expected_edge_penalty_max
+            )
+            historical_selection_quality_score_adjust_scale = (
+                _parse_float(optimizer_profile_settings.get("historical_selection_quality_score_adjust_scale"))
+                or historical_selection_quality_score_adjust_scale
+            )
+            historical_selection_quality_profile_max_age_hours = (
+                _parse_float(optimizer_profile_settings.get("historical_selection_quality_profile_max_age_hours"))
+                or historical_selection_quality_profile_max_age_hours
+            )
+            historical_selection_quality_preferred_model = (
+                _normalize_text(optimizer_profile_settings.get("historical_selection_quality_preferred_model"))
+                or historical_selection_quality_preferred_model
+            )
+        trader_kwargs: dict[str, Any] = {
+            "env_file": args.env_file,
+            "output_dir": args.output_dir,
+            "specs_csv": args.specs_csv,
+            "constraint_csv": args.constraint_csv,
+            "metar_summary_json": args.metar_summary_json,
+            "metar_state_json": args.metar_state_json,
+            "metar_ingest_min_quality_score": args.min_metar_ingest_quality_score,
+            "metar_ingest_min_fresh_station_coverage_ratio": args.min_metar_fresh_station_coverage_ratio,
+            "metar_ingest_require_ready_status": args.require_metar_ingest_status_ready,
+            "high_price_edge_guard_enabled": args.high_price_edge_guard_enabled,
+            "high_price_edge_guard_min_entry_price_dollars": args.high_price_edge_guard_min_entry_price_dollars,
+            "high_price_edge_guard_min_expected_edge_net": args.high_price_edge_guard_min_expected_edge_net,
+            "high_price_edge_guard_min_edge_to_risk_ratio": args.high_price_edge_guard_min_edge_to_risk_ratio,
+            "ws_state_json": args.ws_state_json,
+            "alpha_consensus_json": args.alpha_consensus_json,
+            "settlement_state_json": args.settlement_state_json,
+            "book_db_path": args.book_db_path,
+            "policy_version": args.policy_version,
+            "contracts_per_order": args.contracts_per_order,
+            "max_orders": args.max_orders,
+            "max_markets": args.max_markets,
+            "timeout_seconds": args.timeout_seconds,
+            "allow_live_orders": args.allow_live_orders,
+            "intents_only": args.intents_only,
+            "min_settlement_confidence": args.min_settlement_confidence,
+            "max_metar_age_minutes": args.max_metar_age_minutes,
+            "metar_age_policy_json": args.metar_age_policy_json,
+            "speci_calibration_json": args.speci_calibration_json,
+            "min_alpha_strength": args.min_alpha_strength,
+            "min_probability_confidence": args.min_probability_confidence,
+            "min_expected_edge_net": args.min_expected_edge_net,
+            "min_edge_to_risk_ratio": args.min_edge_to_risk_ratio,
+            "min_base_edge_net": args.min_base_edge_net,
+            "min_probability_breakeven_gap": args.min_probability_breakeven_gap,
+            "enforce_probability_edge_thresholds": not args.disable_enforce_probability_edge_thresholds,
+            "enforce_entry_price_probability_floor": args.enforce_entry_price_probability_floor,
+            "fallback_min_probability_confidence": args.fallback_min_probability_confidence,
+            "fallback_min_expected_edge_net": args.fallback_min_expected_edge_net,
+            "fallback_min_edge_to_risk_ratio": args.fallback_min_edge_to_risk_ratio,
+            "enforce_interval_consistency": not args.disable_interval_consistency_gate,
+            "max_yes_possible_gap_for_yes_side": args.max_yes_possible_gap_for_yes_side,
+            "min_hours_to_close": args.min_hours_to_close,
+            "max_hours_to_close": args.max_hours_to_close,
+            "max_intents_per_underlying": args.max_intents_per_underlying,
+            "taf_stale_grace_minutes": args.taf_stale_grace_minutes,
+            "taf_stale_grace_max_volatility_score": args.taf_stale_grace_max_volatility_score,
+            "taf_stale_grace_max_range_width": args.taf_stale_grace_max_range_width,
+            "metar_freshness_quality_boundary_ratio": args.metar_freshness_quality_boundary_ratio,
+            "metar_freshness_quality_probability_margin": args.metar_freshness_quality_probability_margin,
+            "metar_freshness_quality_expected_edge_margin": args.metar_freshness_quality_expected_edge_margin,
+            "yes_max_entry_price_dollars": args.yes_max_entry_price,
+            "no_max_entry_price_dollars": args.no_max_entry_price,
+            "require_market_snapshot_seq": not args.disable_require_market_snapshot_seq,
+            "require_metar_snapshot_sha": args.require_metar_snapshot_sha,
+            "enforce_underlying_netting": not args.disable_underlying_netting,
+            "planning_bankroll_dollars": args.planning_bankroll,
+            "daily_risk_cap_dollars": args.daily_risk_cap,
+            "cancel_resting_immediately": args.cancel_resting_immediately,
+            "resting_hold_seconds": args.resting_hold_seconds,
+            "max_live_submissions_per_day": args.max_live_submissions_per_day,
+            "max_live_cost_per_day_dollars": args.max_live_cost_per_day_dollars,
+            "enforce_trade_gate": args.enforce_trade_gate,
+            "enforce_ws_state_authority": args.enforce_ws_state_authority,
+            "ws_state_max_age_seconds": args.ws_state_max_age_seconds,
+            "max_total_deployed_pct": args.max_total_deployed_pct,
+            "max_same_station_exposure_pct": args.max_same_station_exposure_pct,
+            "max_same_hour_cluster_exposure_pct": args.max_same_hour_cluster_exposure_pct,
+            "max_same_underlying_exposure_pct": args.max_same_underlying_exposure_pct,
+            "max_orders_per_station": args.max_orders_per_station,
+            "max_orders_per_underlying": args.max_orders_per_underlying,
+            "min_unique_stations_per_loop": args.min_unique_stations_per_loop,
+            "min_unique_underlyings_per_loop": args.min_unique_underlyings_per_loop,
+            "min_unique_local_hours_per_loop": args.min_unique_local_hours_per_loop,
+            "replan_market_side_cooldown_minutes": args.replan_market_side_cooldown_minutes,
+            "replan_market_side_price_change_override_dollars": args.replan_market_side_price_change_override_dollars,
+            "replan_market_side_alpha_change_override": args.replan_market_side_alpha_change_override,
+            "replan_market_side_confidence_change_override": args.replan_market_side_confidence_change_override,
+            "replan_market_side_min_observation_advance_minutes": args.replan_market_side_min_observation_advance_minutes,
+            "replan_market_side_repeat_window_minutes": args.replan_market_side_repeat_window_minutes,
+            "replan_market_side_max_plans_per_window": args.replan_market_side_max_plans_per_window,
+            "replan_market_side_history_files": args.replan_market_side_history_files,
+            "replan_market_side_min_orders_backstop": args.replan_market_side_min_orders_backstop,
+            "historical_selection_quality_enabled": historical_selection_quality_enabled,
+            "historical_selection_quality_lookback_hours": historical_selection_quality_lookback_hours,
+            "historical_selection_quality_min_resolved_market_sides": historical_selection_quality_min_resolved_market_sides,
+            "historical_selection_quality_min_bucket_samples": historical_selection_quality_min_bucket_samples,
+            "historical_selection_quality_probability_penalty_max": historical_selection_quality_probability_penalty_max,
+            "historical_selection_quality_expected_edge_penalty_max": historical_selection_quality_expected_edge_penalty_max,
+            "historical_selection_quality_score_adjust_scale": historical_selection_quality_score_adjust_scale,
+            "historical_selection_quality_profile_max_age_hours": historical_selection_quality_profile_max_age_hours,
+            "historical_selection_quality_preferred_model": historical_selection_quality_preferred_model,
+            "weather_pattern_profile": weather_pattern_profile if weather_pattern_profile_meta.get("applied") else None,
+        }
+        if args.weather_pattern_risk_off_enabled is not None:
+            trader_kwargs["weather_pattern_risk_off_enabled"] = bool(args.weather_pattern_risk_off_enabled)
+        if args.weather_pattern_risk_off_concentration_threshold is not None:
+            trader_kwargs["weather_pattern_risk_off_concentration_threshold"] = (
+                args.weather_pattern_risk_off_concentration_threshold
+            )
+        if args.weather_pattern_risk_off_min_attempts is not None:
+            trader_kwargs["weather_pattern_risk_off_min_attempts"] = args.weather_pattern_risk_off_min_attempts
+        if args.weather_pattern_risk_off_stale_metar_share_threshold is not None:
+            trader_kwargs["weather_pattern_risk_off_stale_metar_share_threshold"] = (
+                args.weather_pattern_risk_off_stale_metar_share_threshold
+            )
+        if args.weather_pattern_negative_bucket_suppression_enabled is not None:
+            trader_kwargs["weather_pattern_negative_regime_suppression_enabled"] = bool(
+                args.weather_pattern_negative_bucket_suppression_enabled
+            )
+        if args.weather_pattern_negative_bucket_suppression_top_n is not None:
+            trader_kwargs["weather_pattern_negative_regime_suppression_top_n"] = (
+                args.weather_pattern_negative_bucket_suppression_top_n
+            )
+        if args.weather_pattern_negative_bucket_suppression_min_samples is not None:
+            trader_kwargs["weather_pattern_negative_regime_suppression_min_bucket_samples"] = (
+                args.weather_pattern_negative_bucket_suppression_min_samples
+            )
+        if args.weather_pattern_negative_bucket_suppression_negative_expectancy_threshold is not None:
+            trader_kwargs["weather_pattern_negative_regime_suppression_expectancy_threshold"] = (
+                args.weather_pattern_negative_bucket_suppression_negative_expectancy_threshold
+            )
+        if args.weather_pattern_hardening_enabled is not None:
+            trader_kwargs["weather_pattern_hardening_enabled"] = bool(args.weather_pattern_hardening_enabled)
+        summary, ignored_trader_kwargs = _invoke_runner_with_supported_kwargs(run_kalshi_temperature_trader, trader_kwargs)
+        if ignored_trader_kwargs:
+            summary["runner_ignored_cli_kwargs"] = sorted(ignored_trader_kwargs)
+        summary["optimizer_profile_application_status"] = optimizer_profile_meta.get("status")
+        summary["optimizer_profile_source_file"] = optimizer_profile_meta.get("source_file")
+        summary["optimizer_profile_applied"] = bool(optimizer_profile_meta.get("applied"))
+        summary["weather_pattern_profile_application_status"] = weather_pattern_profile_meta.get("status")
+        summary["weather_pattern_profile_source_file"] = weather_pattern_profile_meta.get("source_file")
+        summary["weather_pattern_profile_applied"] = bool(weather_pattern_profile_meta.get("applied"))
+        if micro_live_profile_caps is not None:
+            summary["risk_profile"] = "micro_live_50"
+            summary["risk_profile_applied"] = True
+            summary["risk_profile_caps"] = micro_live_profile_caps
+        _promote_weather_pattern_risk_off_summary(summary)
     elif args.command == "kalshi-temperature-shadow-watch":
+        micro_live_profile_caps = _apply_micro_live_50_temperature_profile(args)
         # In shadow mode we prefer discovery over strict websocket-sequence
         # gating. Live mode keeps sequence gating on by default.
         shadow_require_market_snapshot_seq = bool(args.allow_live_orders) and not args.disable_require_market_snapshot_seq
-        summary = run_kalshi_temperature_shadow_watch(
-            env_file=args.env_file,
-            output_dir=args.output_dir,
-            loops=args.loops,
-            sleep_between_loops_seconds=args.sleep_between_loops_seconds,
-            allow_live_orders=args.allow_live_orders,
-            specs_csv=args.specs_csv,
-            constraint_csv=args.constraint_csv,
-            metar_summary_json=args.metar_summary_json,
-            metar_state_json=args.metar_state_json,
-            ws_state_json=args.ws_state_json,
-            alpha_consensus_json=args.alpha_consensus_json,
-            settlement_state_json=args.settlement_state_json,
-            book_db_path=args.book_db_path,
-            policy_version=args.policy_version,
-            contracts_per_order=args.contracts_per_order,
-            max_orders=args.max_orders,
-            max_markets=args.max_markets,
-            timeout_seconds=args.timeout_seconds,
-            min_settlement_confidence=args.min_settlement_confidence,
-            max_metar_age_minutes=args.max_metar_age_minutes,
-            metar_age_policy_json=args.metar_age_policy_json,
-            speci_calibration_json=args.speci_calibration_json,
-            min_alpha_strength=args.min_alpha_strength,
-            min_probability_confidence=args.min_probability_confidence,
-            min_expected_edge_net=args.min_expected_edge_net,
-            min_edge_to_risk_ratio=args.min_edge_to_risk_ratio,
-            min_base_edge_net=args.min_base_edge_net,
-            min_probability_breakeven_gap=args.min_probability_breakeven_gap,
-            enforce_probability_edge_thresholds=not args.disable_enforce_probability_edge_thresholds,
-            enforce_entry_price_probability_floor=args.enforce_entry_price_probability_floor,
-            fallback_min_probability_confidence=args.fallback_min_probability_confidence,
-            fallback_min_expected_edge_net=args.fallback_min_expected_edge_net,
-            fallback_min_edge_to_risk_ratio=args.fallback_min_edge_to_risk_ratio,
-            enforce_interval_consistency=not args.disable_interval_consistency_gate,
-            max_yes_possible_gap_for_yes_side=args.max_yes_possible_gap_for_yes_side,
-            min_hours_to_close=args.min_hours_to_close,
-            max_hours_to_close=args.max_hours_to_close,
-            max_intents_per_underlying=args.max_intents_per_underlying,
-            taf_stale_grace_minutes=args.taf_stale_grace_minutes,
-            taf_stale_grace_max_volatility_score=args.taf_stale_grace_max_volatility_score,
-            taf_stale_grace_max_range_width=args.taf_stale_grace_max_range_width,
-            metar_freshness_quality_boundary_ratio=args.metar_freshness_quality_boundary_ratio,
-            metar_freshness_quality_probability_margin=args.metar_freshness_quality_probability_margin,
-            metar_freshness_quality_expected_edge_margin=args.metar_freshness_quality_expected_edge_margin,
-            yes_max_entry_price_dollars=args.yes_max_entry_price,
-            no_max_entry_price_dollars=args.no_max_entry_price,
-            require_market_snapshot_seq=shadow_require_market_snapshot_seq,
-            require_metar_snapshot_sha=args.require_metar_snapshot_sha,
-            enforce_underlying_netting=not args.disable_underlying_netting,
-            planning_bankroll_dollars=args.planning_bankroll,
-            daily_risk_cap_dollars=args.daily_risk_cap,
-            cancel_resting_immediately=args.cancel_resting_immediately,
-            resting_hold_seconds=args.resting_hold_seconds,
-            max_live_submissions_per_day=args.max_live_submissions_per_day,
-            max_live_cost_per_day_dollars=args.max_live_cost_per_day_dollars,
-            enforce_trade_gate=args.enforce_trade_gate,
-            enforce_ws_state_authority=args.enforce_ws_state_authority,
-            ws_state_max_age_seconds=args.ws_state_max_age_seconds,
-            max_total_deployed_pct=args.max_total_deployed_pct,
-            max_same_station_exposure_pct=args.max_same_station_exposure_pct,
-            max_same_hour_cluster_exposure_pct=args.max_same_hour_cluster_exposure_pct,
-            max_same_underlying_exposure_pct=args.max_same_underlying_exposure_pct,
-            max_orders_per_station=args.max_orders_per_station,
-            max_orders_per_underlying=args.max_orders_per_underlying,
-            min_unique_stations_per_loop=args.min_unique_stations_per_loop,
-            min_unique_underlyings_per_loop=args.min_unique_underlyings_per_loop,
-            min_unique_local_hours_per_loop=args.min_unique_local_hours_per_loop,
-            replan_market_side_cooldown_minutes=args.replan_market_side_cooldown_minutes,
-            replan_market_side_price_change_override_dollars=args.replan_market_side_price_change_override_dollars,
-            replan_market_side_alpha_change_override=args.replan_market_side_alpha_change_override,
-            replan_market_side_confidence_change_override=args.replan_market_side_confidence_change_override,
-            replan_market_side_min_observation_advance_minutes=args.replan_market_side_min_observation_advance_minutes,
-            replan_market_side_repeat_window_minutes=args.replan_market_side_repeat_window_minutes,
-            replan_market_side_max_plans_per_window=args.replan_market_side_max_plans_per_window,
-            replan_market_side_history_files=args.replan_market_side_history_files,
-            replan_market_side_min_orders_backstop=args.replan_market_side_min_orders_backstop,
-            historical_selection_quality_enabled=not args.disable_historical_selection_quality,
-            historical_selection_quality_lookback_hours=args.historical_selection_quality_lookback_hours,
-            historical_selection_quality_min_resolved_market_sides=args.historical_selection_quality_min_resolved_market_sides,
-            historical_selection_quality_min_bucket_samples=args.historical_selection_quality_min_bucket_samples,
-            historical_selection_quality_probability_penalty_max=args.historical_selection_quality_probability_penalty_max,
-            historical_selection_quality_expected_edge_penalty_max=args.historical_selection_quality_expected_edge_penalty_max,
-            historical_selection_quality_score_adjust_scale=args.historical_selection_quality_score_adjust_scale,
-            historical_selection_quality_profile_max_age_hours=args.historical_selection_quality_profile_max_age_hours,
-            historical_selection_quality_preferred_model=args.historical_selection_quality_preferred_model,
+        trader_kwargs: dict[str, Any] = {
+            "env_file": args.env_file,
+            "output_dir": args.output_dir,
+            "loops": args.loops,
+            "sleep_between_loops_seconds": args.sleep_between_loops_seconds,
+            "allow_live_orders": args.allow_live_orders,
+            "specs_csv": args.specs_csv,
+            "constraint_csv": args.constraint_csv,
+            "metar_summary_json": args.metar_summary_json,
+            "metar_state_json": args.metar_state_json,
+            "metar_ingest_min_quality_score": args.min_metar_ingest_quality_score,
+            "metar_ingest_min_fresh_station_coverage_ratio": args.min_metar_fresh_station_coverage_ratio,
+            "metar_ingest_require_ready_status": args.require_metar_ingest_status_ready,
+            "high_price_edge_guard_enabled": args.high_price_edge_guard_enabled,
+            "high_price_edge_guard_min_entry_price_dollars": args.high_price_edge_guard_min_entry_price_dollars,
+            "high_price_edge_guard_min_expected_edge_net": args.high_price_edge_guard_min_expected_edge_net,
+            "high_price_edge_guard_min_edge_to_risk_ratio": args.high_price_edge_guard_min_edge_to_risk_ratio,
+            "ws_state_json": args.ws_state_json,
+            "alpha_consensus_json": args.alpha_consensus_json,
+            "settlement_state_json": args.settlement_state_json,
+            "book_db_path": args.book_db_path,
+            "policy_version": args.policy_version,
+            "contracts_per_order": args.contracts_per_order,
+            "max_orders": args.max_orders,
+            "max_markets": args.max_markets,
+            "timeout_seconds": args.timeout_seconds,
+            "min_settlement_confidence": args.min_settlement_confidence,
+            "max_metar_age_minutes": args.max_metar_age_minutes,
+            "metar_age_policy_json": args.metar_age_policy_json,
+            "speci_calibration_json": args.speci_calibration_json,
+            "min_alpha_strength": args.min_alpha_strength,
+            "min_probability_confidence": args.min_probability_confidence,
+            "min_expected_edge_net": args.min_expected_edge_net,
+            "min_edge_to_risk_ratio": args.min_edge_to_risk_ratio,
+            "min_base_edge_net": args.min_base_edge_net,
+            "min_probability_breakeven_gap": args.min_probability_breakeven_gap,
+            "enforce_probability_edge_thresholds": not args.disable_enforce_probability_edge_thresholds,
+            "enforce_entry_price_probability_floor": args.enforce_entry_price_probability_floor,
+            "fallback_min_probability_confidence": args.fallback_min_probability_confidence,
+            "fallback_min_expected_edge_net": args.fallback_min_expected_edge_net,
+            "fallback_min_edge_to_risk_ratio": args.fallback_min_edge_to_risk_ratio,
+            "enforce_interval_consistency": not args.disable_interval_consistency_gate,
+            "max_yes_possible_gap_for_yes_side": args.max_yes_possible_gap_for_yes_side,
+            "min_hours_to_close": args.min_hours_to_close,
+            "max_hours_to_close": args.max_hours_to_close,
+            "max_intents_per_underlying": args.max_intents_per_underlying,
+            "taf_stale_grace_minutes": args.taf_stale_grace_minutes,
+            "taf_stale_grace_max_volatility_score": args.taf_stale_grace_max_volatility_score,
+            "taf_stale_grace_max_range_width": args.taf_stale_grace_max_range_width,
+            "metar_freshness_quality_boundary_ratio": args.metar_freshness_quality_boundary_ratio,
+            "metar_freshness_quality_probability_margin": args.metar_freshness_quality_probability_margin,
+            "metar_freshness_quality_expected_edge_margin": args.metar_freshness_quality_expected_edge_margin,
+            "yes_max_entry_price_dollars": args.yes_max_entry_price,
+            "no_max_entry_price_dollars": args.no_max_entry_price,
+            "require_market_snapshot_seq": shadow_require_market_snapshot_seq,
+            "require_metar_snapshot_sha": args.require_metar_snapshot_sha,
+            "enforce_underlying_netting": not args.disable_underlying_netting,
+            "planning_bankroll_dollars": args.planning_bankroll,
+            "daily_risk_cap_dollars": args.daily_risk_cap,
+            "cancel_resting_immediately": args.cancel_resting_immediately,
+            "resting_hold_seconds": args.resting_hold_seconds,
+            "max_live_submissions_per_day": args.max_live_submissions_per_day,
+            "max_live_cost_per_day_dollars": args.max_live_cost_per_day_dollars,
+            "enforce_trade_gate": args.enforce_trade_gate,
+            "enforce_ws_state_authority": args.enforce_ws_state_authority,
+            "ws_state_max_age_seconds": args.ws_state_max_age_seconds,
+            "max_total_deployed_pct": args.max_total_deployed_pct,
+            "max_same_station_exposure_pct": args.max_same_station_exposure_pct,
+            "max_same_hour_cluster_exposure_pct": args.max_same_hour_cluster_exposure_pct,
+            "max_same_underlying_exposure_pct": args.max_same_underlying_exposure_pct,
+            "max_orders_per_station": args.max_orders_per_station,
+            "max_orders_per_underlying": args.max_orders_per_underlying,
+            "min_unique_stations_per_loop": args.min_unique_stations_per_loop,
+            "min_unique_underlyings_per_loop": args.min_unique_underlyings_per_loop,
+            "min_unique_local_hours_per_loop": args.min_unique_local_hours_per_loop,
+            "replan_market_side_cooldown_minutes": args.replan_market_side_cooldown_minutes,
+            "replan_market_side_price_change_override_dollars": args.replan_market_side_price_change_override_dollars,
+            "replan_market_side_alpha_change_override": args.replan_market_side_alpha_change_override,
+            "replan_market_side_confidence_change_override": args.replan_market_side_confidence_change_override,
+            "replan_market_side_min_observation_advance_minutes": args.replan_market_side_min_observation_advance_minutes,
+            "replan_market_side_repeat_window_minutes": args.replan_market_side_repeat_window_minutes,
+            "replan_market_side_max_plans_per_window": args.replan_market_side_max_plans_per_window,
+            "replan_market_side_history_files": args.replan_market_side_history_files,
+            "replan_market_side_min_orders_backstop": args.replan_market_side_min_orders_backstop,
+            "historical_selection_quality_enabled": not args.disable_historical_selection_quality,
+            "historical_selection_quality_lookback_hours": args.historical_selection_quality_lookback_hours,
+            "historical_selection_quality_min_resolved_market_sides": args.historical_selection_quality_min_resolved_market_sides,
+            "historical_selection_quality_min_bucket_samples": args.historical_selection_quality_min_bucket_samples,
+            "historical_selection_quality_probability_penalty_max": args.historical_selection_quality_probability_penalty_max,
+            "historical_selection_quality_expected_edge_penalty_max": args.historical_selection_quality_expected_edge_penalty_max,
+            "historical_selection_quality_score_adjust_scale": args.historical_selection_quality_score_adjust_scale,
+            "historical_selection_quality_profile_max_age_hours": args.historical_selection_quality_profile_max_age_hours,
+            "historical_selection_quality_preferred_model": args.historical_selection_quality_preferred_model,
+        }
+        if args.weather_pattern_hardening_enabled is not None:
+            trader_kwargs["weather_pattern_hardening_enabled"] = bool(args.weather_pattern_hardening_enabled)
+        summary, ignored_trader_kwargs = _invoke_runner_with_supported_kwargs(
+            run_kalshi_temperature_shadow_watch,
+            trader_kwargs,
         )
+        if ignored_trader_kwargs:
+            summary["runner_ignored_cli_kwargs"] = sorted(ignored_trader_kwargs)
+        if micro_live_profile_caps is not None:
+            summary["risk_profile"] = "micro_live_50"
+            summary["risk_profile_applied"] = True
+            summary["risk_profile_caps"] = micro_live_profile_caps
     elif args.command == "kalshi-temperature-profitability":
         summary = run_kalshi_temperature_profitability(
             output_dir=args.output_dir,
             hours=args.hours,
             journal_db_path=args.journal_db_path,
             top_n=args.top_n,
+        )
+    elif args.command in {"kalshi-temperature-recovery-advisor", "temperature-recovery-advisor"}:
+        summary = run_kalshi_temperature_recovery_advisor(
+            output_dir=args.output_dir,
+            weather_window_hours=args.weather_window_hours,
+            weather_min_bucket_samples=args.weather_min_bucket_samples,
+            weather_max_profile_age_hours=args.weather_max_profile_age_hours,
+            weather_negative_expectancy_attempt_share_target=args.weather_negative_expectancy_attempt_share_target,
+            weather_stale_metar_negative_attempt_share_target=args.weather_stale_metar_negative_attempt_share_target,
+            weather_stale_metar_attempt_share_target=args.weather_stale_metar_attempt_share_target,
+            weather_min_attempts_target=args.weather_min_attempts_target,
+            optimizer_top_n=args.optimizer_top_n,
+        )
+    elif args.command in {"kalshi-temperature-recovery-loop", "temperature-recovery-loop"}:
+        recovery_loop_kwargs = {
+            "output_dir": args.output_dir,
+            "trader_env_file": args.trader_env_file,
+            "max_iterations": args.max_iterations,
+            "stall_iterations": args.stall_iterations,
+            "min_gap_improvement": args.min_gap_improvement,
+            "weather_window_hours": args.weather_window_hours,
+            "weather_min_bucket_samples": args.weather_min_bucket_samples,
+            "weather_max_profile_age_hours": args.weather_max_profile_age_hours,
+            "weather_negative_expectancy_attempt_share_target": args.weather_negative_expectancy_attempt_share_target,
+            "weather_stale_metar_negative_attempt_share_target": args.weather_stale_metar_negative_attempt_share_target,
+            "weather_stale_metar_attempt_share_target": args.weather_stale_metar_attempt_share_target,
+            "weather_min_attempts_target": args.weather_min_attempts_target,
+            "optimizer_top_n": args.optimizer_top_n,
+            "plateau_negative_regime_suppression_enabled": args.plateau_negative_regime_suppression_enabled,
+            "plateau_negative_regime_suppression_min_bucket_samples": (
+                args.plateau_negative_regime_suppression_min_bucket_samples
+            ),
+            "plateau_negative_regime_suppression_expectancy_threshold": (
+                args.plateau_negative_regime_suppression_expectancy_threshold
+            ),
+            "plateau_negative_regime_suppression_top_n": args.plateau_negative_regime_suppression_top_n,
+            "retune_weather_window_hours_cap": args.retune_weather_window_hours_cap,
+            "retune_overblocking_blocked_share_threshold": args.retune_overblocking_blocked_share_threshold,
+            "retune_underblocking_min_top_n": args.retune_underblocking_min_top_n,
+            "retune_overblocking_max_top_n": args.retune_overblocking_max_top_n,
+            "retune_min_bucket_samples_target": args.retune_min_bucket_samples_target,
+            "retune_expectancy_threshold_target": args.retune_expectancy_threshold_target,
+            "execute_actions": args.execute_actions,
+        }
+        summary, ignored_recovery_loop_kwargs = _invoke_runner_with_supported_kwargs(
+            run_kalshi_temperature_recovery_loop,
+            recovery_loop_kwargs,
+        )
+        if ignored_recovery_loop_kwargs:
+            summary["runner_ignored_cli_kwargs"] = sorted(ignored_recovery_loop_kwargs)
+    elif args.command in {"kalshi-temperature-recovery-campaign", "temperature-recovery-campaign"}:
+        advisor_targets = {
+            "weather_window_hours": args.weather_window_hours,
+            "weather_min_bucket_samples": args.weather_min_bucket_samples,
+            "weather_max_profile_age_hours": args.weather_max_profile_age_hours,
+            "weather_negative_expectancy_attempt_share_target": args.weather_negative_expectancy_attempt_share_target,
+            "weather_stale_metar_negative_attempt_share_target": args.weather_stale_metar_negative_attempt_share_target,
+            "weather_stale_metar_attempt_share_target": args.weather_stale_metar_attempt_share_target,
+            "weather_min_attempts_target": args.weather_min_attempts_target,
+            "optimizer_top_n": args.optimizer_top_n,
+            "plateau_negative_regime_suppression_enabled": args.plateau_negative_regime_suppression_enabled,
+            "plateau_negative_regime_suppression_min_bucket_samples": (
+                args.plateau_negative_regime_suppression_min_bucket_samples
+            ),
+            "plateau_negative_regime_suppression_expectancy_threshold": (
+                args.plateau_negative_regime_suppression_expectancy_threshold
+            ),
+            "plateau_negative_regime_suppression_top_n": args.plateau_negative_regime_suppression_top_n,
+            "retune_weather_window_hours_cap": args.retune_weather_window_hours_cap,
+            "retune_overblocking_blocked_share_threshold": args.retune_overblocking_blocked_share_threshold,
+            "retune_underblocking_min_top_n": args.retune_underblocking_min_top_n,
+            "retune_overblocking_max_top_n": args.retune_overblocking_max_top_n,
+            "retune_min_bucket_samples_target": args.retune_min_bucket_samples_target,
+            "retune_expectancy_threshold_target": args.retune_expectancy_threshold_target,
+        }
+        profiles: list[dict[str, Any]] | None = None
+        if args.profiles_json:
+            profiles_payload: Any = _load_json_dict(args.profiles_json)
+            if profiles_payload is None:
+                try:
+                    profiles_payload = json.loads(Path(args.profiles_json).read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    profiles_payload = None
+            if isinstance(profiles_payload, dict):
+                raw_profiles = profiles_payload.get("profiles")
+            elif isinstance(profiles_payload, list):
+                raw_profiles = profiles_payload
+            else:
+                raw_profiles = None
+            if isinstance(raw_profiles, list):
+                profiles = [item for item in raw_profiles if isinstance(item, dict)]
+        summary = run_kalshi_temperature_recovery_campaign(
+            output_dir=args.output_dir,
+            trader_env_file=args.trader_env_file,
+            execute_actions=args.execute_actions,
+            profiles=profiles,
+            advisor_targets=advisor_targets,
         )
     elif args.command == "kalshi-temperature-selection-quality":
         summary = run_kalshi_temperature_selection_quality(
@@ -7040,6 +9061,45 @@ def main() -> None:
             score_adjust_scale=args.score_adjust_scale,
             intent_hours=args.intent_hours,
             top_n=args.top_n,
+        )
+    elif args.command in {"kalshi-temperature-growth-optimizer", "temperature-growth-optimizer"}:
+        summary = run_temperature_growth_optimizer(
+            output_dir=args.output_dir,
+            intent_files=args.intent_files,
+            lookback_hours_min=args.lookback_hours_min,
+            lookback_hours_max=args.lookback_hours_max,
+            lookback_hours_step=args.lookback_hours_step,
+            intent_hours_min=args.intent_hours_min,
+            intent_hours_max=args.intent_hours_max,
+            intent_hours_step=args.intent_hours_step,
+            min_resolved_market_sides_min=args.min_resolved_market_sides_min,
+            min_resolved_market_sides_max=args.min_resolved_market_sides_max,
+            min_bucket_samples_min=args.min_bucket_samples_min,
+            min_bucket_samples_max=args.min_bucket_samples_max,
+            probability_penalty_max_min=args.probability_penalty_max_min,
+            probability_penalty_max_max=args.probability_penalty_max_max,
+            expected_edge_penalty_max_min=args.expected_edge_penalty_max_min,
+            expected_edge_penalty_max_max=args.expected_edge_penalty_max_max,
+            score_adjust_scale_min=args.score_adjust_scale_min,
+            score_adjust_scale_max=args.score_adjust_scale_max,
+            score_adjust_scale_step=args.score_adjust_scale_step,
+            preferred_attribution_model=args.preferred_attribution_model,
+            top_n=args.top_n,
+            search_bounds_json=args.search_bounds_json,
+        )
+    elif args.command == "kalshi-temperature-execution-cost-tape":
+        summary = run_kalshi_temperature_execution_cost_tape(
+            output_dir=args.output_dir,
+            window_hours=args.window_hours,
+            min_candidate_samples=args.min_candidate_samples,
+            min_quote_coverage_ratio=args.min_quote_coverage_ratio,
+            journal_db_path=args.journal_db_path,
+            max_tickers=args.max_tickers,
+            min_global_expected_edge_share_for_exclusion=args.min_global_expected_edge_share_for_exclusion,
+            min_ticker_rows_for_exclusion=args.min_ticker_rows_for_exclusion,
+            exclusion_max_quote_coverage_ratio=args.exclusion_max_quote_coverage_ratio,
+            max_ticker_mean_spread_for_exclusion=args.max_ticker_mean_spread_for_exclusion,
+            max_excluded_tickers=args.max_excluded_tickers,
         )
     elif args.command == "kalshi-temperature-refill-trial-balance":
         summary = run_kalshi_temperature_refill_trial_balance(
@@ -7150,12 +9210,28 @@ def main() -> None:
             output_dir=args.output_dir,
             top_n=args.top_n,
             market_tickers=[item.strip() for item in str(args.market_tickers or "").split(",") if item.strip()],
+            excluded_market_tickers=[
+                item.strip() for item in str(args.excluded_market_tickers or "").split(",") if item.strip()
+            ],
+            excluded_market_tickers_file=str(args.excluded_market_tickers_file or "").strip() or None,
             require_liquidity_filter=not args.disable_liquidity_filter,
             require_two_sided_quotes=not args.disable_require_two_sided_quotes,
             max_spread_dollars=args.max_spread_dollars,
             min_liquidity_score=args.min_liquidity_score,
             max_family_candidates=args.max_family_candidates,
             max_family_share=args.max_family_share,
+        )
+    elif args.command == "decision-matrix-hardening":
+        summary = run_decision_matrix_hardening(
+            output_dir=args.output_dir,
+            window_hours=args.window_hours,
+            min_settled_outcomes=args.min_settled_outcomes,
+            max_top_blocker_share=args.max_top_blocker_share,
+            min_approval_rate=args.min_approval_rate,
+            min_intents_sample=args.min_intents_sample,
+            max_sparse_edge_block_share=args.max_sparse_edge_block_share,
+            min_execution_cost_candidate_samples=args.min_execution_cost_candidate_samples,
+            min_execution_cost_quote_coverage_ratio=args.min_execution_cost_quote_coverage_ratio,
         )
     elif args.command == "kalshi-focus-dossier":
         summary = run_kalshi_focus_dossier(

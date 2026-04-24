@@ -267,16 +267,37 @@ def run_kalshi_micro_gate(
         book_db_path=effective_book_db_path,
     )
     open_positions_count = count_open_positions(book_db_path=effective_book_db_path)
-    quality_summary = quality_runner(history_csv=effective_history_csv, output_dir=output_dir, now=captured_at)
-    signal_summary = signal_runner(history_csv=effective_history_csv, output_dir=output_dir, now=captured_at)
-    persistence_summary = persistence_runner(
-        history_csv=effective_history_csv,
-        output_dir=output_dir,
-        now=captured_at,
-    )
-    delta_summary = delta_runner(history_csv=effective_history_csv, output_dir=output_dir, now=captured_at)
-    category_summary = category_runner(history_csv=effective_history_csv, output_dir=output_dir, now=captured_at)
-    pressure_summary = pressure_runner(history_csv=effective_history_csv, output_dir=output_dir, now=captured_at)
+    quality_summary: dict[str, Any] = {}
+    signal_summary: dict[str, Any] = {}
+    persistence_summary: dict[str, Any] = {}
+    delta_summary: dict[str, Any] = {}
+    category_summary: dict[str, Any] = {}
+    pressure_summary: dict[str, Any] = {}
+    history_error_message: str | None = None
+    try:
+        quality_summary = quality_runner(history_csv=effective_history_csv, output_dir=output_dir, now=captured_at)
+        signal_summary = signal_runner(history_csv=effective_history_csv, output_dir=output_dir, now=captured_at)
+        persistence_summary = persistence_runner(
+            history_csv=effective_history_csv,
+            output_dir=output_dir,
+            now=captured_at,
+        )
+        delta_summary = delta_runner(history_csv=effective_history_csv, output_dir=output_dir, now=captured_at)
+        category_summary = category_runner(history_csv=effective_history_csv, output_dir=output_dir, now=captured_at)
+        pressure_summary = pressure_runner(history_csv=effective_history_csv, output_dir=output_dir, now=captured_at)
+    except (FileNotFoundError, ValueError) as exc:
+        error_text = str(exc)
+        if isinstance(exc, ValueError) and "history csv not found" not in error_text.lower():
+            raise
+        history_error_message = (
+            error_text if error_text.lower().startswith("history csv not found:") else f"History CSV not found: {effective_history_csv}"
+        )
+        quality_summary = {"status": "history_missing"}
+        signal_summary = {"status": "history_missing"}
+        persistence_summary = {"status": "history_missing"}
+        delta_summary = {"status": "history_missing", "board_change_label": "unknown"}
+        category_summary = {"status": "history_missing"}
+        pressure_summary = {"status": "history_missing"}
 
     decision = build_trade_gate_decision(
         actual_live_balance_dollars=plan_summary.get("actual_live_balance_dollars"),
@@ -306,6 +327,20 @@ def run_kalshi_micro_gate(
                 "gate_blockers": blockers,
             }
         )
+    if history_error_message:
+        blockers = list(decision.get("gate_blockers", []))
+        if history_error_message not in blockers:
+            blockers.insert(0, history_error_message)
+        if plan_status in {"rate_limited", "upstream_error"}:
+            decision.update({"gate_blockers": blockers})
+        else:
+            decision.update(
+                {
+                    "gate_pass": False,
+                    "gate_status": "history_missing",
+                    "gate_blockers": blockers,
+                }
+            )
 
     summary = {
         "captured_at": captured_at.isoformat(),

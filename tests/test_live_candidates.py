@@ -729,6 +729,53 @@ class LiveCandidatesTests(unittest.TestCase):
                     http_get_json=fake_http_get_json,
                 )
 
+    def test_run_live_candidates_non_therundown_uses_artifact_passthrough(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            env_file = base / "env.txt"
+            env_file.write_text(
+                (
+                    "ODDS_PROVIDER=opticodds\n"
+                    "OPTICODDS_API_KEY=abc123\n"
+                ),
+                encoding="utf-8",
+            )
+            source_summary = base / "live_candidates_summary_4_2026-03-28_20260328_010101.json"
+            source_summary.write_text(
+                json.dumps(
+                    {
+                        "captured_at": datetime.now().isoformat(),
+                        "status": "ready",
+                        "market_ids": [1, 2, 3],
+                        "affiliate_ids": ["19"],
+                        "affiliate_names": ["DraftKings"],
+                        "events_fetched": 3,
+                        "market_pairs_seen": 6,
+                        "market_pairs_with_consensus": 4,
+                        "candidates_written": 5,
+                        "positive_ev_candidates": 2,
+                        "positive_decision_ev_candidates": 2,
+                        "top_candidates": [{"selection": "Example candidate"}],
+                        "output_csv": str(base / "live_candidates_4_2026-03-28_20260328_010101.csv"),
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            summary = run_live_candidates(
+                env_file=str(env_file),
+                sport_id=4,
+                event_date="2026-03-28",
+                output_dir=str(base),
+            )
+
+            self.assertEqual(summary["status"], "ready")
+            self.assertEqual(summary["provider"], "opticodds")
+            self.assertEqual(summary["data_source"], "artifact_passthrough")
+            self.assertEqual(summary["candidates_written"], 5)
+            self.assertTrue(str(summary["source_summary_file"]).endswith(source_summary.name))
+            self.assertTrue(Path(summary["output_file"]).exists())
+
     def test_therundown_json_get_retries_rate_limited_calls(self) -> None:
         attempts = 0
 

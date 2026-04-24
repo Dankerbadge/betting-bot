@@ -94,6 +94,13 @@ def _write_env_file(
         "LIVE_STATUS_STRICT_MAX_AGE_SECONDS=300",
         "ALPHA_SUMMARY_STRICT_MAX_AGE_SECONDS=54000",
         "DISCORD_ROUTE_GUARD_STRICT_MAX_AGE_SECONDS=10800",
+        "COLDMATH_STAGE_TIMEOUT_STRICT_REQUIRED=1",
+        "COLDMATH_STAGE_TIMEOUT_SECONDS=900",
+        "COLDMATH_SNAPSHOT_TIMEOUT_SECONDS=900",
+        "COLDMATH_MARKET_INGEST_TIMEOUT_SECONDS=900",
+        "COLDMATH_RECOVERY_ADVISOR_TIMEOUT_SECONDS=600",
+        "COLDMATH_RECOVERY_LOOP_TIMEOUT_SECONDS=900",
+        "COLDMATH_RECOVERY_CAMPAIGN_TIMEOUT_SECONDS=1200",
     ]
     lines.extend(extra_lines)
     env_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -3842,3 +3849,596 @@ def test_shadow_check_strict_fails_when_stale_metrics_timer_expected_but_not_ena
 
     assert result.returncode == 2
     assert "STRICT CHECK FAILED: stale-metrics drill timer expected but not enabled" in result.stderr
+
+
+def test_shadow_check_strict_fails_when_recovery_env_persistence_status_is_error(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    _write_json(
+        output_dir / "health" / "coldmath_hardening_latest.json",
+        {
+            "status": "ready",
+            "recovery_env_persistence": {
+                "status": "error",
+                "changed": False,
+                "target_file": "/etc/betbot/temperature-shadow.env",
+                "error": "Target env file not found",
+            },
+        },
+    )
+
+    env_file = tmp_path / "shadow.env"
+    _write_env_file(env_file=env_file, output_dir=output_dir)
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_shadow_check(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 2
+    assert "coldmath_recovery_env_persistence status=error" in result.stdout
+    assert "STRICT CHECK FAILED: coldmath recovery env persistence error" in result.stderr
+    assert "STRICT CHECK REMEDIATION: run bash" in result.stderr
+    assert "set_coldmath_recovery_env_persistence_gate.sh --enable" in result.stderr
+
+
+def test_shadow_check_strict_ignores_recovery_env_persistence_error_when_disabled(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    _write_json(
+        output_dir / "health" / "coldmath_hardening_latest.json",
+        {
+            "status": "ready",
+            "recovery_env_persistence": {
+                "status": "execution_failed",
+                "changed": False,
+                "target_file": "/etc/betbot/temperature-shadow.env",
+                "error": "python_invocation_failed",
+            },
+        },
+    )
+
+    env_file = tmp_path / "shadow.env"
+    _write_env_file(
+        env_file=env_file,
+        output_dir=output_dir,
+        extra_lines=(
+            "COLDMATH_RECOVERY_ENV_PERSISTENCE_STRICT_FAIL_ON_ERROR=0",
+        ),
+    )
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_shadow_check(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 0
+    assert "coldmath_recovery_env_persistence status=execution_failed" in result.stdout
+    assert "STRICT CHECK FAILED: coldmath recovery env persistence error" not in result.stderr
+
+
+def test_shadow_check_recovery_watchdog_reports_hardening_trigger_ok_non_strict(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    _write_json(
+        output_dir / "health" / "recovery" / "recovery_latest.json",
+        {
+            "issue_detected": True,
+            "issue_remaining": False,
+            "resolved_in_run": True,
+            "health": {"status": "green"},
+            "pipeline": {"status": "ready"},
+            "freshness": {
+                "pressure_active": False,
+                "stale_rate": 0.0,
+                "approval_rate": 1.0,
+            },
+            "state": {
+                "consecutive_freshness_pressure": 0,
+                "consecutive_retry_pressure": 0,
+                "last_log_maintenance_timer_enable_epoch": 0,
+            },
+            "execution_attempts": {"metar": 1, "shadow": 1},
+            "scan_budget": {
+                "effective_max_markets": 100,
+                "next_max_markets": 100,
+                "adaptive_action": "hold",
+            },
+            "service_states": {
+                "alpha_worker_service": "active",
+                "breadth_worker_service": "active",
+                "reporting_service_activating_age_seconds": 0,
+                "log_maintenance_timer": "active",
+                "log_maintenance_timer_enabled": "enabled",
+            },
+            "log_maintenance": {"health_status": "green", "age_seconds": 0},
+            "decision_reasons": ["recovery_env_persistence_error"],
+            "actions_attempted": [
+                "repair_recovery_env_persistence_gate:ok",
+                "trigger_coldmath_hardening_after_env_repair:ok",
+                "repair_coldmath_stage_timeout_guardrails:ok",
+                "trigger_coldmath_hardening_after_stage_timeout_repair:ok",
+            ],
+        },
+    )
+
+    env_file = tmp_path / "shadow.env"
+    _write_env_file(env_file=env_file, output_dir=output_dir)
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_shadow_check(
+        script_path=script_path,
+        env_file=env_file,
+        tool_dir=tool_dir,
+        strict=False,
+    )
+
+    assert result.returncode == 0
+    assert "recovery_watchdog:" in result.stdout
+    assert "env_repair_action=ok" in result.stdout
+    assert "hardening_trigger_action=ok" in result.stdout
+    assert "stage_timeout_repair_action=ok" in result.stdout
+    assert "stage_timeout_hardening_trigger_action=ok" in result.stdout
+    assert "STRICT CHECK FAILED: recovery coldmath hardening trigger failed" not in result.stderr
+    assert "STRICT CHECK FAILED: recovery coldmath hardening trigger missing service unit" not in result.stderr
+
+
+def test_shadow_check_strict_fails_when_recovery_effectiveness_gap_summary_missing(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    _write_json(
+        output_dir / "health" / "recovery" / "recovery_latest.json",
+        {
+            "issue_detected": False,
+            "issue_remaining": False,
+            "resolved_in_run": True,
+            "recovery_effectiveness": {
+                "strict_required": True,
+                "gap_detected": True,
+                "gap_reason": "summary_missing",
+                "stale": False,
+                "file_age_seconds": -1,
+                "stale_threshold_seconds": 600,
+            },
+        },
+    )
+
+    env_file = tmp_path / "shadow.env"
+    _write_env_file(env_file=env_file, output_dir=output_dir)
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_shadow_check(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 2
+    assert "recovery_effectiveness_strict_required=true" in result.stdout
+    assert "recovery_effectiveness_gap_detected=true" in result.stdout
+    assert "recovery_effectiveness_gap_reason=summary_missing" in result.stdout
+    assert "STRICT CHECK FAILED: recovery effectiveness gap detected (reason=summary_missing)" in result.stderr
+    assert "STRICT CHECK REMEDIATION: run the recovery pipeline" in result.stderr
+    assert "STRICT CHECK REMEDIATION: inspect recovery artifacts" in result.stderr
+
+
+def test_shadow_check_strict_fails_when_recovery_effectiveness_gap_summary_stale(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    _write_json(
+        output_dir / "health" / "recovery" / "recovery_latest.json",
+        {
+            "issue_detected": False,
+            "issue_remaining": False,
+            "resolved_in_run": True,
+            "recovery_effectiveness": {
+                "strict_required": True,
+                "gap_detected": True,
+                "gap_reason": "summary_stale",
+                "stale": True,
+                "file_age_seconds": 1200,
+                "stale_threshold_seconds": 600,
+            },
+        },
+    )
+
+    env_file = tmp_path / "shadow.env"
+    _write_env_file(env_file=env_file, output_dir=output_dir)
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_shadow_check(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 2
+    assert "recovery_effectiveness_gap_reason=summary_stale" in result.stdout
+    assert "STRICT CHECK FAILED: recovery effectiveness gap detected (reason=summary_stale)" in result.stderr
+
+
+def test_shadow_check_strict_passes_when_recovery_effectiveness_gap_not_required(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    _write_json(
+        output_dir / "health" / "recovery" / "recovery_latest.json",
+        {
+            "issue_detected": False,
+            "issue_remaining": False,
+            "resolved_in_run": True,
+            "recovery_effectiveness": {
+                "strict_required": False,
+                "gap_detected": True,
+                "gap_reason": "summary_missing",
+                "stale": False,
+                "file_age_seconds": -1,
+                "stale_threshold_seconds": 600,
+            },
+        },
+    )
+
+    env_file = tmp_path / "shadow.env"
+    _write_env_file(env_file=env_file, output_dir=output_dir)
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_shadow_check(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 0
+    assert "recovery_effectiveness_strict_required=false" in result.stdout
+    assert "recovery_effectiveness_gap_detected=true" in result.stdout
+    assert "STRICT CHECK FAILED: recovery effectiveness gap detected" not in result.stderr
+
+
+def test_shadow_check_strict_fails_when_recovery_effectiveness_summary_required_but_missing(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+
+    env_file = tmp_path / "shadow.env"
+    _write_env_file(
+        env_file=env_file,
+        output_dir=output_dir,
+        extra_lines=(
+            "RECOVERY_REQUIRE_EFFECTIVENESS_SUMMARY=1",
+        ),
+    )
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_shadow_check(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 2
+    assert "recovery_watchdog: missing" in result.stdout
+    assert "STRICT CHECK FAILED: recovery effectiveness summary evidence unavailable" in result.stderr
+    assert "STRICT CHECK REMEDIATION: run the recovery pipeline" in result.stderr
+    assert "STRICT CHECK REMEDIATION: inspect recovery_latest" in result.stderr
+
+
+def test_shadow_check_strict_fails_when_recovery_effectiveness_summary_required_and_malformed(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    recovery_path = output_dir / "health" / "recovery" / "recovery_latest.json"
+    recovery_path.parent.mkdir(parents=True, exist_ok=True)
+    recovery_path.write_text("{not-json", encoding="utf-8")
+
+    env_file = tmp_path / "shadow.env"
+    _write_env_file(
+        env_file=env_file,
+        output_dir=output_dir,
+        extra_lines=(
+            "RECOVERY_REQUIRE_EFFECTIVENESS_SUMMARY=1",
+        ),
+    )
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_shadow_check(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 2
+    assert "recovery_latest -> PARSE_ERROR" in result.stdout
+    assert "parse_error=true" in result.stdout
+    assert "STRICT CHECK FAILED: recovery effectiveness summary evidence malformed" in result.stderr
+    assert "STRICT CHECK REMEDIATION: run the recovery pipeline" in result.stderr
+    assert "STRICT CHECK REMEDIATION: inspect recovery_latest" in result.stderr
+
+
+def test_shadow_check_strict_passes_when_recovery_effectiveness_summary_not_required_and_missing(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+
+    env_file = tmp_path / "shadow.env"
+    _write_env_file(
+        env_file=env_file,
+        output_dir=output_dir,
+        extra_lines=(
+            "RECOVERY_REQUIRE_EFFECTIVENESS_SUMMARY=0",
+        ),
+    )
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_shadow_check(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 0
+    assert "recovery_watchdog: missing" in result.stdout
+    assert "STRICT CHECK FAILED: recovery effectiveness summary evidence unavailable" not in result.stderr
+    assert "STRICT CHECK FAILED: recovery effectiveness summary evidence malformed" not in result.stderr
+
+
+def test_shadow_check_strict_fails_when_recovery_watchdog_hardening_trigger_failed(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    _write_json(
+        output_dir / "health" / "recovery" / "recovery_latest.json",
+        {
+            "issue_detected": True,
+            "issue_remaining": True,
+            "resolved_in_run": False,
+            "actions_attempted": [
+                "repair_recovery_env_persistence_gate:ok",
+                "trigger_coldmath_hardening_after_env_repair:failed",
+            ],
+        },
+    )
+
+    env_file = tmp_path / "shadow.env"
+    _write_env_file(env_file=env_file, output_dir=output_dir)
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_shadow_check(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 2
+    assert "STRICT CHECK FAILED: recovery coldmath hardening trigger failed after env repair" in result.stderr
+    assert "betbot-temperature-coldmath-hardening.service" in result.stderr
+
+
+def test_shadow_check_strict_fails_when_recovery_watchdog_hardening_trigger_missing_unit(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    _write_json(
+        output_dir / "health" / "recovery" / "recovery_latest.json",
+        {
+            "issue_detected": True,
+            "issue_remaining": True,
+            "resolved_in_run": False,
+            "actions_attempted": [
+                "repair_recovery_env_persistence_gate:ok",
+                "trigger_coldmath_hardening_after_env_repair:missing_unit",
+            ],
+        },
+    )
+
+    env_file = tmp_path / "shadow.env"
+    _write_env_file(env_file=env_file, output_dir=output_dir)
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_shadow_check(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 2
+    assert (
+        "STRICT CHECK FAILED: recovery coldmath hardening trigger missing service unit after env repair"
+        in result.stderr
+    )
+    assert "install_systemd_temperature_coldmath_hardening.sh" in result.stderr
+
+
+def test_shadow_check_strict_fails_when_recovery_watchdog_stage_timeout_hardening_trigger_failed(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    _write_json(
+        output_dir / "health" / "recovery" / "recovery_latest.json",
+        {
+            "issue_detected": True,
+            "issue_remaining": True,
+            "resolved_in_run": False,
+            "actions_attempted": [
+                "repair_coldmath_stage_timeout_guardrails:ok",
+                "trigger_coldmath_hardening_after_stage_timeout_repair:failed",
+            ],
+        },
+    )
+
+    env_file = tmp_path / "shadow.env"
+    _write_env_file(env_file=env_file, output_dir=output_dir)
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_shadow_check(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 2
+    assert (
+        "STRICT CHECK FAILED: recovery coldmath hardening trigger failed after stage-timeout repair"
+        in result.stderr
+    )
+    assert "betbot-temperature-coldmath-hardening.service" in result.stderr
+
+
+def test_shadow_check_strict_fails_when_recovery_watchdog_stage_timeout_hardening_trigger_missing_unit(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    _write_json(
+        output_dir / "health" / "recovery" / "recovery_latest.json",
+        {
+            "issue_detected": True,
+            "issue_remaining": True,
+            "resolved_in_run": False,
+            "actions_attempted": [
+                "repair_coldmath_stage_timeout_guardrails:ok",
+                "trigger_coldmath_hardening_after_stage_timeout_repair:missing_unit",
+            ],
+        },
+    )
+
+    env_file = tmp_path / "shadow.env"
+    _write_env_file(env_file=env_file, output_dir=output_dir)
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_shadow_check(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 2
+    assert (
+        "STRICT CHECK FAILED: recovery coldmath hardening trigger missing service unit after stage-timeout repair"
+        in result.stderr
+    )
+    assert "install_systemd_temperature_coldmath_hardening.sh" in result.stderr
+
+
+def test_shadow_check_strict_fails_when_recovery_watchdog_stage_timeout_repair_failed(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    _write_json(
+        output_dir / "health" / "recovery" / "recovery_latest.json",
+        {
+            "issue_detected": True,
+            "issue_remaining": True,
+            "resolved_in_run": False,
+            "actions_attempted": [
+                "repair_coldmath_stage_timeout_guardrails:failed",
+            ],
+        },
+    )
+
+    env_file = tmp_path / "shadow.env"
+    _write_env_file(env_file=env_file, output_dir=output_dir)
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_shadow_check(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 2
+    assert (
+        "STRICT CHECK FAILED: recovery coldmath stage-timeout guardrail repair failed"
+        in result.stderr
+    )
+    assert "set_coldmath_stage_timeout_guardrails.sh" in result.stderr
+    assert "betbot-temperature-pipeline-recovery.service" in result.stderr
+
+
+def test_shadow_check_strict_fails_when_recovery_watchdog_stage_timeout_repair_missing_script(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    _write_json(
+        output_dir / "health" / "recovery" / "recovery_latest.json",
+        {
+            "issue_detected": True,
+            "issue_remaining": True,
+            "resolved_in_run": False,
+            "actions_attempted": [
+                "repair_coldmath_stage_timeout_guardrails:missing_script",
+            ],
+        },
+    )
+
+    env_file = tmp_path / "shadow.env"
+    _write_env_file(env_file=env_file, output_dir=output_dir)
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_shadow_check(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 2
+    assert (
+        "STRICT CHECK FAILED: recovery coldmath stage-timeout guardrail repair missing script"
+        in result.stderr
+    )
+    assert "set_coldmath_stage_timeout_guardrails.sh" in result.stderr
+    assert "chmod +x" in result.stderr
+
+
+def test_shadow_check_strict_fails_when_coldmath_stage_timeout_guardrail_disabled(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+
+    env_file = tmp_path / "shadow.env"
+    _write_env_file(
+        env_file=env_file,
+        output_dir=output_dir,
+        extra_lines=(
+            "COLDMATH_SNAPSHOT_TIMEOUT_SECONDS=0",
+        ),
+    )
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_shadow_check(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 2
+    assert "coldmath_stage_timeout_guardrails strict_required=1 hardening_enabled=1 status=disabled" in result.stdout
+    assert "disabled_keys=COLDMATH_SNAPSHOT_TIMEOUT_SECONDS" in result.stdout
+    assert "STRICT CHECK FAILED: coldmath stage timeout guardrails disabled" in result.stderr
+    assert "set_coldmath_stage_timeout_guardrails.sh" in result.stderr
+
+
+def test_shadow_check_strict_allows_disabled_coldmath_stage_timeout_guardrail_when_not_required(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+
+    env_file = tmp_path / "shadow.env"
+    _write_env_file(
+        env_file=env_file,
+        output_dir=output_dir,
+        extra_lines=(
+            "COLDMATH_STAGE_TIMEOUT_STRICT_REQUIRED=0",
+            "COLDMATH_SNAPSHOT_TIMEOUT_SECONDS=0",
+        ),
+    )
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_shadow_check(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 0
+    assert "coldmath_stage_timeout_guardrails strict_required=0 hardening_enabled=1 status=disabled" in result.stdout
+    assert "STRICT CHECK FAILED: coldmath stage timeout guardrails disabled" not in result.stderr
+
+
+def test_shadow_check_strict_fails_when_coldmath_stage_timeout_guardrail_non_numeric(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+
+    env_file = tmp_path / "shadow.env"
+    _write_env_file(
+        env_file=env_file,
+        output_dir=output_dir,
+        extra_lines=(
+            "COLDMATH_SNAPSHOT_TIMEOUT_SECONDS=not-a-number",
+        ),
+    )
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_shadow_check(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 2
+    assert "coldmath_stage_timeout_guardrails strict_required=1 hardening_enabled=1 status=invalid" in result.stdout
+    assert "invalid_keys=COLDMATH_SNAPSHOT_TIMEOUT_SECONDS" in result.stdout
+    assert "STRICT CHECK FAILED: coldmath stage timeout guardrails invalid" in result.stderr
+    assert "set_coldmath_stage_timeout_guardrails.sh" in result.stderr

@@ -88,6 +88,22 @@ DECISION_MATRIX_LANE_STRICT_REQUIRE_STATE_FILE="${DECISION_MATRIX_LANE_STRICT_RE
 DECISION_MATRIX_LANE_STRICT_FAIL_ON_PARSE_ERROR="${DECISION_MATRIX_LANE_STRICT_FAIL_ON_PARSE_ERROR:-0}"
 DECISION_MATRIX_LANE_STRICT_MAX_AGE_SECONDS="${DECISION_MATRIX_LANE_STRICT_MAX_AGE_SECONDS:-0}"
 DECISION_MATRIX_LANE_ALERT_STATE_FILE="${DECISION_MATRIX_LANE_ALERT_STATE_FILE:-$OUTPUT_DIR/health/.decision_matrix_lane_alert_state.json}"
+COLDMATH_HARDENING_STATUS_FILE="${COLDMATH_HARDENING_STATUS_FILE:-$OUTPUT_DIR/health/coldmath_hardening_latest.json}"
+RECOVERY_LATEST_FILE="${RECOVERY_LATEST_FILE:-$OUTPUT_DIR/health/recovery/recovery_latest.json}"
+RECOVERY_REQUIRE_EFFECTIVENESS_SUMMARY="${RECOVERY_REQUIRE_EFFECTIVENESS_SUMMARY:-0}"
+COLDMATH_RECOVERY_ENV_PERSISTENCE_STRICT_FAIL_ON_ERROR="${COLDMATH_RECOVERY_ENV_PERSISTENCE_STRICT_FAIL_ON_ERROR:-1}"
+COLDMATH_STAGE_TIMEOUT_STRICT_REQUIRED="${COLDMATH_STAGE_TIMEOUT_STRICT_REQUIRED:-1}"
+COLDMATH_HARDENING_ENABLED="${COLDMATH_HARDENING_ENABLED:-1}"
+COLDMATH_STAGE_TIMEOUT_SECONDS="${COLDMATH_STAGE_TIMEOUT_SECONDS:-0}"
+COLDMATH_SNAPSHOT_TIMEOUT_SECONDS="${COLDMATH_SNAPSHOT_TIMEOUT_SECONDS:-$COLDMATH_STAGE_TIMEOUT_SECONDS}"
+COLDMATH_MARKET_INGEST_TIMEOUT_SECONDS="${COLDMATH_MARKET_INGEST_TIMEOUT_SECONDS:-$COLDMATH_STAGE_TIMEOUT_SECONDS}"
+COLDMATH_RECOVERY_ADVISOR_TIMEOUT_SECONDS="${COLDMATH_RECOVERY_ADVISOR_TIMEOUT_SECONDS:-$COLDMATH_STAGE_TIMEOUT_SECONDS}"
+COLDMATH_RECOVERY_LOOP_TIMEOUT_SECONDS="${COLDMATH_RECOVERY_LOOP_TIMEOUT_SECONDS:-$COLDMATH_STAGE_TIMEOUT_SECONDS}"
+COLDMATH_RECOVERY_CAMPAIGN_TIMEOUT_SECONDS="${COLDMATH_RECOVERY_CAMPAIGN_TIMEOUT_SECONDS:-$COLDMATH_STAGE_TIMEOUT_SECONDS}"
+COLDMATH_MARKET_INGEST_ENABLED="${COLDMATH_MARKET_INGEST_ENABLED:-1}"
+COLDMATH_RECOVERY_ADVISOR_ENABLED="${COLDMATH_RECOVERY_ADVISOR_ENABLED:-1}"
+COLDMATH_RECOVERY_LOOP_ENABLED="${COLDMATH_RECOVERY_LOOP_ENABLED:-1}"
+COLDMATH_RECOVERY_CAMPAIGN_ENABLED="${COLDMATH_RECOVERY_CAMPAIGN_ENABLED:-1}"
 REPLAN_COOLDOWN_STATE_FILE="${REPLAN_COOLDOWN_STATE_FILE:-$OUTPUT_DIR/.adaptive_replan_cooldown_minutes}"
 REPLAN_BACKSTOP_STATE_FILE="${REPLAN_BACKSTOP_STATE_FILE:-$OUTPUT_DIR/.adaptive_replan_backstop}"
 AUTO_PROFILE_PATH="${APPROVAL_GATE_PROFILE_AUTO_PATH:-$OUTPUT_DIR/runtime/approval_gate_profile_auto.json}"
@@ -148,6 +164,14 @@ if ! [[ "$DECISION_MATRIX_LANE_STRICT_MAX_AGE_SECONDS" =~ ^[0-9]+$ ]]; then
 fi
 DECISION_MATRIX_LANE_STRICT_REQUIRE_STATE_FILE="$(normalize_binary_flag "$DECISION_MATRIX_LANE_STRICT_REQUIRE_STATE_FILE" "0")"
 DECISION_MATRIX_LANE_STRICT_FAIL_ON_PARSE_ERROR="$(normalize_binary_flag "$DECISION_MATRIX_LANE_STRICT_FAIL_ON_PARSE_ERROR" "0")"
+RECOVERY_REQUIRE_EFFECTIVENESS_SUMMARY="$(normalize_binary_flag "$RECOVERY_REQUIRE_EFFECTIVENESS_SUMMARY" "0")"
+COLDMATH_RECOVERY_ENV_PERSISTENCE_STRICT_FAIL_ON_ERROR="$(normalize_binary_flag "$COLDMATH_RECOVERY_ENV_PERSISTENCE_STRICT_FAIL_ON_ERROR" "1")"
+COLDMATH_STAGE_TIMEOUT_STRICT_REQUIRED="$(normalize_binary_flag "$COLDMATH_STAGE_TIMEOUT_STRICT_REQUIRED" "1")"
+COLDMATH_HARDENING_ENABLED="$(normalize_binary_flag "$COLDMATH_HARDENING_ENABLED" "1")"
+COLDMATH_MARKET_INGEST_ENABLED="$(normalize_binary_flag "$COLDMATH_MARKET_INGEST_ENABLED" "1")"
+COLDMATH_RECOVERY_ADVISOR_ENABLED="$(normalize_binary_flag "$COLDMATH_RECOVERY_ADVISOR_ENABLED" "1")"
+COLDMATH_RECOVERY_LOOP_ENABLED="$(normalize_binary_flag "$COLDMATH_RECOVERY_LOOP_ENABLED" "1")"
+COLDMATH_RECOVERY_CAMPAIGN_ENABLED="$(normalize_binary_flag "$COLDMATH_RECOVERY_CAMPAIGN_ENABLED" "1")"
 APPROVAL_GATE_PROFILE_AUTO_ENABLED_NORMALIZED="$(normalize_binary_flag "${APPROVAL_GATE_PROFILE_AUTO_ENABLED:-0}" "0")"
 ALPHA_SUMMARY_APPROVAL_AUTO_APPLY_ENABLED_NORMALIZED="$(normalize_binary_flag "${ALPHA_SUMMARY_APPROVAL_AUTO_APPLY_ENABLED:-0}" "0")"
 
@@ -192,6 +216,31 @@ decision_matrix_lane_degraded_streak_notify_every="0"
 decision_matrix_lane_last_notify_reason="none"
 decision_matrix_lane_strict_status_match="false"
 decision_matrix_lane_parse_error="false"
+recovery_env_persistence_status="unknown"
+recovery_env_persistence_changed="false"
+recovery_env_persistence_target_file=""
+recovery_env_persistence_error_present="false"
+recovery_env_persistence_parse_error="false"
+recovery_watchdog_issue_detected="false"
+recovery_watchdog_issue_remaining="false"
+recovery_watchdog_env_repair_action="none"
+recovery_watchdog_hardening_trigger_action="none"
+recovery_watchdog_stage_timeout_repair_action="none"
+recovery_watchdog_stage_timeout_hardening_trigger_action="none"
+recovery_watchdog_artifact_available="0"
+recovery_watchdog_parse_error="false"
+recovery_effectiveness_strict_required="false"
+recovery_effectiveness_gap_detected="false"
+recovery_effectiveness_gap_reason="none"
+recovery_effectiveness_stale="false"
+recovery_effectiveness_file_age_seconds="-1"
+recovery_effectiveness_stale_threshold_seconds="-1"
+coldmath_stage_timeout_guardrails_valid="true"
+coldmath_stage_timeout_guardrails_enabled="true"
+coldmath_stage_timeout_guardrails_eval_status="ok"
+coldmath_stage_timeout_guardrails_invalid_keys=""
+coldmath_stage_timeout_guardrails_disabled_keys=""
+coldmath_stage_timeout_guardrails_required_keys="none"
 HAS_JQ=1
 if ! command -v jq >/dev/null 2>&1; then
   HAS_JQ=0
@@ -812,7 +861,10 @@ if [[ -f "$AUTO_PROFILE_PATH" ]]; then
   fi
 fi
 
-latest_recovery="$(ls -1t "$OUTPUT_DIR"/health/recovery/recovery_latest.json 2>/dev/null | head -n 1 || true)"
+latest_recovery="$RECOVERY_LATEST_FILE"
+if [[ ! -f "$latest_recovery" ]]; then
+  latest_recovery="$(ls -1t "$OUTPUT_DIR"/health/recovery/recovery_latest.json 2>/dev/null | head -n 1 || true)"
+fi
 if [[ -n "$latest_recovery" && "$HAS_JQ" == "1" ]]; then
   if jq -e . "$latest_recovery" >/dev/null 2>&1; then
     jq -r '
@@ -821,6 +873,128 @@ if [[ -n "$latest_recovery" && "$HAS_JQ" == "1" ]]; then
   else
     echo "recovery_latest -> PARSE_ERROR ($latest_recovery)"
   fi
+fi
+if [[ -n "$latest_recovery" && -f "$latest_recovery" ]]; then
+  recovery_watchdog_artifact_available="1"
+  recovery_watchdog_vars="$(python3 - "$latest_recovery" <<'PY'
+from __future__ import annotations
+
+import json
+from pathlib import Path
+import sys
+
+
+def _normalize(value: object) -> str:
+    return str(value or "").strip().lower()
+
+
+def _as_bool(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    return _normalize(value) in {"1", "true", "yes", "on"}
+
+
+def _as_int(value: object, default: int = -1) -> int:
+    if isinstance(value, bool):
+        return default
+    try:
+        return int(value)
+    except Exception:
+        try:
+            return int(float(str(value).strip()))
+        except Exception:
+            return default
+
+
+def _sanitize_gap_reason(value: object) -> str:
+    candidate = _normalize(value)
+    if candidate in {"summary_missing", "summary_stale"}:
+        return candidate
+    return "none"
+
+
+def _latest_action_suffix(actions: list[str], prefix: str) -> str:
+    for item in reversed(actions):
+        text = str(item or "").strip()
+        if text.startswith(prefix):
+            return text[len(prefix):] or "unknown"
+    return "none"
+
+
+path = Path(sys.argv[1])
+parse_error = False
+try:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+except Exception:
+    parse_error = True
+    payload = {}
+if not isinstance(payload, dict):
+    parse_error = True
+    payload = {}
+actions_raw = payload.get("actions_attempted")
+if isinstance(actions_raw, list):
+    actions = [str(item).strip() for item in actions_raw if str(item).strip()]
+else:
+    actions = []
+issue_detected = _as_bool(payload.get("issue_detected"))
+issue_remaining = _as_bool(payload.get("issue_remaining"))
+env_repair_action = _latest_action_suffix(actions, "repair_recovery_env_persistence_gate:")
+hardening_trigger_action = _latest_action_suffix(actions, "trigger_coldmath_hardening_after_env_repair:")
+stage_timeout_repair_action = _latest_action_suffix(actions, "repair_coldmath_stage_timeout_guardrails:")
+stage_timeout_hardening_trigger_action = _latest_action_suffix(
+    actions, "trigger_coldmath_hardening_after_stage_timeout_repair:"
+)
+recovery_effectiveness_raw = payload.get("recovery_effectiveness")
+if isinstance(recovery_effectiveness_raw, dict):
+    recovery_effectiveness = recovery_effectiveness_raw
+else:
+    recovery_effectiveness = {}
+recovery_effectiveness_strict_required = _as_bool(recovery_effectiveness.get("strict_required"))
+recovery_effectiveness_gap_detected = _as_bool(recovery_effectiveness.get("gap_detected"))
+recovery_effectiveness_gap_reason = _sanitize_gap_reason(recovery_effectiveness.get("gap_reason"))
+recovery_effectiveness_stale = _as_bool(recovery_effectiveness.get("stale"))
+recovery_effectiveness_file_age_seconds = _as_int(
+    recovery_effectiveness.get("file_age_seconds"), -1
+)
+recovery_effectiveness_stale_threshold_seconds = _as_int(
+    recovery_effectiveness.get("stale_threshold_seconds"), -1
+)
+print(f"issue_detected={'true' if issue_detected else 'false'}")
+print(f"issue_remaining={'true' if issue_remaining else 'false'}")
+print(f"env_repair_action={env_repair_action}")
+print(f"hardening_trigger_action={hardening_trigger_action}")
+print(f"stage_timeout_repair_action={stage_timeout_repair_action}")
+print(f"stage_timeout_hardening_trigger_action={stage_timeout_hardening_trigger_action}")
+print(f"recovery_effectiveness_strict_required={'true' if recovery_effectiveness_strict_required else 'false'}")
+print(f"recovery_effectiveness_gap_detected={'true' if recovery_effectiveness_gap_detected else 'false'}")
+print(f"recovery_effectiveness_gap_reason={recovery_effectiveness_gap_reason}")
+print(f"recovery_effectiveness_stale={'true' if recovery_effectiveness_stale else 'false'}")
+print(f"recovery_effectiveness_file_age_seconds={recovery_effectiveness_file_age_seconds}")
+print(f"recovery_effectiveness_stale_threshold_seconds={recovery_effectiveness_stale_threshold_seconds}")
+print(f"parse_error={'true' if parse_error else 'false'}")
+PY
+)"
+  while IFS='=' read -r key value; do
+    case "$key" in
+      issue_detected) recovery_watchdog_issue_detected="$value" ;;
+      issue_remaining) recovery_watchdog_issue_remaining="$value" ;;
+      env_repair_action) recovery_watchdog_env_repair_action="$value" ;;
+      hardening_trigger_action) recovery_watchdog_hardening_trigger_action="$value" ;;
+      stage_timeout_repair_action) recovery_watchdog_stage_timeout_repair_action="$value" ;;
+      stage_timeout_hardening_trigger_action) recovery_watchdog_stage_timeout_hardening_trigger_action="$value" ;;
+      recovery_effectiveness_strict_required) recovery_effectiveness_strict_required="$value" ;;
+      recovery_effectiveness_gap_detected) recovery_effectiveness_gap_detected="$value" ;;
+      recovery_effectiveness_gap_reason) recovery_effectiveness_gap_reason="$value" ;;
+      recovery_effectiveness_stale) recovery_effectiveness_stale="$value" ;;
+      recovery_effectiveness_file_age_seconds) recovery_effectiveness_file_age_seconds="$value" ;;
+      recovery_effectiveness_stale_threshold_seconds) recovery_effectiveness_stale_threshold_seconds="$value" ;;
+      parse_error) recovery_watchdog_parse_error="$value" ;;
+    esac
+  done <<< "$recovery_watchdog_vars"
+  echo "recovery_watchdog: artifact_available=${recovery_watchdog_artifact_available:-0} issue_detected=${recovery_watchdog_issue_detected:-false} issue_remaining=${recovery_watchdog_issue_remaining:-false} env_repair_action=${recovery_watchdog_env_repair_action:-none} hardening_trigger_action=${recovery_watchdog_hardening_trigger_action:-none} stage_timeout_repair_action=${recovery_watchdog_stage_timeout_repair_action:-none} stage_timeout_hardening_trigger_action=${recovery_watchdog_stage_timeout_hardening_trigger_action:-none} recovery_effectiveness_strict_required=${recovery_effectiveness_strict_required:-false} recovery_effectiveness_gap_detected=${recovery_effectiveness_gap_detected:-false} recovery_effectiveness_gap_reason=${recovery_effectiveness_gap_reason:-none} recovery_effectiveness_stale=${recovery_effectiveness_stale:-false} recovery_effectiveness_file_age_seconds=${recovery_effectiveness_file_age_seconds:--1} recovery_effectiveness_stale_threshold_seconds=${recovery_effectiveness_stale_threshold_seconds:--1} parse_error=${recovery_watchdog_parse_error:-false}"
+else
+  recovery_watchdog_artifact_available="0"
+  echo "recovery_watchdog: missing ($RECOVERY_LATEST_FILE)"
 fi
 
 latest_chaos="$(ls -1t "$OUTPUT_DIR"/health/recovery/chaos_check_latest.json 2>/dev/null | head -n 1 || true)"
@@ -981,6 +1155,120 @@ PY
   echo "decision_matrix_lane_alert_state status=${decision_matrix_lane_status:-unknown} degraded_streak=${decision_matrix_lane_degraded_streak_count:-0} threshold=${decision_matrix_lane_degraded_streak_threshold:-0} every=${decision_matrix_lane_degraded_streak_notify_every:-0} strict_statuses=${decision_matrix_lane_strict_statuses_normalized:-n/a} strict_match=${decision_matrix_lane_strict_status_match:-false} notify_reason=${decision_matrix_lane_last_notify_reason:-none} age_sec=${decision_matrix_lane_state_age_seconds:-n/a}"
 else
   echo "decision_matrix_lane_alert_state -> MISSING ($DECISION_MATRIX_LANE_ALERT_STATE_FILE)"
+fi
+
+declare -a coldmath_timeout_guardrails=()
+if [[ "$COLDMATH_HARDENING_ENABLED" == "1" ]]; then
+  coldmath_timeout_guardrails+=("COLDMATH_SNAPSHOT_TIMEOUT_SECONDS:$COLDMATH_SNAPSHOT_TIMEOUT_SECONDS")
+  if [[ "$COLDMATH_MARKET_INGEST_ENABLED" == "1" ]]; then
+    coldmath_timeout_guardrails+=("COLDMATH_MARKET_INGEST_TIMEOUT_SECONDS:$COLDMATH_MARKET_INGEST_TIMEOUT_SECONDS")
+  fi
+  if [[ "$COLDMATH_RECOVERY_ADVISOR_ENABLED" == "1" ]]; then
+    coldmath_timeout_guardrails+=("COLDMATH_RECOVERY_ADVISOR_TIMEOUT_SECONDS:$COLDMATH_RECOVERY_ADVISOR_TIMEOUT_SECONDS")
+  fi
+  if [[ "$COLDMATH_RECOVERY_LOOP_ENABLED" == "1" ]]; then
+    coldmath_timeout_guardrails+=("COLDMATH_RECOVERY_LOOP_TIMEOUT_SECONDS:$COLDMATH_RECOVERY_LOOP_TIMEOUT_SECONDS")
+  fi
+  if [[ "$COLDMATH_RECOVERY_CAMPAIGN_ENABLED" == "1" ]]; then
+    coldmath_timeout_guardrails+=("COLDMATH_RECOVERY_CAMPAIGN_TIMEOUT_SECONDS:$COLDMATH_RECOVERY_CAMPAIGN_TIMEOUT_SECONDS")
+  fi
+fi
+for coldmath_timeout_guardrail in "${coldmath_timeout_guardrails[@]}"; do
+  coldmath_timeout_key="${coldmath_timeout_guardrail%%:*}"
+  coldmath_timeout_value="${coldmath_timeout_guardrail#*:}"
+  if [[ -n "$coldmath_stage_timeout_guardrails_required_keys" && "$coldmath_stage_timeout_guardrails_required_keys" != "none" ]]; then
+    coldmath_stage_timeout_guardrails_required_keys+=","
+  elif [[ "$coldmath_stage_timeout_guardrails_required_keys" == "none" ]]; then
+    coldmath_stage_timeout_guardrails_required_keys=""
+  fi
+  coldmath_stage_timeout_guardrails_required_keys+="$coldmath_timeout_key"
+  if ! [[ "$coldmath_timeout_value" =~ ^[0-9]+$ ]]; then
+    coldmath_stage_timeout_guardrails_valid="false"
+    if [[ -n "$coldmath_stage_timeout_guardrails_invalid_keys" ]]; then
+      coldmath_stage_timeout_guardrails_invalid_keys+=","
+    fi
+    coldmath_stage_timeout_guardrails_invalid_keys+="$coldmath_timeout_key"
+    continue
+  fi
+  if (( coldmath_timeout_value <= 0 )); then
+    coldmath_stage_timeout_guardrails_enabled="false"
+    if [[ -n "$coldmath_stage_timeout_guardrails_disabled_keys" ]]; then
+      coldmath_stage_timeout_guardrails_disabled_keys+=","
+    fi
+    coldmath_stage_timeout_guardrails_disabled_keys+="$coldmath_timeout_key"
+  fi
+done
+if [[ "$coldmath_stage_timeout_guardrails_required_keys" == "none" || -z "$coldmath_stage_timeout_guardrails_required_keys" ]]; then
+  coldmath_stage_timeout_guardrails_required_keys="none"
+  coldmath_stage_timeout_guardrails_eval_status="not_required"
+elif [[ "$coldmath_stage_timeout_guardrails_valid" != "true" ]]; then
+  coldmath_stage_timeout_guardrails_eval_status="invalid"
+elif [[ "$coldmath_stage_timeout_guardrails_enabled" != "true" ]]; then
+  coldmath_stage_timeout_guardrails_eval_status="disabled"
+fi
+echo "coldmath_stage_timeout_guardrails strict_required=${COLDMATH_STAGE_TIMEOUT_STRICT_REQUIRED} hardening_enabled=${COLDMATH_HARDENING_ENABLED} status=${coldmath_stage_timeout_guardrails_eval_status} required_keys=${coldmath_stage_timeout_guardrails_required_keys} global=${COLDMATH_STAGE_TIMEOUT_SECONDS} snapshot=${COLDMATH_SNAPSHOT_TIMEOUT_SECONDS} market_ingest=${COLDMATH_MARKET_INGEST_TIMEOUT_SECONDS} recovery_advisor=${COLDMATH_RECOVERY_ADVISOR_TIMEOUT_SECONDS} recovery_loop=${COLDMATH_RECOVERY_LOOP_TIMEOUT_SECONDS} recovery_campaign=${COLDMATH_RECOVERY_CAMPAIGN_TIMEOUT_SECONDS} invalid_keys=${coldmath_stage_timeout_guardrails_invalid_keys:-none} disabled_keys=${coldmath_stage_timeout_guardrails_disabled_keys:-none}"
+
+if [[ -f "$COLDMATH_HARDENING_STATUS_FILE" ]]; then
+  hardening_vars="$(python3 - "$COLDMATH_HARDENING_STATUS_FILE" <<'PY'
+from __future__ import annotations
+
+import json
+from pathlib import Path
+import sys
+
+
+def _normalize(value: object) -> str:
+    return str(value or "").strip().lower()
+
+
+def _as_bool(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    return _normalize(value) in {"1", "true", "yes", "on"}
+
+
+path = Path(sys.argv[1])
+try:
+    parse_error = False
+    payload = json.loads(path.read_text(encoding="utf-8"))
+except Exception:
+    parse_error = True
+    payload = {}
+if not isinstance(payload, dict):
+    parse_error = True
+    payload = {}
+recovery_env_persistence = (
+    payload.get("recovery_env_persistence")
+    if isinstance(payload.get("recovery_env_persistence"), dict)
+    else {}
+)
+status = _normalize(recovery_env_persistence.get("status")) or "unknown"
+changed = _as_bool(recovery_env_persistence.get("changed"))
+target = str(recovery_env_persistence.get("target_file") or "").strip()
+error = str(recovery_env_persistence.get("error") or "").strip()
+error_present = bool(error)
+print(f"status={status}")
+print(f"changed={'true' if changed else 'false'}")
+print(f"target_file={target}")
+print(f"error_present={'true' if error_present else 'false'}")
+print(f"parse_error={'true' if parse_error else 'false'}")
+PY
+)"
+  while IFS='=' read -r key value; do
+    case "$key" in
+      status) recovery_env_persistence_status="$value" ;;
+      changed) recovery_env_persistence_changed="$value" ;;
+      target_file) recovery_env_persistence_target_file="$value" ;;
+      error_present) recovery_env_persistence_error_present="$value" ;;
+      parse_error) recovery_env_persistence_parse_error="$value" ;;
+    esac
+  done <<< "$hardening_vars"
+  if [[ "${recovery_env_persistence_parse_error:-false}" == "true" ]]; then
+    echo "coldmath_recovery_env_persistence -> PARSE_ERROR ($COLDMATH_HARDENING_STATUS_FILE)"
+  fi
+  echo "coldmath_recovery_env_persistence status=${recovery_env_persistence_status:-unknown} changed=${recovery_env_persistence_changed:-false} error_present=${recovery_env_persistence_error_present:-false} target_file=${recovery_env_persistence_target_file:-n/a}"
+else
+  echo "coldmath_recovery_env_persistence -> MISSING ($COLDMATH_HARDENING_STATUS_FILE)"
 fi
 
 echo
@@ -1190,6 +1478,87 @@ if (( STRICT_MODE == 1 )); then
       echo "STRICT CHECK FAILED: decision-matrix lane degraded streak active (status=$decision_matrix_lane_status streak=${decision_matrix_lane_degraded_streak_count} threshold=${strict_lane_threshold} statuses=${decision_matrix_lane_strict_statuses_normalized})" >&2
       exit 2
     fi
+  fi
+  if [[ "$COLDMATH_STAGE_TIMEOUT_STRICT_REQUIRED" == "1" && "$coldmath_stage_timeout_guardrails_required_keys" != "none" ]]; then
+    if [[ "$coldmath_stage_timeout_guardrails_valid" != "true" ]]; then
+      echo
+      echo "STRICT CHECK FAILED: coldmath stage timeout guardrails invalid (invalid_keys=${coldmath_stage_timeout_guardrails_invalid_keys:-none})" >&2
+      echo "STRICT CHECK REMEDIATION: run bash $SCRIPT_DIR/set_coldmath_stage_timeout_guardrails.sh --snapshot-seconds 900 --market-ingest-seconds 900 --advisor-seconds 600 --loop-seconds 900 --campaign-seconds 1200 $ENV_FILE" >&2
+      exit 2
+    fi
+    if [[ "$coldmath_stage_timeout_guardrails_enabled" != "true" ]]; then
+      echo
+      echo "STRICT CHECK FAILED: coldmath stage timeout guardrails disabled (disabled_keys=${coldmath_stage_timeout_guardrails_disabled_keys:-none})" >&2
+      echo "STRICT CHECK REMEDIATION: run bash $SCRIPT_DIR/set_coldmath_stage_timeout_guardrails.sh --snapshot-seconds 900 --market-ingest-seconds 900 --advisor-seconds 600 --loop-seconds 900 --campaign-seconds 1200 $ENV_FILE" >&2
+      exit 2
+    fi
+  fi
+  if [[ "$COLDMATH_RECOVERY_ENV_PERSISTENCE_STRICT_FAIL_ON_ERROR" == "1" ]]; then
+    if [[ "$recovery_env_persistence_status" == "error" || "$recovery_env_persistence_status" == "execution_failed" ]]; then
+      echo
+      echo "STRICT CHECK FAILED: coldmath recovery env persistence error (status=${recovery_env_persistence_status} target=${recovery_env_persistence_target_file:-n/a})" >&2
+      echo "STRICT CHECK REMEDIATION: run bash $SCRIPT_DIR/set_coldmath_recovery_env_persistence_gate.sh --enable $ENV_FILE" >&2
+      exit 2
+    fi
+  fi
+  if [[ "$RECOVERY_REQUIRE_EFFECTIVENESS_SUMMARY" == "1" && "${recovery_watchdog_artifact_available:-0}" != "1" ]]; then
+    echo
+    echo "STRICT CHECK FAILED: recovery effectiveness summary evidence unavailable (recovery_latest=${latest_recovery:-$RECOVERY_LATEST_FILE})" >&2
+    echo "STRICT CHECK REMEDIATION: run the recovery pipeline to generate recovery effectiveness summary evidence (for example: sudo systemctl start $RECOVERY_SERVICE_NAME)" >&2
+    echo "STRICT CHECK REMEDIATION: inspect recovery_latest at ${latest_recovery:-$RECOVERY_LATEST_FILE}" >&2
+    exit 2
+  fi
+  if [[ "$RECOVERY_REQUIRE_EFFECTIVENESS_SUMMARY" == "1" && "${recovery_watchdog_parse_error:-false}" == "true" ]]; then
+    echo
+    echo "STRICT CHECK FAILED: recovery effectiveness summary evidence malformed (recovery_latest=${latest_recovery:-$RECOVERY_LATEST_FILE})" >&2
+    echo "STRICT CHECK REMEDIATION: run the recovery pipeline to generate recovery effectiveness summary evidence (for example: sudo systemctl start $RECOVERY_SERVICE_NAME)" >&2
+    echo "STRICT CHECK REMEDIATION: inspect recovery_latest at ${latest_recovery:-$RECOVERY_LATEST_FILE}" >&2
+    exit 2
+  fi
+  if [[ "$recovery_effectiveness_strict_required" == "true" && "$recovery_effectiveness_gap_detected" == "true" ]]; then
+    echo
+    echo "STRICT CHECK FAILED: recovery effectiveness gap detected (reason=${recovery_effectiveness_gap_reason:-none})" >&2
+    echo "STRICT CHECK REMEDIATION: run the recovery pipeline to refresh recovery effectiveness summaries (for example: sudo systemctl start $RECOVERY_SERVICE_NAME)" >&2
+    echo "STRICT CHECK REMEDIATION: inspect recovery artifacts under $OUTPUT_DIR/health/recovery and advisor artifacts under $OUTPUT_DIR/recovery_advisor" >&2
+    exit 2
+  fi
+  if [[ "$recovery_watchdog_hardening_trigger_action" == "failed" ]]; then
+    echo
+    echo "STRICT CHECK FAILED: recovery coldmath hardening trigger failed after env repair (recovery_latest=${latest_recovery:-$RECOVERY_LATEST_FILE})" >&2
+    echo "STRICT CHECK REMEDIATION: sudo journalctl -u betbot-temperature-coldmath-hardening.service -n 80 --no-pager" >&2
+    exit 2
+  fi
+  if [[ "$recovery_watchdog_hardening_trigger_action" == "missing_unit" ]]; then
+    echo
+    echo "STRICT CHECK FAILED: recovery coldmath hardening trigger missing service unit after env repair (recovery_latest=${latest_recovery:-$RECOVERY_LATEST_FILE})" >&2
+    echo "STRICT CHECK REMEDIATION: run bash $SCRIPT_DIR/install_systemd_temperature_coldmath_hardening.sh" >&2
+    exit 2
+  fi
+  if [[ "$recovery_watchdog_stage_timeout_repair_action" == "failed" ]]; then
+    echo
+    echo "STRICT CHECK FAILED: recovery coldmath stage-timeout guardrail repair failed (recovery_latest=${latest_recovery:-$RECOVERY_LATEST_FILE})" >&2
+    echo "STRICT CHECK REMEDIATION: run bash $SCRIPT_DIR/set_coldmath_stage_timeout_guardrails.sh --snapshot-seconds 900 --market-ingest-seconds 900 --advisor-seconds 600 --loop-seconds 900 --campaign-seconds 1200 $ENV_FILE" >&2
+    echo "STRICT CHECK REMEDIATION: sudo journalctl -u betbot-temperature-pipeline-recovery.service -n 80 --no-pager" >&2
+    exit 2
+  fi
+  if [[ "$recovery_watchdog_stage_timeout_repair_action" == "missing_script" ]]; then
+    echo
+    echo "STRICT CHECK FAILED: recovery coldmath stage-timeout guardrail repair missing script (recovery_latest=${latest_recovery:-$RECOVERY_LATEST_FILE})" >&2
+    echo "STRICT CHECK REMEDIATION: restore executable script at $SCRIPT_DIR/set_coldmath_stage_timeout_guardrails.sh" >&2
+    echo "STRICT CHECK REMEDIATION: chmod +x $SCRIPT_DIR/set_coldmath_stage_timeout_guardrails.sh" >&2
+    exit 2
+  fi
+  if [[ "$recovery_watchdog_stage_timeout_hardening_trigger_action" == "failed" ]]; then
+    echo
+    echo "STRICT CHECK FAILED: recovery coldmath hardening trigger failed after stage-timeout repair (recovery_latest=${latest_recovery:-$RECOVERY_LATEST_FILE})" >&2
+    echo "STRICT CHECK REMEDIATION: sudo journalctl -u betbot-temperature-coldmath-hardening.service -n 80 --no-pager" >&2
+    exit 2
+  fi
+  if [[ "$recovery_watchdog_stage_timeout_hardening_trigger_action" == "missing_unit" ]]; then
+    echo
+    echo "STRICT CHECK FAILED: recovery coldmath hardening trigger missing service unit after stage-timeout repair (recovery_latest=${latest_recovery:-$RECOVERY_LATEST_FILE})" >&2
+    echo "STRICT CHECK REMEDIATION: run bash $SCRIPT_DIR/install_systemd_temperature_coldmath_hardening.sh" >&2
+    exit 2
   fi
   if [[ "$AUTO_PROFILE_EXPECTED" == "1" ]]; then
     auto_profile_required_now="0"

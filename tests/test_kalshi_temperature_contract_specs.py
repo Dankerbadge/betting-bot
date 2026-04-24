@@ -112,6 +112,104 @@ class KalshiTemperatureContractSpecsTests(unittest.TestCase):
         self.assertEqual(rows[0]["series_ticker"], "KXLOWTSFO")
         self.assertEqual(rows[0]["market_ticker"], "KXLOWTSFO-26APR10-B50")
 
+    def test_extract_rejects_non_weather_kxhigh_prefix_markets(self) -> None:
+        events = [
+            {
+                "category": "Economics",
+                "series_ticker": "KXHIGHINFLATION",
+                "event_ticker": "KXHIGHINFLATION-26DEC",
+                "title": "How high will CPI get this year?",
+                "markets": [
+                    {
+                        "ticker": "KXHIGHINFLATION-26DEC-T3.0",
+                        "title": "Will CPI exceed 3.0?",
+                        "status": "active",
+                        "rules_primary": "If any CPI print is above 3.0, resolves Yes.",
+                    }
+                ],
+            }
+        ]
+
+        rows = extract_kalshi_temperature_contract_specs(
+            events=events,
+            captured_at=datetime(2026, 4, 10, 12, 0, tzinfo=timezone.utc),
+        )
+        self.assertEqual(rows, [])
+
+    def test_extract_rejects_climate_macro_prefix_without_daily_date_token(self) -> None:
+        events = [
+            {
+                "category": "Climate and Weather",
+                "series_ticker": "KXHIGHINFLATION",
+                "event_ticker": "KXHIGHINFLATION-26DEC",
+                "title": "How high will CPI get this year?",
+                "markets": [
+                    {
+                        "ticker": "KXHIGHINFLATION-26DEC-T3.0",
+                        "title": "Will CPI exceed 3.0?",
+                        "status": "active",
+                        "rules_primary": "If any CPI print is above 3.0, resolves Yes.",
+                    }
+                ],
+            }
+        ]
+
+        rows = extract_kalshi_temperature_contract_specs(
+            events=events,
+            captured_at=datetime(2026, 4, 10, 12, 0, tzinfo=timezone.utc),
+        )
+        self.assertEqual(rows, [])
+
+    def test_extract_rejects_monthly_climate_anomaly_markets(self) -> None:
+        events = [
+            {
+                "category": "Climate and Weather",
+                "series_ticker": "KXGTEMP",
+                "event_ticker": "KXGTEMP-26APR",
+                "title": "Global temperature anomaly in April 2026?",
+                "markets": [
+                    {
+                        "ticker": "KXGTEMP-26APR-B0.5",
+                        "title": "Will global temperature anomaly be above 0.5?",
+                        "status": "active",
+                        "strike_type": "greater",
+                        "floor_strike": "0.5",
+                        "rules_primary": "If global temperature anomaly in April is above 0.5 then Yes.",
+                    }
+                ],
+            }
+        ]
+
+        rows = extract_kalshi_temperature_contract_specs(
+            events=events,
+            captured_at=datetime(2026, 4, 10, 12, 0, tzinfo=timezone.utc),
+        )
+        self.assertEqual(rows, [])
+
+    def test_extract_rejects_intraday_temperature_point_contracts(self) -> None:
+        events = [
+            {
+                "category": "Climate and Weather",
+                "series_ticker": "KXTEMPNYCH",
+                "event_ticker": "KXTEMPNYCH-26APR1514",
+                "title": "NYC temperature on Apr 15, 2026 at 2pm EDT?",
+                "markets": [
+                    {
+                        "ticker": "KXTEMPNYCH-26APR1514-T80.99",
+                        "title": "Will temp be above 80.99°?",
+                        "status": "active",
+                        "rules_primary": "Resolves from KNYC observed temp at 2pm EDT.",
+                    }
+                ],
+            }
+        ]
+
+        rows = extract_kalshi_temperature_contract_specs(
+            events=events,
+            captured_at=datetime(2026, 4, 15, 18, 0, tzinfo=timezone.utc),
+        )
+        self.assertEqual(rows, [])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -78,16 +78,95 @@ Outputs are written to `outputs/`.
 - `make lint` runs Ruff static analysis.
 - `make typecheck` runs Mypy over selected core modules.
 - `make check` runs CLI sanity checks, lint, typecheck, unittest, and pytest.
+- `make test-gatechain-smoke` runs the fast gatechain smoke slice (workflow sync, bootstrap, preflight, and core installer/env gate scripts).
+- `make test-gatechain` runs the strict ColdMath recovery gatechain regression slice (bootstrap, preflight, installers, strict checks, alpha summary, and recovery chaos).
+- `make test-alpha-core` runs the alpha-core weather ingestion, pattern, selection-quality, profitability, growth-optimizer, and execution-cost tape slice.
+- `make test-profit-readiness` runs the profit-readiness hardening, bankroll validation, recovery, profitability, growth, and selection-quality slice.
+- `make test-trading-confidence` runs the unified critical trading confidence lane (`test-alpha-core`, `test-profit-readiness`, and `test-gatechain-smoke`) sequentially.
 - `make precommit-install` installs the pre-commit hook set from `.pre-commit-config.yaml`.
 - `make precommit-run` executes the full pre-commit policy locally.
 - `make lock-dev` refreshes `requirements-dev.lock.txt` from pinned direct dev dependencies.
-- `make ci-local` mirrors the GitHub CI sequence locally (`install-dev`, `precommit-run`, `check`).
+- `make ci-local` mirrors the GitHub CI sequence locally (`install-dev`, `test-gatechain`, `precommit-run`, `check`).
+- `.github/workflows/gatechain-smoke.yml` auto-runs the Gatechain Smoke workflow on `infra/digitalocean/**`, smoke test changes, and lane definition changes.
+- `.github/workflows/gatechain.yml` auto-runs the dedicated Gatechain workflow on `infra/digitalocean/**` and gatechain test changes.
+- `.github/workflows/alpha-core.yml` auto-runs the Alpha Core workflow on `betbot/**`, alpha-core weather test changes, and lane definition changes.
+- `.github/workflows/profit-readiness.yml` auto-runs the Profit Readiness workflow on `betbot/**`, profit-readiness test changes, and lane definition changes.
+- `.github/workflows/trading-confidence.yml` auto-runs the Trading Confidence workflow on `betbot/**`, `infra/digitalocean/**`, workflow-sync tests, and lane definition changes.
 
 ## Maintenance
 
 - `make clean` removes build/test/type-check caches and local packaging artifacts.
 - `make precommit-run` runs all configured hooks across the repository.
 - Dependabot config at `.github/dependabot.yml` keeps pip and GitHub Actions dependencies fresh weekly.
+
+## DigitalOcean Runtime
+
+For VPS deployment and always-on systemd runtime setup, use:
+
+- [infra/digitalocean/README.md](/Users/dankerbadge/Documents/Betting%20Bot/infra/digitalocean/README.md)
+- `infra/digitalocean/preflight_temperature_shadow.sh` for fail-fast deploy validation
+- `infra/digitalocean/install_systemd_temperature_shadow.sh` for loop service install
+- `infra/digitalocean/install_systemd_temperature_reporting.sh` for periodic readiness/bankroll/alpha-gap reports
+- `infra/digitalocean/set_coldmath_stage_timeout_guardrails.sh` for idempotent coldmath stage timeout env updates
+
+## Temperature Live Readiness
+
+Use this to decide whether the temperature lane is ready for real-money risk across rolling horizons
+(`1d/7d/14d/21d/28d/3mo/6mo/1yr`) with anti-misleading gates.
+
+```bash
+python -m betbot.cli kalshi-temperature-live-readiness \
+  --output-dir outputs/pilot_candidate_20260410_1919 \
+  --horizons 1d,7d,14d,21d,28d,3mo,6mo,1yr \
+  --reference-bankroll-dollars 1000 \
+  --slippage-bps-list 0,5,10
+```
+
+Output file:
+
+- `outputs/.../kalshi_temperature_live_readiness_*.json`
+
+Headline fields:
+
+- `executive_summary.recommendation`
+- `overall_live_readiness.ready_for_small_live_pilot`
+- `overall_live_readiness.ready_for_scaled_live`
+- `readiness_by_horizon[*].ready_for_real_money`
+- `readiness_by_horizon[*].gates.failed_reason_details`
+
+## Micro-Live $50 Profile
+
+Use `--micro-live-50` to enforce strict low-capital pilot limits directly in CLI execution:
+
+- `planning_bankroll_dollars = 50`
+- `max_daily_loss_dollars <= 3`
+- `max_total_open_exposure_dollars <= 10` (`max_total_deployed_pct <= 0.20`)
+- `max_live_cost_per_day_dollars <= 3`
+- `max_live_submissions_per_day <= 3`
+- `max_orders_per_loop <= 3`
+- `contracts_per_order = 1`
+
+Example one-shot run:
+
+```bash
+python -m betbot.cli kalshi-temperature-trader \
+  --env-file data/research/account_onboarding.local.env \
+  --output-dir outputs \
+  --allow-live-orders \
+  --micro-live-50
+```
+
+Example supervised loop:
+
+```bash
+python -m betbot.cli kalshi-temperature-shadow-watch \
+  --env-file data/research/account_onboarding.local.env \
+  --output-dir outputs \
+  --allow-live-orders \
+  --micro-live-50 \
+  --loops 0 \
+  --sleep-between-loops-seconds 60
+```
 
 ## Readiness And Support Tiers
 

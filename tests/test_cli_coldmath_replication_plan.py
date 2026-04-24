@@ -26,6 +26,10 @@ class CliColdMathReplicationPlanTests(unittest.TestCase):
                 "7",
                 "--market-tickers",
                 "MKT-1,MKT-2",
+                "--excluded-market-tickers",
+                "MKT-2,MKT-9",
+                "--excluded-market-tickers-file",
+                "outputs/health/execution_cost_tape_latest.json",
                 "--max-spread-dollars",
                 "0.12",
                 "--min-liquidity-score",
@@ -44,6 +48,8 @@ class CliColdMathReplicationPlanTests(unittest.TestCase):
         self.assertEqual(kwargs["output_dir"], "outputs")
         self.assertEqual(kwargs["top_n"], 7)
         self.assertEqual(kwargs["market_tickers"], ["MKT-1", "MKT-2"])
+        self.assertEqual(kwargs["excluded_market_tickers"], ["MKT-2", "MKT-9"])
+        self.assertEqual(kwargs["excluded_market_tickers_file"], "outputs/health/execution_cost_tape_latest.json")
         self.assertAlmostEqual(float(kwargs["max_spread_dollars"]), 0.12, places=9)
         self.assertAlmostEqual(float(kwargs["min_liquidity_score"]), 0.6, places=9)
         self.assertEqual(int(kwargs["max_family_candidates"]), 2)

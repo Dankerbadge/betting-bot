@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import csv
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -44,11 +45,20 @@ MARKET_FILTER_CHANNELS = {
 _WS_MAGIC_KEY = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
 
-_WS_TICKER_DISCOVERY_PATTERNS = (
+_WS_TICKER_DISCOVERY_JSON_PATTERNS = (
     "kalshi_micro_prior_plan_summary_*.json",
     "kalshi_micro_plan_summary_*.json",
     "kalshi_micro_prior_execute_summary_*.json",
     "kalshi_micro_execute_summary_*.json",
+    "kalshi_temperature_trade_plan_summary_*.json",
+    "kalshi_temperature_shadow_watch_summary_*.json",
+    "kalshi_temperature_trade_intents_summary_*.json",
+)
+_WS_TICKER_DISCOVERY_CSV_PATTERNS = (
+    "kalshi_temperature_trade_plan_*.csv",
+    "kalshi_temperature_trade_intents_*.csv",
+    "kalshi_temperature_constraint_scan_*.csv",
+    "kalshi_temperature_contract_specs_*.csv",
 )
 _WS_TICKER_DISCOVERY_MAX = 20
 _WS_ARCHIVE_RECOVERY_PATTERNS = (
@@ -265,7 +275,7 @@ def _extract_tickers_from_summary_payload(payload: dict[str, Any]) -> list[str]:
 
 def _discover_market_tickers_from_outputs(output_dir: Path) -> tuple[str, ...]:
     seen: list[str] = []
-    for pattern in _WS_TICKER_DISCOVERY_PATTERNS:
+    for pattern in _WS_TICKER_DISCOVERY_JSON_PATTERNS:
         candidates = sorted(output_dir.glob(pattern), key=lambda path: path.stat().st_mtime, reverse=True)
         for candidate in candidates:
             try:
@@ -279,6 +289,29 @@ def _discover_market_tickers_from_outputs(output_dir: Path) -> tuple[str, ...]:
                     seen.append(ticker)
                     if len(seen) >= _WS_TICKER_DISCOVERY_MAX:
                         return tuple(seen)
+            if seen:
+                break
+        if seen:
+            break
+
+    if len(seen) >= _WS_TICKER_DISCOVERY_MAX:
+        return tuple(seen)
+
+    for pattern in _WS_TICKER_DISCOVERY_CSV_PATTERNS:
+        candidates = sorted(output_dir.glob(pattern), key=lambda path: path.stat().st_mtime, reverse=True)
+        for candidate in candidates:
+            try:
+                with candidate.open("r", newline="", encoding="utf-8") as handle:
+                    reader = csv.DictReader(handle)
+                    for row in reader:
+                        if not isinstance(row, dict):
+                            continue
+                        _append_ticker_if_valid(seen, row.get("market_ticker"))
+                        _append_ticker_if_valid(seen, row.get("ticker"))
+                        if len(seen) >= _WS_TICKER_DISCOVERY_MAX:
+                            return tuple(seen)
+            except OSError:
+                continue
             if seen:
                 break
         if seen:
@@ -1380,7 +1413,11 @@ def run_kalshi_ws_state_collect(
     fallback_state_used = False
     fallback_state_reason = ""
     fallback_state_last_event_age_seconds: float | str = ""
-    collection_failed = collection_status == "upstream_error" or (collection_status == "empty" and bool(last_error))
+    collection_failed = (
+        collection_status == "upstream_error"
+        or (collection_status == "empty" and bool(last_error))
+        or collection_status == "desynced"
+    )
     if collection_failed and prior_reusable_state_payload is not None and prior_reusable_state_authority is not None:
         state_payload = prior_reusable_state_payload
         fallback_state_used = True

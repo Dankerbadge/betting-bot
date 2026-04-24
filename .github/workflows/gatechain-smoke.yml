@@ -1,0 +1,66 @@
+name: Gatechain Smoke
+
+on:
+  push:
+    paths:
+      - infra/digitalocean/**
+      - tests/test_gatechain_workflow_sync.py
+      - tests/test_bootstrap_ubuntu_2404_script.py
+      - tests/test_preflight_temperature_shadow_script.py
+      - tests/test_install_systemd_temperature_shadow_script.py
+      - tests/test_install_systemd_temperature_recovery_script.py
+      - tests/test_install_systemd_temperature_coldmath_hardening_script.py
+      - tests/test_set_coldmath_recovery_env_persistence_gate_script.py
+      - Makefile
+      - .github/workflows/gatechain-smoke.yml
+  pull_request:
+    paths:
+      - infra/digitalocean/**
+      - tests/test_gatechain_workflow_sync.py
+      - tests/test_bootstrap_ubuntu_2404_script.py
+      - tests/test_preflight_temperature_shadow_script.py
+      - tests/test_install_systemd_temperature_shadow_script.py
+      - tests/test_install_systemd_temperature_recovery_script.py
+      - tests/test_install_systemd_temperature_coldmath_hardening_script.py
+      - tests/test_set_coldmath_recovery_env_persistence_gate_script.py
+      - Makefile
+      - .github/workflows/gatechain-smoke.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gatechain-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gatechain-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: |
+            requirements.txt
+            requirements.lock.txt
+            requirements-dev.txt
+            requirements-dev.lock.txt
+
+      - name: Upgrade pip
+        run: python -m pip install --upgrade pip
+
+      - name: Install project and locked dev dependencies
+        run: make install-dev
+
+      - name: Run gatechain smoke suite
+        run: make test-gatechain-smoke
+
+      - name: Verify clean tree after smoke suite
+        run: git diff --exit-code

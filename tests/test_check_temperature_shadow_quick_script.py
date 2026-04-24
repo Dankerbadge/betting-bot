@@ -87,6 +87,13 @@ def _write_env_file(
         "LIVE_STATUS_STRICT_MAX_AGE_SECONDS=300",
         "ALPHA_SUMMARY_STRICT_MAX_AGE_SECONDS=54000",
         "DISCORD_ROUTE_GUARD_STRICT_MAX_AGE_SECONDS=10800",
+        "COLDMATH_STAGE_TIMEOUT_STRICT_REQUIRED=1",
+        "COLDMATH_STAGE_TIMEOUT_SECONDS=900",
+        "COLDMATH_SNAPSHOT_TIMEOUT_SECONDS=900",
+        "COLDMATH_MARKET_INGEST_TIMEOUT_SECONDS=900",
+        "COLDMATH_RECOVERY_ADVISOR_TIMEOUT_SECONDS=600",
+        "COLDMATH_RECOVERY_LOOP_TIMEOUT_SECONDS=900",
+        "COLDMATH_RECOVERY_CAMPAIGN_TIMEOUT_SECONDS=1200",
     ]
     lines.extend(extra_lines)
     env_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -1375,3 +1382,636 @@ def test_quick_check_uses_nested_alpha_summary_fallback_path(tmp_path: Path) -> 
     assert result.returncode == 0
     assert "alpha: health=GREEN" in result.stdout
     assert "quick_result: GREEN" in result.stdout
+
+
+def test_quick_check_strict_fails_when_coldmath_stage_timeout_guardrails_disabled(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+
+    env_file = tmp_path / "quick.env"
+    _write_env_file(
+        env_file=env_file,
+        output_dir=output_dir,
+        extra_lines=(
+            "COLDMATH_STAGE_TIMEOUT_STRICT_REQUIRED=1",
+            "COLDMATH_STAGE_TIMEOUT_SECONDS=0",
+            "COLDMATH_SNAPSHOT_TIMEOUT_SECONDS=0",
+            "COLDMATH_MARKET_INGEST_TIMEOUT_SECONDS=0",
+            "COLDMATH_RECOVERY_ADVISOR_TIMEOUT_SECONDS=0",
+            "COLDMATH_RECOVERY_LOOP_TIMEOUT_SECONDS=0",
+            "COLDMATH_RECOVERY_CAMPAIGN_TIMEOUT_SECONDS=0",
+        ),
+    )
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_quick_script(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 2
+    assert "coldmath_stage_timeouts: strict_required=true" in result.stdout
+    assert (
+        "required_stages=snapshot,market_ingest,recovery_advisor,recovery_loop,recovery_campaign"
+        in result.stdout
+    )
+    assert (
+        "invalid_or_disabled_stages=snapshot,market_ingest,recovery_advisor,recovery_loop,recovery_campaign"
+        in result.stdout
+    )
+    assert "strict_blocked=true" in result.stdout
+    assert "coldmath_stage_timeout_guardrails" in result.stdout
+    assert "next_action: set coldmath stage timeout guardrails then re-run quick check:" in result.stdout
+    assert "set_coldmath_stage_timeout_guardrails.sh --global-seconds 900" in result.stdout
+
+
+def test_quick_check_strict_passes_when_coldmath_timeout_strict_required_disabled(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+
+    env_file = tmp_path / "quick.env"
+    _write_env_file(
+        env_file=env_file,
+        output_dir=output_dir,
+        extra_lines=(
+            "COLDMATH_STAGE_TIMEOUT_STRICT_REQUIRED=0",
+            "COLDMATH_STAGE_TIMEOUT_SECONDS=0",
+            "COLDMATH_SNAPSHOT_TIMEOUT_SECONDS=0",
+            "COLDMATH_MARKET_INGEST_TIMEOUT_SECONDS=0",
+            "COLDMATH_RECOVERY_ADVISOR_TIMEOUT_SECONDS=0",
+            "COLDMATH_RECOVERY_LOOP_TIMEOUT_SECONDS=0",
+            "COLDMATH_RECOVERY_CAMPAIGN_TIMEOUT_SECONDS=0",
+        ),
+    )
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_quick_script(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 0
+    assert "coldmath_stage_timeouts: strict_required=false" in result.stdout
+    assert (
+        "invalid_or_disabled_stages=snapshot,market_ingest,recovery_advisor,recovery_loop,recovery_campaign"
+        in result.stdout
+    )
+    assert "strict_blocked=false" in result.stdout
+    assert "coldmath_stage_timeout_guardrails" not in result.stdout
+    assert "quick_result: GREEN" in result.stdout
+
+
+def test_quick_check_strict_fails_when_coldmath_stage_timeout_value_is_non_numeric(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+
+    env_file = tmp_path / "quick.env"
+    _write_env_file(
+        env_file=env_file,
+        output_dir=output_dir,
+        extra_lines=(
+            "COLDMATH_STAGE_TIMEOUT_STRICT_REQUIRED=1",
+            "COLDMATH_STAGE_TIMEOUT_SECONDS=900",
+            "COLDMATH_RECOVERY_LOOP_TIMEOUT_SECONDS=abc",
+        ),
+    )
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_quick_script(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 2
+    assert "coldmath_stage_timeouts: strict_required=true" in result.stdout
+    assert "invalid_or_disabled_stages=recovery_loop" in result.stdout
+    assert "strict_blocked=true" in result.stdout
+    assert "coldmath_stage_timeout_guardrails" in result.stdout
+
+
+def test_quick_check_strict_fails_when_recovery_env_persistence_status_is_error(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    _write_json(
+        output_dir / "health" / "coldmath_hardening_latest.json",
+        {
+            "status": "ready",
+            "recovery_env_persistence": {
+                "status": "error",
+                "changed": False,
+                "target_file": "/etc/betbot/temperature-shadow.env",
+                "error": "Target env file not found",
+            },
+        },
+    )
+
+    env_file = tmp_path / "quick.env"
+    _write_env_file(env_file=env_file, output_dir=output_dir)
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_quick_script(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 2
+    assert "coldmath_recovery_env_persistence: status=error" in result.stdout
+    assert "strict_blocked=true" in result.stdout
+    assert "recovery_env_persistence_error" in result.stdout
+    assert "next_action: repair coldmath recovery persistence strict gate then re-run checks:" in result.stdout
+    assert "set_coldmath_recovery_env_persistence_gate.sh --enable" in result.stdout
+
+
+def test_quick_check_ignores_recovery_env_persistence_error_when_disabled(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    _write_json(
+        output_dir / "health" / "coldmath_hardening_latest.json",
+        {
+            "status": "ready",
+            "recovery_env_persistence": {
+                "status": "execution_failed",
+                "changed": False,
+                "target_file": "/etc/betbot/temperature-shadow.env",
+                "error": "python_invocation_failed",
+            },
+        },
+    )
+
+    env_file = tmp_path / "quick.env"
+    _write_env_file(
+        env_file=env_file,
+        output_dir=output_dir,
+        extra_lines=(
+            "COLDMATH_RECOVERY_ENV_PERSISTENCE_STRICT_FAIL_ON_ERROR=0",
+        ),
+    )
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_quick_script(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 0
+    assert "coldmath_recovery_env_persistence: status=execution_failed" in result.stdout
+    assert "strict_blocked=false" in result.stdout
+    assert "recovery_env_persistence_error" not in result.stdout
+    assert "quick_result: GREEN" in result.stdout
+
+
+def test_quick_check_strict_flags_missing_recovery_effectiveness_summary_when_required(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+
+    env_file = tmp_path / "quick.env"
+    _write_env_file(
+        env_file=env_file,
+        output_dir=output_dir,
+        extra_lines=(
+            "RECOVERY_REQUIRE_EFFECTIVENESS_SUMMARY=1",
+        ),
+    )
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_quick_script(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 2
+    assert "recovery_watchdog: missing (" in result.stdout
+    assert "recovery_effectiveness_summary_missing" in result.stdout
+    assert (
+        "next_action: recovery effectiveness summary missing; run pipeline recovery and inspect recovery_latest.json:"
+        in result.stdout
+    )
+    assert "run_temperature_pipeline_recovery.sh" in result.stdout
+    assert "recovery_latest.json" in result.stdout
+
+
+def test_quick_check_non_strict_reports_missing_recovery_effectiveness_summary_when_required(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+
+    env_file = tmp_path / "quick.env"
+    _write_env_file(
+        env_file=env_file,
+        output_dir=output_dir,
+        extra_lines=(
+            "RECOVERY_REQUIRE_EFFECTIVENESS_SUMMARY=1",
+        ),
+    )
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_quick_script(
+        script_path=script_path,
+        env_file=env_file,
+        tool_dir=tool_dir,
+        strict=False,
+    )
+
+    assert result.returncode == 0
+    assert "recovery_watchdog: missing (" in result.stdout
+    assert "recovery_effectiveness_summary_missing" in result.stdout
+    assert "quick_result: YELLOW" in result.stdout
+
+
+def test_quick_check_strict_stays_green_when_missing_recovery_effectiveness_summary_not_required(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+
+    env_file = tmp_path / "quick.env"
+    _write_env_file(
+        env_file=env_file,
+        output_dir=output_dir,
+        extra_lines=(
+            "RECOVERY_REQUIRE_EFFECTIVENESS_SUMMARY=0",
+        ),
+    )
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_quick_script(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 0
+    assert "recovery_watchdog: missing (" in result.stdout
+    assert "recovery_effectiveness_summary_missing" not in result.stdout
+    assert "quick_result: GREEN" in result.stdout
+
+
+def test_quick_check_recovery_watchdog_surfaces_hardening_trigger_success_without_blocking(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    _write_json(
+        output_dir / "health" / "recovery" / "recovery_latest.json",
+        {
+            "issue_detected": True,
+            "issue_remaining": False,
+            "actions_attempted": [
+                "repair_recovery_env_persistence_gate:ok",
+                "trigger_coldmath_hardening_after_env_repair:ok",
+            ],
+        },
+    )
+
+    env_file = tmp_path / "quick.env"
+    _write_env_file(env_file=env_file, output_dir=output_dir)
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_quick_script(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 0
+    assert "recovery_watchdog:" in result.stdout
+    assert "hardening_trigger_action=ok" in result.stdout
+    assert "recovery_coldmath_hardening_trigger_failed" not in result.stdout
+    assert "recovery_coldmath_hardening_trigger_missing_unit" not in result.stdout
+    assert "quick_result: GREEN" in result.stdout
+
+
+def test_quick_check_strict_fails_when_recovery_hardening_trigger_action_is_failed(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    _write_json(
+        output_dir / "health" / "recovery" / "recovery_latest.json",
+        {
+            "issue_detected": True,
+            "issue_remaining": True,
+            "actions_attempted": [
+                "repair_recovery_env_persistence_gate:ok",
+                "trigger_coldmath_hardening_after_env_repair:failed",
+            ],
+        },
+    )
+
+    env_file = tmp_path / "quick.env"
+    _write_env_file(env_file=env_file, output_dir=output_dir)
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_quick_script(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 2
+    assert "recovery_watchdog:" in result.stdout
+    assert "hardening_trigger_action=failed" in result.stdout
+    assert "recovery_coldmath_hardening_trigger_failed" in result.stdout
+    assert "next_action: coldmath hardening trigger failed; check service logs and retry recovery:" in result.stdout
+    assert "betbot-temperature-coldmath-hardening.service" in result.stdout
+
+
+def test_quick_check_strict_fails_when_recovery_hardening_trigger_action_is_missing_unit(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    _write_json(
+        output_dir / "health" / "recovery" / "recovery_latest.json",
+        {
+            "issue_detected": True,
+            "issue_remaining": True,
+            "actions_attempted": [
+                "repair_recovery_env_persistence_gate:ok",
+                "trigger_coldmath_hardening_after_env_repair:missing_unit",
+            ],
+        },
+    )
+
+    env_file = tmp_path / "quick.env"
+    _write_env_file(env_file=env_file, output_dir=output_dir)
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_quick_script(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 2
+    assert "recovery_watchdog:" in result.stdout
+    assert "hardening_trigger_action=missing_unit" in result.stdout
+    assert "recovery_coldmath_hardening_trigger_missing_unit" in result.stdout
+    assert "next_action: install/enable coldmath hardening service unit then re-run recovery:" in result.stdout
+
+
+def test_quick_check_recovery_watchdog_surfaces_stage_timeout_actions_without_blocking(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    _write_json(
+        output_dir / "health" / "recovery" / "recovery_latest.json",
+        {
+            "issue_detected": True,
+            "issue_remaining": False,
+            "actions_attempted": [
+                "repair_coldmath_stage_timeout_guardrails:ok",
+                "trigger_coldmath_hardening_after_stage_timeout_repair:ok",
+            ],
+        },
+    )
+
+    env_file = tmp_path / "quick.env"
+    _write_env_file(env_file=env_file, output_dir=output_dir)
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_quick_script(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 0
+    assert "recovery_watchdog:" in result.stdout
+    assert "stage_timeout_repair_action=ok" in result.stdout
+    assert "stage_timeout_hardening_trigger_action=ok" in result.stdout
+    assert "recovery_coldmath_stage_timeout_hardening_trigger_failed" not in result.stdout
+    assert "recovery_coldmath_stage_timeout_hardening_trigger_missing_unit" not in result.stdout
+    assert "quick_result: GREEN" in result.stdout
+
+
+def test_quick_check_strict_fails_when_recovery_stage_timeout_repair_action_is_failed(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    _write_json(
+        output_dir / "health" / "recovery" / "recovery_latest.json",
+        {
+            "issue_detected": True,
+            "issue_remaining": True,
+            "actions_attempted": [
+                "repair_coldmath_stage_timeout_guardrails:failed",
+            ],
+        },
+    )
+
+    env_file = tmp_path / "quick.env"
+    _write_env_file(env_file=env_file, output_dir=output_dir)
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_quick_script(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 2
+    assert "recovery_watchdog:" in result.stdout
+    assert "stage_timeout_repair_action=failed" in result.stdout
+    assert "recovery_coldmath_stage_timeout_repair_failed" in result.stdout
+    assert "next_action: coldmath stage-timeout guardrail repair failed; check recovery logs and retry recovery:" in result.stdout
+    assert "journalctl -u betbot-temperature-recovery.service" in result.stdout
+
+
+def test_quick_check_strict_fails_when_recovery_stage_timeout_repair_action_is_missing_script(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    _write_json(
+        output_dir / "health" / "recovery" / "recovery_latest.json",
+        {
+            "issue_detected": True,
+            "issue_remaining": True,
+            "actions_attempted": [
+                "repair_coldmath_stage_timeout_guardrails:missing_script",
+            ],
+        },
+    )
+
+    env_file = tmp_path / "quick.env"
+    _write_env_file(env_file=env_file, output_dir=output_dir)
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_quick_script(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 2
+    assert "recovery_watchdog:" in result.stdout
+    assert "stage_timeout_repair_action=missing_script" in result.stdout
+    assert "recovery_coldmath_stage_timeout_repair_missing_script" in result.stdout
+    assert (
+        "next_action: coldmath stage-timeout guardrail repair script missing; restore script path and retry recovery:"
+        in result.stdout
+    )
+    assert "set_coldmath_stage_timeout_guardrails.sh --global-seconds 900" in result.stdout
+
+
+def test_quick_check_strict_fails_when_recovery_stage_timeout_hardening_trigger_action_is_failed(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    _write_json(
+        output_dir / "health" / "recovery" / "recovery_latest.json",
+        {
+            "issue_detected": True,
+            "issue_remaining": True,
+            "actions_attempted": [
+                "repair_coldmath_stage_timeout_guardrails:ok",
+                "trigger_coldmath_hardening_after_stage_timeout_repair:failed",
+            ],
+        },
+    )
+
+    env_file = tmp_path / "quick.env"
+    _write_env_file(env_file=env_file, output_dir=output_dir)
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_quick_script(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 2
+    assert "recovery_watchdog:" in result.stdout
+    assert "stage_timeout_hardening_trigger_action=failed" in result.stdout
+    assert "recovery_coldmath_stage_timeout_hardening_trigger_failed" in result.stdout
+    assert (
+        "next_action: coldmath hardening trigger failed after stage-timeout repair; check service logs and retry recovery:"
+        in result.stdout
+    )
+    assert "betbot-temperature-coldmath-hardening.service" in result.stdout
+
+
+def test_quick_check_strict_fails_when_recovery_stage_timeout_hardening_trigger_action_is_missing_unit(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    _write_json(
+        output_dir / "health" / "recovery" / "recovery_latest.json",
+        {
+            "issue_detected": True,
+            "issue_remaining": True,
+            "actions_attempted": [
+                "repair_coldmath_stage_timeout_guardrails:ok",
+                "trigger_coldmath_hardening_after_stage_timeout_repair:missing_unit",
+            ],
+        },
+    )
+
+    env_file = tmp_path / "quick.env"
+    _write_env_file(env_file=env_file, output_dir=output_dir)
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_quick_script(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 2
+    assert "recovery_watchdog:" in result.stdout
+    assert "stage_timeout_hardening_trigger_action=missing_unit" in result.stdout
+    assert "recovery_coldmath_stage_timeout_hardening_trigger_missing_unit" in result.stdout
+    assert (
+        "next_action: install/enable coldmath hardening service unit for stage-timeout recovery then re-run recovery:"
+        in result.stdout
+    )
+
+
+def test_quick_check_strict_fails_when_recovery_effectiveness_gap_is_detected_in_strict_mode(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    _write_json(
+        output_dir / "health" / "recovery" / "recovery_latest.json",
+        {
+            "issue_detected": True,
+            "issue_remaining": True,
+            "actions_attempted": [
+                "repair_recovery_env_persistence_gate:ok",
+            ],
+            "recovery_effectiveness": {
+                "strict_required": True,
+                "gap_detected": True,
+                "gap_reason": "summary_missing",
+                "stale": True,
+                "file_age_seconds": 42,
+                "stale_threshold_seconds": 600,
+                "summary_available": False,
+            },
+        },
+    )
+
+    env_file = tmp_path / "quick.env"
+    _write_env_file(env_file=env_file, output_dir=output_dir)
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_quick_script(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 2
+    assert "recovery_watchdog:" in result.stdout
+    assert "strict_required=true" in result.stdout
+    assert "gap_detected=true" in result.stdout
+    assert "gap_reason=summary_missing" in result.stdout
+    assert "recovery_effectiveness_gap_detected" in result.stdout
+    assert "next_action: recovery effectiveness strict gap detected; run pipeline recovery now:" in result.stdout
+    assert "run_temperature_pipeline_recovery.sh" in result.stdout
+
+
+def test_quick_check_strict_stays_green_when_recovery_effectiveness_gap_not_required(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    _write_json(
+        output_dir / "health" / "recovery" / "recovery_latest.json",
+        {
+            "issue_detected": True,
+            "issue_remaining": False,
+            "actions_attempted": [],
+            "recovery_effectiveness": {
+                "strict_required": False,
+                "gap_detected": True,
+                "gap_reason": "summary_stale",
+                "stale": False,
+                "file_age_seconds": 15,
+                "stale_threshold_seconds": 600,
+                "summary_available": True,
+            },
+        },
+    )
+
+    env_file = tmp_path / "quick.env"
+    _write_env_file(env_file=env_file, output_dir=output_dir)
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_quick_script(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 0
+    assert "recovery_watchdog:" in result.stdout
+    assert "strict_required=false" in result.stdout
+    assert "gap_detected=true" in result.stdout
+    assert "gap_reason=summary_stale" in result.stdout
+    assert "recovery_effectiveness_gap_detected" not in result.stdout
+    assert "quick_result: GREEN" in result.stdout
+
+
+def test_quick_check_recovery_watchdog_line_includes_recovery_effectiveness_fields(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_required_artifacts(output_dir)
+    _write_json(
+        output_dir / "health" / "recovery" / "recovery_latest.json",
+        {
+            "issue_detected": False,
+            "issue_remaining": False,
+            "actions_attempted": [],
+            "recovery_effectiveness": {
+                "gap_reason": "unexpected_reason",
+            },
+        },
+    )
+
+    env_file = tmp_path / "quick.env"
+    _write_env_file(env_file=env_file, output_dir=output_dir)
+    script_path, tool_dir = _prepare_script_bundle(tmp_path=tmp_path, root=root)
+    result = _run_quick_script(script_path=script_path, env_file=env_file, tool_dir=tool_dir)
+
+    assert result.returncode == 0
+    assert "recovery_watchdog:" in result.stdout
+    assert "strict_required=false" in result.stdout
+    assert "gap_detected=false" in result.stdout
+    assert "gap_reason=none" in result.stdout
+    assert "stale=false" in result.stdout
+    assert "file_age_seconds=-1" in result.stdout
+    assert "stale_threshold_seconds=-1" in result.stdout
+    assert "summary_available=false" in result.stdout

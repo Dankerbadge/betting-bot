@@ -499,6 +499,88 @@ def _write_candidate_csv(path: Path, rows: list[dict[str, Any]]) -> None:
             writer.writerow(row)
 
 
+def _latest_live_candidates_summary_for_event(
+    *,
+    output_dir: Path,
+    sport_id: int,
+    event_date: str,
+) -> tuple[dict[str, Any] | None, str]:
+    pattern = f"live_candidates_summary_{sport_id}_{event_date}_*.json"
+    candidates = sorted(
+        output_dir.glob(pattern),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    for path in candidates:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(payload, dict):
+            return dict(payload), str(path)
+    return None, ""
+
+
+def _run_provider_artifact_passthrough(
+    *,
+    provider: str,
+    env_file: str,
+    sport_id: int,
+    event_date: str,
+    output_dir: str,
+) -> dict[str, Any]:
+    out_dir = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    summary_path = out_dir / f"live_candidates_summary_{sport_id}_{event_date}_{stamp}.json"
+    source_payload, source_file = _latest_live_candidates_summary_for_event(
+        output_dir=out_dir,
+        sport_id=sport_id,
+        event_date=event_date,
+    )
+    if source_payload is None:
+        summary = {
+            "env_file": env_file,
+            "captured_at": datetime.now().isoformat(),
+            "status": "error",
+            "provider": provider,
+            "data_source": "artifact_passthrough",
+            "error": f"No live-candidates summary artifact found for ODDS_PROVIDER={provider!r}",
+            "sport_id": sport_id,
+            "event_date": event_date,
+            "source_summary_file": "",
+        }
+        summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+        summary["output_file"] = str(summary_path)
+        return summary
+
+    summary = {
+        "env_file": env_file,
+        "captured_at": datetime.now().isoformat(),
+        "status": str(source_payload.get("status") or "ready"),
+        "provider": provider,
+        "data_source": "artifact_passthrough",
+        "sport_id": sport_id,
+        "event_date": event_date,
+        "source_summary_file": source_file,
+        "source_captured_at": source_payload.get("captured_at"),
+        "market_ids": list(source_payload.get("market_ids") or []),
+        "affiliate_ids": list(source_payload.get("affiliate_ids") or []),
+        "affiliate_names": list(source_payload.get("affiliate_names") or []),
+        "events_fetched": int(float(source_payload.get("events_fetched") or 0)),
+        "market_pairs_seen": int(float(source_payload.get("market_pairs_seen") or 0)),
+        "market_pairs_with_consensus": int(float(source_payload.get("market_pairs_with_consensus") or 0)),
+        "candidates_written": int(float(source_payload.get("candidates_written") or 0)),
+        "positive_ev_candidates": int(float(source_payload.get("positive_ev_candidates") or 0)),
+        "positive_decision_ev_candidates": int(float(source_payload.get("positive_decision_ev_candidates") or 0)),
+        "top_candidates": list(source_payload.get("top_candidates") or []),
+        "output_csv": str(source_payload.get("output_csv") or ""),
+    }
+    summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    summary["output_file"] = str(summary_path)
+    return summary
+
+
 def run_live_candidates(
     *,
     env_file: str,
@@ -517,7 +599,13 @@ def run_live_candidates(
     data = _parse_env_file(env_path)
     provider = (data.get("ODDS_PROVIDER") or "therundown").strip().lower()
     if provider != "therundown":
-        raise ValueError(f"live-candidates only supports ODDS_PROVIDER='therundown', got {provider!r}")
+        return _run_provider_artifact_passthrough(
+            provider=provider or "unknown",
+            env_file=str(env_path),
+            sport_id=sport_id,
+            event_date=event_date,
+            output_dir=output_dir,
+        )
 
     api_key = data.get("THERUNDOWN_API_KEY")
     base_url = data.get("THERUNDOWN_BASE_URL") or "https://therundown.io/api/v2"

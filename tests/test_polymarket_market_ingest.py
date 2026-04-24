@@ -255,6 +255,50 @@ class PolymarketMarketIngestTests(unittest.TestCase):
             self.assertTrue(refresh_kwargs["include_all_trade_roles"])
             self.assertEqual(summary["coldmath_snapshot"]["status"], "ready")
 
+    def test_run_polymarket_ingest_falls_back_to_position_catalog_when_market_scan_empty(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            snapshot_dir = Path(tmp) / "coldmath_snapshot"
+            out_dir = Path(tmp) / "out"
+            snapshot_dir.mkdir(parents=True, exist_ok=True)
+            valuation_time = "2026-04-21T11:30:00Z"
+            (snapshot_dir / "equity.csv").write_text(
+                "cashBalance,positionsValue,equity,valuationTime\n"
+                f"100.0,25.0,125.0,{valuation_time}\n",
+                encoding="utf-8",
+            )
+            (snapshot_dir / "positions.csv").write_text(
+                "conditionId,asset,size,curPrice,valuationTime,eventSlug,slug,title,outcome,endDate\n"
+                "c-temp-1,a1,10,0.5,2026-04-21T11:30:00Z,highest-temperature-in-nyc-on-april-21-2026,highest-temperature-in-nyc-on-april-21-2026-72f,Will the highest temperature in NYC be 72F?,Yes,2026-04-21\n"
+                "c-other-1,a2,4,0.4,2026-04-21T11:30:00Z,btc-above-100k,btc-above-100k,Will BTC close above 100k?,Yes,2026-04-21\n",
+                encoding="utf-8",
+            )
+
+            def fake_http_get_json(url: str, timeout_seconds: float):
+                _ = timeout_seconds
+                if "offset=0" in url:
+                    return (200, [])
+                return (200, [])
+
+            summary = run_polymarket_market_data_ingest(
+                output_dir=str(out_dir),
+                max_markets=10,
+                page_size=10,
+                max_pages=1,
+                http_get_json=fake_http_get_json,
+                now=datetime(2026, 4, 21, 12, 0, tzinfo=timezone.utc),
+                coldmath_snapshot_dir=str(snapshot_dir),
+            )
+
+            self.assertEqual(summary["status"], "ready_partial")
+            self.assertEqual(int(summary["markets_count"]), 1)
+            fallback = dict(summary.get("market_catalog_fallback") or {})
+            self.assertEqual(fallback.get("status"), "ready")
+            self.assertEqual(int(fallback.get("fallback_markets_count") or 0), 1)
+            alignment = dict(summary.get("coldmath_temperature_alignment") or {})
+            self.assertEqual(int(alignment.get("positions_rows") or 0), 2)
+            self.assertEqual(int(alignment.get("matched_positions") or 0), 1)
+            self.assertTrue(Path(summary["output_file"]).exists())
+
 
 if __name__ == "__main__":
     unittest.main()

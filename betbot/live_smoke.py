@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import base64
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 import socket
@@ -31,6 +31,7 @@ LIVE_SMOKE_NETWORK_MAX_RETRIES = 2
 LIVE_SMOKE_NETWORK_BACKOFF_SECONDS = 0.75
 HTTP_GET_NETWORK_MAX_RETRIES = 2
 HTTP_GET_NETWORK_BACKOFF_SECONDS = 0.35
+LIVE_SMOKE_PROVIDER_ARTIFACT_STALE_SECONDS = 6 * 60 * 60
 DNS_ERROR_MARKERS = (
     "nodename nor servname",
     "name or service not known",
@@ -52,6 +53,97 @@ class LiveSmokeCheck:
 
 HttpGetter = Callable[[str, dict[str, str], float], tuple[int, Any]]
 KalshiSigner = Callable[[str, str, str, str], str]
+
+
+def _parse_iso_ts(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _latest_live_candidates_summary(output_dir: Path) -> tuple[dict[str, Any] | None, str]:
+    candidates = sorted(
+        output_dir.glob("live_candidates_summary_*.json"),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    for path in candidates:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(payload, dict):
+            return dict(payload), str(path)
+    return None, ""
+
+
+def build_provider_artifact_snapshot(
+    *,
+    provider: str,
+    output_dir: str,
+    now: datetime | None = None,
+    stale_seconds_limit: float = LIVE_SMOKE_PROVIDER_ARTIFACT_STALE_SECONDS,
+) -> dict[str, Any]:
+    payload, source_file = _latest_live_candidates_summary(Path(output_dir))
+    if payload is None:
+        return {
+            "provider": provider,
+            "status": "missing",
+            "ready_for_smoke": False,
+            "failure_reason": "missing_live_candidates_summary_artifact",
+            "summary_file": "",
+            "captured_at": "",
+            "stale_seconds": None,
+            "artifact_status": "missing",
+            "candidates_written": 0,
+            "market_pairs_with_consensus": 0,
+        }
+
+    captured_at_text = str(payload.get("captured_at") or "").strip()
+    captured_at = _parse_iso_ts(captured_at_text)
+    comparison_time = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    if isinstance(captured_at, datetime):
+        captured_at = captured_at.astimezone(timezone.utc)
+    stale_seconds: float | None = None
+    if isinstance(captured_at, datetime):
+        stale_seconds = max(0.0, (comparison_time - captured_at).total_seconds())
+
+    artifact_status = str(payload.get("status") or "").strip().lower()
+    candidates_written = int(float(payload.get("candidates_written") or 0))
+    market_pairs_with_consensus = int(float(payload.get("market_pairs_with_consensus") or 0))
+    stale = isinstance(stale_seconds, float) and stale_seconds > float(stale_seconds_limit)
+    healthy_status = artifact_status in {"ready", "ready_partial", "no_candidates", "empty"}
+    ready_for_smoke = healthy_status and not stale
+
+    failure_reason = ""
+    status = "ready"
+    if not healthy_status:
+        status = "error"
+        failure_reason = f"artifact_status_{artifact_status or 'unknown'}"
+    elif stale:
+        status = "stale"
+        failure_reason = "artifact_stale"
+
+    return {
+        "provider": provider,
+        "status": status,
+        "ready_for_smoke": ready_for_smoke,
+        "failure_reason": failure_reason,
+        "summary_file": source_file,
+        "captured_at": captured_at_text,
+        "stale_seconds": stale_seconds,
+        "artifact_status": artifact_status,
+        "candidates_written": candidates_written,
+        "market_pairs_with_consensus": market_pairs_with_consensus,
+        "positive_ev_candidates": int(float(payload.get("positive_ev_candidates") or 0)),
+    }
 
 
 def kalshi_api_root_candidates(env_name: str) -> tuple[str, ...]:
@@ -493,14 +585,34 @@ def run_live_smoke(
                     )
                 )
         else:
-            checks.append(
-                LiveSmokeCheck(
-                    component="odds_provider",
-                    target=provider,
-                    ok=False,
-                    message=f"Live smoke does not support ODDS_PROVIDER={provider!r} yet",
-                )
+            provider_snapshot = build_provider_artifact_snapshot(
+                provider=provider or "unknown",
+                output_dir=output_dir,
             )
+            if bool(provider_snapshot.get("ready_for_smoke")):
+                checks.append(
+                    LiveSmokeCheck(
+                        component="odds_provider",
+                        target=provider or "unknown",
+                        ok=True,
+                        message=(
+                            f"Loaded {provider!r} health from live-candidates artifact "
+                            f"({provider_snapshot.get('artifact_status')})"
+                        ),
+                        details=provider_snapshot,
+                    )
+                )
+            else:
+                reason = str(provider_snapshot.get("failure_reason") or "provider_artifact_unhealthy")
+                checks.append(
+                    LiveSmokeCheck(
+                        component="odds_provider",
+                        target=provider or "unknown",
+                        ok=False,
+                        message=f"Provider artifact health failed: {reason}",
+                        details=provider_snapshot,
+                    )
+                )
     else:
         checks.append(
             LiveSmokeCheck(

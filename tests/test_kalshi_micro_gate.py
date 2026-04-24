@@ -150,6 +150,43 @@ class KalshiMicroGateTests(unittest.TestCase):
             self.assertEqual(summary["top_pressure_market_ticker"], "KXTEST-1")
             self.assertTrue(Path(summary["output_file"]).exists())
 
+    def test_run_kalshi_micro_gate_returns_structured_history_missing_hold(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+
+            def fake_plan_runner(**kwargs: object) -> dict[str, object]:
+                return {
+                    "planned_orders": 1,
+                    "actual_live_balance_dollars": 40.0,
+                    "funding_gap_dollars": 0.0,
+                    "orders": [{"maker_yes_price_dollars": 0.06}],
+                    "output_file": str(base / "plan.json"),
+                    "status": "ready",
+                }
+
+            def missing_history_runner(**kwargs: object) -> dict[str, object]:
+                raise ValueError(f"History CSV not found: {base / 'missing_history.csv'}")
+
+            summary = run_kalshi_micro_gate(
+                env_file="data/research/account_onboarding.local.env",
+                output_dir=str(base),
+                history_csv=str(base / "missing_history.csv"),
+                ledger_csv=str(base / "ledger.csv"),
+                plan_runner=fake_plan_runner,
+                quality_runner=missing_history_runner,
+                signal_runner=missing_history_runner,
+                persistence_runner=missing_history_runner,
+                delta_runner=missing_history_runner,
+                category_runner=missing_history_runner,
+                pressure_runner=missing_history_runner,
+                now=datetime(2026, 3, 27, 21, 0, tzinfo=timezone.utc),
+            )
+
+            self.assertFalse(summary["gate_pass"])
+            self.assertEqual(summary["gate_status"], "history_missing")
+            self.assertIn("History CSV not found", " | ".join(summary["gate_blockers"]))
+            self.assertTrue(Path(summary["output_file"]).exists())
+
 
 if __name__ == "__main__":
     unittest.main()

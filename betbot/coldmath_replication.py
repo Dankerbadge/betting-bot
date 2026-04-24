@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 from datetime import datetime, timezone
 import json
 from pathlib import Path
@@ -29,6 +30,65 @@ def _coerce_string_list(value: Any) -> list[str]:
     return []
 
 
+def _coerce_ticker_list(value: Any) -> list[str]:
+    return [
+        _normalize_text(item).upper()
+        for item in _coerce_string_list(value)
+        if _normalize_text(item)
+    ]
+
+
+def _load_excluded_market_tickers(
+    *,
+    excluded_market_tickers: list[str] | None,
+    excluded_market_tickers_file: str | None,
+) -> tuple[list[str], str, str]:
+    values: list[str] = _coerce_ticker_list(excluded_market_tickers or [])
+    source_status = "none"
+    source_file = _normalize_text(excluded_market_tickers_file)
+    if not source_file:
+        deduped = sorted(set(values))
+        return deduped, source_file, source_status
+
+    path = Path(source_file)
+    if not path.exists():
+        deduped = sorted(set(values))
+        return deduped, source_file, "missing_file"
+
+    try:
+        raw_text = path.read_text(encoding="utf-8")
+    except OSError:
+        deduped = sorted(set(values))
+        return deduped, source_file, "read_error"
+
+    loaded_from_file: list[str] = []
+    try:
+        parsed = json.loads(raw_text)
+    except json.JSONDecodeError:
+        parsed = None
+
+    if isinstance(parsed, dict):
+        recommended = parsed.get("recommended_exclusions")
+        if isinstance(recommended, dict):
+            loaded_from_file.extend(_coerce_ticker_list(recommended.get("market_tickers")))
+        loaded_from_file.extend(_coerce_ticker_list(parsed.get("market_tickers")))
+        source_status = "loaded_json"
+    elif isinstance(parsed, list):
+        loaded_from_file.extend(_coerce_ticker_list(parsed))
+        source_status = "loaded_json"
+    else:
+        if raw_text.strip():
+            segments = raw_text.replace("\n", ",").replace("\t", ",")
+            loaded_from_file.extend(
+                _coerce_ticker_list([piece.strip() for piece in segments.split(",") if piece.strip()])
+            )
+            source_status = "loaded_text"
+
+    values.extend(loaded_from_file)
+    deduped = sorted(set(values))
+    return deduped, source_file, source_status
+
+
 def _latest_payload(
     *,
     output_dir: Path,
@@ -48,6 +108,48 @@ def _latest_payload(
         if isinstance(payload, dict):
             return payload, str(path)
     return None, ""
+
+
+def _discover_market_tickers_from_artifacts(
+    *,
+    output_dir: Path,
+    max_files_per_pattern: int = 4,
+    max_tickers: int = 1500,
+) -> tuple[list[str], list[str]]:
+    csv_patterns = (
+        "kalshi_temperature_constraint_scan_*.csv",
+        "kalshi_temperature_contract_specs_*.csv",
+        "kalshi_temperature_trade_intents_*.csv",
+        "kalshi_temperature_trade_plan_*.csv",
+    )
+    discovered: list[str] = []
+    source_files: list[str] = []
+    seen: set[str] = set()
+    for pattern in csv_patterns:
+        candidates = sorted(
+            output_dir.glob(pattern),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+        for candidate in candidates[: max(1, int(max_files_per_pattern))]:
+            try:
+                with candidate.open("r", newline="", encoding="utf-8") as handle:
+                    reader = csv.DictReader(handle)
+                    for row in reader:
+                        if not isinstance(row, dict):
+                            continue
+                        ticker = _normalize_text(row.get("market_ticker") or row.get("ticker")).upper()
+                        if not ticker or not ticker.startswith("KX") or ticker in seen:
+                            continue
+                        seen.add(ticker)
+                        discovered.append(ticker)
+                        if len(discovered) >= max(1, int(max_tickers)):
+                            source_files.append(str(candidate))
+                            return discovered, source_files
+                source_files.append(str(candidate))
+            except OSError:
+                continue
+    return discovered, source_files
 
 
 def _load_ws_market_books(
@@ -500,6 +602,8 @@ def run_coldmath_replication_plan(
     output_dir: str = "outputs",
     top_n: int = 12,
     market_tickers: list[str] | None = None,
+    excluded_market_tickers: list[str] | None = None,
+    excluded_market_tickers_file: str | None = None,
     require_liquidity_filter: bool = True,
     require_two_sided_quotes: bool = True,
     max_spread_dollars: float = 0.18,
@@ -531,9 +635,40 @@ def run_coldmath_replication_plan(
     effective_market_tickers = list(market_tickers or [])
     if not effective_market_tickers and isinstance(ws_summary, dict):
         effective_market_tickers = _coerce_string_list(ws_summary.get("market_tickers"))
+    artifact_discovered_tickers, artifact_ticker_source_files = _discover_market_tickers_from_artifacts(
+        output_dir=out_dir,
+    )
+    if artifact_discovered_tickers:
+        merged_tickers = list(effective_market_tickers)
+        merged_seen = {str(item).strip().upper() for item in merged_tickers if str(item).strip()}
+        for ticker in artifact_discovered_tickers:
+            normalized = _normalize_text(ticker).upper()
+            if not normalized or normalized in merged_seen:
+                continue
+            merged_seen.add(normalized)
+            merged_tickers.append(normalized)
+        effective_market_tickers = merged_tickers
+
+    excluded_tickers_resolved, excluded_tickers_source_file, excluded_tickers_source_status = _load_excluded_market_tickers(
+        excluded_market_tickers=excluded_market_tickers,
+        excluded_market_tickers_file=excluded_market_tickers_file,
+    )
+    excluded_ticker_set = {str(item).upper() for item in excluded_tickers_resolved if str(item).strip()}
+    pre_exclusion_market_ticker_count = len(effective_market_tickers)
+    if excluded_ticker_set:
+        effective_market_tickers = [
+            ticker
+            for ticker in effective_market_tickers
+            if _normalize_text(ticker).upper() not in excluded_ticker_set
+        ]
+    excluded_market_ticker_count = max(0, int(pre_exclusion_market_ticker_count - len(effective_market_tickers)))
 
     status = "ready"
     errors: list[str] = []
+    if excluded_tickers_source_status == "missing_file":
+        errors.append("excluded_market_tickers_file_missing")
+    elif excluded_tickers_source_status == "read_error":
+        errors.append("excluded_market_tickers_file_unreadable")
     if not isinstance(snapshot_summary, dict):
         status = "missing_snapshot_summary"
         errors.append("coldmath_snapshot_summary_missing")
@@ -541,8 +676,12 @@ def run_coldmath_replication_plan(
         status = "missing_polymarket_summary" if status == "ready" else status
         errors.append("polymarket_temperature_summary_missing")
     if not effective_market_tickers:
-        status = "missing_market_tickers" if status == "ready" else status
-        errors.append("kalshi_market_tickers_missing")
+        if pre_exclusion_market_ticker_count > 0 and excluded_market_ticker_count >= pre_exclusion_market_ticker_count:
+            status = "all_market_tickers_excluded" if status == "ready" else status
+            errors.append("all_market_tickers_excluded_by_filter")
+        else:
+            status = "missing_market_tickers" if status == "ready" else status
+            errors.append("kalshi_market_tickers_missing")
 
     plan_data: dict[str, Any] = {
         "theme": "mixed",
@@ -584,7 +723,15 @@ def run_coldmath_replication_plan(
             "polymarket_temperature_summary": polymarket_file,
             "kalshi_ws_state_summary": ws_summary_file,
             "kalshi_ws_state_books": ws_market_books_file,
+            "excluded_market_tickers_file": excluded_tickers_source_file,
+            "market_ticker_artifacts": artifact_ticker_source_files,
         },
+        "artifact_discovered_market_ticker_count": len(artifact_discovered_tickers),
+        "excluded_market_tickers_source_status": excluded_tickers_source_status,
+        "excluded_market_tickers_input_count": len(excluded_tickers_resolved),
+        "excluded_market_tickers_input": excluded_tickers_resolved,
+        "pre_exclusion_market_ticker_count": int(pre_exclusion_market_ticker_count),
+        "excluded_market_ticker_count": int(excluded_market_ticker_count),
         "market_ticker_count": len(effective_market_tickers),
         "market_books_count": len(ws_market_books),
         "errors": errors,

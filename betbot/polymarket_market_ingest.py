@@ -279,6 +279,108 @@ def _parse_float(value: Any) -> float | None:
         return None
 
 
+def _is_temperature_position_row(row: dict[str, Any]) -> bool:
+    text = " ".join(
+        [
+            str(row.get("title") or ""),
+            str(row.get("question") or ""),
+            str(row.get("slug") or row.get("marketSlug") or ""),
+            str(row.get("eventSlug") or row.get("event_slug") or ""),
+        ]
+    ).lower()
+    if not text:
+        return False
+    if "temperature" in text:
+        return True
+    return any(
+        marker in text
+        for marker in (
+            "highest-temp",
+            "lowest-temp",
+            "highest temperature",
+            "lowest temperature",
+            "daily high",
+            "daily low",
+        )
+    )
+
+
+def _fallback_temperature_markets_from_positions(
+    *,
+    positions_csv: str | Path,
+    captured_at: datetime,
+    max_markets: int,
+) -> dict[str, Any]:
+    positions_path = Path(positions_csv)
+    if not positions_path.exists():
+        return {
+            "status": "missing_positions_csv",
+            "positions_csv": str(positions_path),
+            "positions_rows": 0,
+            "temperature_positions_rows": 0,
+            "fallback_markets_count": 0,
+            "markets": [],
+        }
+
+    with positions_path.open(newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        rows = [dict(row) for row in reader]
+
+    seen_conditions: set[str] = set()
+    fallback_markets: list[dict[str, Any]] = []
+    temperature_positions_rows = 0
+    skipped_missing_condition = 0
+    for row in rows:
+        if not _is_temperature_position_row(row):
+            continue
+        temperature_positions_rows += 1
+        condition_raw = str(row.get("conditionId") or row.get("condition_id") or "").strip()
+        if not condition_raw:
+            skipped_missing_condition += 1
+            continue
+        condition_key = condition_raw.lower()
+        if condition_key in seen_conditions:
+            continue
+        seen_conditions.add(condition_key)
+        market_slug = str(row.get("slug") or row.get("marketSlug") or row.get("market_slug") or "").strip()
+        question = str(row.get("title") or row.get("question") or "").strip()
+        event_slug = str(row.get("eventSlug") or row.get("event_slug") or "").strip()
+        end_date = str(row.get("endDate") or row.get("end_date") or "").strip()
+        outcome = str(row.get("outcome") or "").strip()
+        asset = str(row.get("asset") or "").strip()
+        source_url = f"https://polymarket.com/event/{event_slug}" if event_slug else ""
+        fallback_markets.append(
+            {
+                "captured_at": captured_at.isoformat(),
+                "market_id": condition_raw,
+                "market_slug": market_slug,
+                "question": question,
+                "event_title": event_slug,
+                "rules_primary": "fallback_position_catalog",
+                "end_date": end_date,
+                "active": False,
+                "closed": True if end_date else False,
+                "accepting_orders": False,
+                "outcomes": [outcome] if outcome else [],
+                "clob_token_ids": [asset] if asset else [],
+                "condition_id": condition_raw,
+                "source_url": source_url,
+            }
+        )
+        if len(fallback_markets) >= max(1, int(max_markets)):
+            break
+
+    return {
+        "status": "ready" if fallback_markets else "no_temperature_positions",
+        "positions_csv": str(positions_path),
+        "positions_rows": len(rows),
+        "temperature_positions_rows": temperature_positions_rows,
+        "fallback_markets_count": len(fallback_markets),
+        "skipped_missing_condition_rows": skipped_missing_condition,
+        "markets": fallback_markets,
+    }
+
+
 def summarize_coldmath_temperature_alignment(
     *,
     positions_csv: str | Path,
@@ -471,6 +573,27 @@ def run_polymarket_market_data_ingest(
                 stale_hours=coldmath_stale_hours,
                 now=now or datetime.now(timezone.utc),
             )
+        existing_markets = summary.get("markets")
+        existing_markets = list(existing_markets) if isinstance(existing_markets, list) else []
+        if not existing_markets:
+            fallback_catalog = _fallback_temperature_markets_from_positions(
+                positions_csv=effective_positions_csv,
+                captured_at=datetime.now(timezone.utc),
+                max_markets=max_markets,
+            )
+            summary["market_catalog_fallback"] = {
+                key: value
+                for key, value in fallback_catalog.items()
+                if key != "markets"
+            }
+            fallback_markets = list(fallback_catalog.get("markets") or [])
+            if fallback_markets:
+                summary["markets"] = fallback_markets
+                summary["markets_count"] = len(fallback_markets)
+                current_status = str(summary.get("status") or "").strip().lower()
+                if current_status in {"", "no_markets", "request_failed"}:
+                    summary["status"] = "ready_partial"
+                _write_markets_csv(csv_path, fallback_markets)
         summary["coldmath_temperature_alignment"] = summarize_coldmath_temperature_alignment(
             positions_csv=effective_positions_csv,
             markets=summary.get("markets") if isinstance(summary.get("markets"), list) else [],

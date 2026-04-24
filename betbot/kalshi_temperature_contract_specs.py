@@ -4,6 +4,7 @@ import csv
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import re
 from typing import Any
 
 from betbot.kalshi_nonsports_scan import KalshiEventsFetchError, _load_open_events_with_diagnostics
@@ -64,20 +65,33 @@ _TICKER_MONTHS = {
     "DEC": 12,
 }
 
+_TEMPERATURE_TICKER_PREFIXES = ("KXHIGH", "KXLOW", "KXTEMP", "NHIGH", "NLOW", "NTEMP")
+_TEMPERATURE_DAY_TOKEN_RE = re.compile(r"-\d{2}[A-Z]{3}\d{2,4}(?:-|$)")
+
+
+def _has_temperature_day_token(*values: Any) -> bool:
+    for value in values:
+        token = _normalize_text(value).upper()
+        if token and _TEMPERATURE_DAY_TOKEN_RE.search(token):
+            return True
+    return False
+
 
 def _is_temperature_market(event: dict[str, Any], market: dict[str, Any]) -> bool:
     category = _normalize_text(event.get("category")).lower()
     series_ticker = _normalize_text(event.get("series_ticker")).upper()
     event_ticker = _normalize_text(event.get("event_ticker")).upper()
     market_ticker = _normalize_text(market.get("ticker")).upper()
+    has_day_token = _has_temperature_day_token(series_ticker, event_ticker, market_ticker)
 
     # Prefer explicit ticker families first: these are stable identifiers for
     # daily high/low temperature contracts even when titles omit "temperature".
-    if (
-        series_ticker.startswith(("KXHIGH", "KXLOW", "KXTEMP", "NHIGH", "NLOW", "NTEMP"))
-        or event_ticker.startswith(("KXHIGH", "KXLOW", "KXTEMP", "NHIGH", "NLOW", "NTEMP"))
-        or market_ticker.startswith(("KXHIGH", "KXLOW", "KXTEMP", "NHIGH", "NLOW", "NTEMP"))
-    ):
+    prefix_match = (
+        series_ticker.startswith(_TEMPERATURE_TICKER_PREFIXES)
+        or event_ticker.startswith(_TEMPERATURE_TICKER_PREFIXES)
+        or market_ticker.startswith(_TEMPERATURE_TICKER_PREFIXES)
+    )
+    if prefix_match and category == "climate and weather" and has_day_token:
         return True
 
     merged = " ".join(
@@ -112,10 +126,11 @@ def _is_temperature_market(event: dict[str, Any], market: dict[str, Any]) -> boo
         return False
 
     # Within climate/weather category, explicit temperature phrasing is enough.
-    if category == "climate and weather":
+    if category == "climate and weather" and has_day_token:
         return True
 
-    return has_temperature_language
+    # Outside climate/weather, require explicit temperature language.
+    return has_temperature_language and has_day_token
 
 
 def _choose_strike_value(market: dict[str, Any], keys: tuple[str, ...]) -> str:
@@ -196,6 +211,27 @@ def extract_kalshi_temperature_contract_specs(
                 "rules_primary": _normalize_text(market.get("rules_primary")),
             }
             settlement = build_weather_settlement_spec(row_context)
+            contract_family = _normalize_text(settlement.get("contract_family"))
+            series_ticker = _normalize_text(event.get("series_ticker")).upper()
+            event_ticker = _normalize_text(event.get("event_ticker")).upper()
+            market_ticker = _normalize_text(market.get("ticker")).upper()
+            has_day_token = _has_temperature_day_token(series_ticker, event_ticker, market_ticker)
+            target_date_local = infer_target_date_from_event_ticker(_normalize_text(event.get("event_ticker")))
+            if contract_family != "daily_temperature":
+                category = _normalize_text(event.get("category")).lower()
+                daily_prefix_match = (
+                    series_ticker.startswith(_TEMPERATURE_TICKER_PREFIXES)
+                    or event_ticker.startswith(_TEMPERATURE_TICKER_PREFIXES)
+                    or market_ticker.startswith(_TEMPERATURE_TICKER_PREFIXES)
+                )
+                has_station = bool(_normalize_text(settlement.get("settlement_station")))
+                if not (category == "climate and weather" and daily_prefix_match and has_day_token and has_station):
+                    continue
+                contract_family = "daily_temperature"
+            if contract_family == "daily_temperature" and not target_date_local:
+                # Prevent non-daily macro/monthly rows from leaking into the
+                # daily temperature strategy lane.
+                continue
 
             settlement_sources = event.get("settlement_sources")
             if not isinstance(settlement_sources, list):
@@ -220,8 +256,8 @@ def extract_kalshi_temperature_contract_specs(
                     "cap_strike_fp": _choose_strike_value(market, ("cap_strike_fp",)),
                     "settlement_sources": json.dumps(normalized_sources),
                     "contract_terms_url": _normalize_text(event.get("contract_terms_url")),
-                    "contract_family": _normalize_text(settlement.get("contract_family")),
-                    "target_date_local": infer_target_date_from_event_ticker(_normalize_text(event.get("event_ticker"))),
+                    "contract_family": contract_family,
+                    "target_date_local": target_date_local,
                     "settlement_confidence_score": settlement_confidence_score(settlement),
                     "settlement_source_primary": _normalize_text(settlement.get("settlement_source_primary")),
                     "settlement_source_fallback": _normalize_text(settlement.get("settlement_source_fallback")),

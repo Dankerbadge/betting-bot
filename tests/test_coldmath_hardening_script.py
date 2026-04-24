@@ -5,7 +5,10 @@ import os
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 import subprocess
+import time
 from threading import Thread
+
+import pytest
 
 
 def _write_fake_betbot_cli(fake_root: Path) -> None:
@@ -18,8 +21,10 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import json
+import os
 from pathlib import Path
 import sys
+import time
 
 
 def _option_value(args: list[str], key: str, default: str = "") -> str:
@@ -35,6 +40,53 @@ def _option_value(args: list[str], key: str, default: str = "") -> str:
 def main() -> int:
     args = list(sys.argv[1:])
     command = args[0] if args else ""
+    if command == "kalshi-temperature-recovery-loop":
+        sleep_seconds_text = str(
+            os.environ.get("COLDMATH_FAKE_RECOVERY_LOOP_SLEEP_SECONDS") or ""
+        ).strip()
+        sleep_marker_path = Path.cwd() / "recovery_loop_sleep.marker"
+        sleep_seconds = 0.0
+        if sleep_seconds_text:
+            try:
+                sleep_seconds = max(0.0, float(sleep_seconds_text))
+            except ValueError:
+                sleep_seconds = 0.0
+        elif sleep_marker_path.exists():
+            try:
+                sleep_seconds = max(
+                    0.0,
+                    float(sleep_marker_path.read_text(encoding="utf-8").strip() or "0.5"),
+                )
+            except ValueError:
+                sleep_seconds = 0.5
+        if sleep_seconds > 0:
+            time.sleep(sleep_seconds)
+        output_dir = Path(_option_value(args, "--output-dir", "."))
+        payload = {
+            "command": command,
+            "args": args,
+            "max_iterations": _option_value(args, "--max-iterations", ""),
+            "stall_iterations": _option_value(args, "--stall-iterations", ""),
+            "min_gap_improvement": _option_value(args, "--min-gap-improvement", ""),
+        }
+        health_dir = output_dir / "health"
+        health_dir.mkdir(parents=True, exist_ok=True)
+        (health_dir / "fake_recovery_loop_invocation_latest.json").write_text(
+            json.dumps(payload, indent=2),
+            encoding="utf-8",
+        )
+        return 0
+    if command == "coldmath-snapshot-summary":
+        snapshot_sleep_seconds_text = str(
+            os.environ.get("COLDMATH_FAKE_SNAPSHOT_SLEEP_SECONDS") or ""
+        ).strip()
+        if snapshot_sleep_seconds_text:
+            try:
+                snapshot_sleep_seconds = max(0.0, float(snapshot_sleep_seconds_text))
+            except ValueError:
+                snapshot_sleep_seconds = 0.0
+            if snapshot_sleep_seconds > 0:
+                time.sleep(snapshot_sleep_seconds)
     if command != "coldmath-snapshot-summary":
         return 0
 
@@ -95,6 +147,7 @@ def _write_env_file(
                 "COLDMATH_LANE_ALERT_DEGRADED_STATUSES=matrix_failed,bootstrap_blocked",
                 f"COLDMATH_LANE_ALERT_DEGRADED_STREAK_THRESHOLD={degraded_streak_threshold}",
                 f"COLDMATH_LANE_ALERT_DEGRADED_STREAK_NOTIFY_EVERY={degraded_streak_notify_every}",
+                "COLDMATH_COVERAGE_VELOCITY_REPORT_ENABLED=1",
             ]
         )
         + "\n",
@@ -102,7 +155,13 @@ def _write_env_file(
     )
 
 
-def _run_hardening_script(*, root: Path, env_file: Path, fake_module_root: Path) -> None:
+def _run_hardening_script(
+    *,
+    root: Path,
+    env_file: Path,
+    fake_module_root: Path,
+    timeout_seconds: float | None = None,
+) -> None:
     script = root / "infra" / "digitalocean" / "run_temperature_coldmath_hardening.sh"
     env = dict(os.environ)
     existing_pythonpath = str(env.get("PYTHONPATH") or "").strip()
@@ -117,6 +176,8 @@ def _run_hardening_script(*, root: Path, env_file: Path, fake_module_root: Path)
         capture_output=True,
         text=True,
         env=env,
+        cwd=str(fake_module_root),
+        timeout=timeout_seconds,
     )
 
 
@@ -134,6 +195,26 @@ def _load_coldmath_hardening_latest(output_dir: Path) -> dict[str, object]:
     payload = json.loads(latest_path.read_text(encoding="utf-8"))
     assert isinstance(payload, dict)
     return payload
+
+
+def _load_hardening_stage(payload: dict[str, object], stage_name: str) -> dict[str, object]:
+    stages = payload.get("stages")
+    assert isinstance(stages, list)
+    stage = next((item for item in stages if isinstance(item, dict) and item.get("stage") == stage_name), None)
+    assert isinstance(stage, dict)
+    return stage
+
+
+def _supports_coldmath_stage_timeouts(root: Path) -> bool:
+    script = root / "infra" / "digitalocean" / "run_temperature_coldmath_hardening.sh"
+    if not script.exists():
+        return False
+    text = script.read_text(encoding="utf-8")
+    return (
+        "COLDMATH_STAGE_TIMEOUT_SECONDS" in text
+        and "COLDMATH_RECOVERY_LOOP_TIMEOUT_SECONDS" in text
+        and "COLDMATH_RECOVERY_CAMPAIGN_TIMEOUT_SECONDS" in text
+    )
 
 
 def test_coldmath_hardening_lane_alert_triggers_on_degraded_streak_threshold(tmp_path: Path) -> None:
@@ -261,6 +342,400 @@ def test_coldmath_hardening_lane_alert_repeats_every_n_degraded_runs(tmp_path: P
     state_payload = json.loads(state_file.read_text(encoding="utf-8"))
     assert state_payload.get("degraded_streak_count") == 4
     assert state_payload.get("last_degraded_streak_notified_count") == 4
+
+
+def test_coldmath_hardening_auto_applies_recovery_recommended_env_by_default(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    state_file = tmp_path / "lane_state.json"
+    fake_module_root = tmp_path / "fake_module_root"
+    _write_fake_betbot_cli(fake_module_root)
+
+    env_file = tmp_path / "coldmath_hardening.env"
+    _write_env_file(
+        env_file=env_file,
+        betbot_root=root,
+        output_dir=output_dir,
+        webhook_url="",
+        state_file=state_file,
+        degraded_streak_threshold=2,
+        degraded_streak_notify_every=2,
+    )
+    with env_file.open("a", encoding="utf-8") as handle:
+        handle.write("COLDMATH_LANE_ALERT_ENABLED=0\n")
+        handle.write("COLDMATH_RECOVERY_ADVISOR_ENABLED=0\n")
+        handle.write("COLDMATH_RECOVERY_CAMPAIGN_ENABLED=0\n")
+        handle.write("COLDMATH_RECOVERY_LOOP_MAX_ITERATIONS=11\n")
+        handle.write("COLDMATH_RECOVERY_LOOP_STALL_ITERATIONS=7\n")
+        handle.write("COLDMATH_RECOVERY_LOOP_MIN_GAP_IMPROVEMENT=0.111\n")
+
+    recommended_env = output_dir / "health" / "kalshi_temperature_recovery_recommended.env"
+    recommended_env.parent.mkdir(parents=True, exist_ok=True)
+    recommended_env.write_text(
+        "\n".join(
+            [
+                "COLDMATH_RECOVERY_LOOP_MAX_ITERATIONS=3",
+                "COLDMATH_RECOVERY_LOOP_STALL_ITERATIONS=2",
+                "COLDMATH_RECOVERY_LOOP_MIN_GAP_IMPROVEMENT=0.0075",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    _run_hardening_script(root=root, env_file=env_file, fake_module_root=fake_module_root)
+
+    invocation_path = output_dir / "health" / "fake_recovery_loop_invocation_latest.json"
+    assert invocation_path.exists()
+    invocation = json.loads(invocation_path.read_text(encoding="utf-8"))
+    assert invocation.get("max_iterations") == "3"
+    assert invocation.get("stall_iterations") == "2"
+    assert invocation.get("min_gap_improvement") == "0.0075"
+
+    log_file = output_dir / "logs" / "coldmath_hardening.log"
+    assert log_file.exists()
+    log_text = log_file.read_text(encoding="utf-8")
+    assert "applied recovery env overrides" in log_text
+
+    payload = _load_coldmath_hardening_latest(output_dir)
+    persistence = payload.get("recovery_env_persistence")
+    assert isinstance(persistence, dict)
+    assert persistence.get("status") == "disabled"
+    assert persistence.get("changed") is False
+    stages = payload.get("stages")
+    assert isinstance(stages, list)
+    persistence_stage = next((item for item in stages if isinstance(item, dict) and item.get("stage") == "recovery_env_persistence"), None)
+    assert isinstance(persistence_stage, dict)
+    assert persistence_stage.get("status") == "skipped"
+
+
+def test_coldmath_hardening_times_out_recovery_loop_stage_without_hanging(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    if not _supports_coldmath_stage_timeouts(root):
+        pytest.xfail("coldmath hardening shell script has not gained stage timeout support yet")
+
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    state_file = tmp_path / "lane_state.json"
+    fake_module_root = tmp_path / "fake_module_root"
+    _write_fake_betbot_cli(fake_module_root)
+
+    env_file = tmp_path / "coldmath_hardening.env"
+    _write_env_file(
+        env_file=env_file,
+        betbot_root=root,
+        output_dir=output_dir,
+        webhook_url="",
+        state_file=state_file,
+        degraded_streak_threshold=2,
+        degraded_streak_notify_every=2,
+    )
+    with env_file.open("a", encoding="utf-8") as handle:
+        handle.write("COLDMATH_LANE_ALERT_ENABLED=0\n")
+        handle.write("COLDMATH_DECISION_MATRIX_ENABLED=0\n")
+        handle.write("COLDMATH_RECOVERY_ADVISOR_ENABLED=0\n")
+        handle.write("COLDMATH_RECOVERY_LOOP_ENABLED=1\n")
+        handle.write("COLDMATH_RECOVERY_CAMPAIGN_ENABLED=0\n")
+        handle.write("COLDMATH_COVERAGE_VELOCITY_REPORT_ENABLED=0\n")
+        handle.write("COLDMATH_STAGE_TIMEOUT_SECONDS=1\n")
+        handle.write("COLDMATH_RECOVERY_LOOP_TIMEOUT_SECONDS=1\n")
+        handle.write("COLDMATH_RECOVERY_CAMPAIGN_TIMEOUT_SECONDS=0\n")
+
+    (fake_module_root / "recovery_loop_sleep.marker").write_text("2.0\n", encoding="utf-8")
+
+    start = time.monotonic()
+    _run_hardening_script(
+        root=root,
+        env_file=env_file,
+        fake_module_root=fake_module_root,
+        timeout_seconds=15,
+    )
+    assert time.monotonic() - start < 15
+
+    payload = _load_coldmath_hardening_latest(output_dir)
+    recovery_loop_stage = _load_hardening_stage(payload, "kalshi_temperature_recovery_loop")
+    assert recovery_loop_stage.get("status") == "timeout"
+    assert recovery_loop_stage.get("exit_code") == 124
+
+
+def test_coldmath_hardening_runs_recovery_loop_normally_when_timeouts_disabled(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    state_file = tmp_path / "lane_state.json"
+    fake_module_root = tmp_path / "fake_module_root"
+    _write_fake_betbot_cli(fake_module_root)
+
+    env_file = tmp_path / "coldmath_hardening.env"
+    _write_env_file(
+        env_file=env_file,
+        betbot_root=root,
+        output_dir=output_dir,
+        webhook_url="",
+        state_file=state_file,
+        degraded_streak_threshold=2,
+        degraded_streak_notify_every=2,
+    )
+    with env_file.open("a", encoding="utf-8") as handle:
+        handle.write("COLDMATH_LANE_ALERT_ENABLED=0\n")
+        handle.write("COLDMATH_DECISION_MATRIX_ENABLED=0\n")
+        handle.write("COLDMATH_RECOVERY_ADVISOR_ENABLED=0\n")
+        handle.write("COLDMATH_RECOVERY_LOOP_ENABLED=1\n")
+        handle.write("COLDMATH_RECOVERY_CAMPAIGN_ENABLED=0\n")
+        handle.write("COLDMATH_COVERAGE_VELOCITY_REPORT_ENABLED=0\n")
+        handle.write("COLDMATH_STAGE_TIMEOUT_SECONDS=0\n")
+        handle.write("COLDMATH_RECOVERY_LOOP_TIMEOUT_SECONDS=0\n")
+        handle.write("COLDMATH_RECOVERY_CAMPAIGN_TIMEOUT_SECONDS=0\n")
+
+    (fake_module_root / "recovery_loop_sleep.marker").write_text("0.2\n", encoding="utf-8")
+
+    _run_hardening_script(
+        root=root,
+        env_file=env_file,
+        fake_module_root=fake_module_root,
+        timeout_seconds=15,
+    )
+
+    payload = _load_coldmath_hardening_latest(output_dir)
+    recovery_loop_stage = _load_hardening_stage(payload, "kalshi_temperature_recovery_loop")
+    assert recovery_loop_stage.get("status") == "ok"
+    assert recovery_loop_stage.get("exit_code") == 0
+
+
+def test_coldmath_hardening_times_out_required_snapshot_stage_and_fails_fast(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    if not _supports_coldmath_stage_timeouts(root):
+        pytest.xfail("coldmath hardening shell script has not gained stage timeout support yet")
+
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    state_file = tmp_path / "lane_state.json"
+    fake_module_root = tmp_path / "fake_module_root"
+    _write_fake_betbot_cli(fake_module_root)
+
+    env_file = tmp_path / "coldmath_hardening.env"
+    _write_env_file(
+        env_file=env_file,
+        betbot_root=root,
+        output_dir=output_dir,
+        webhook_url="",
+        state_file=state_file,
+        degraded_streak_threshold=2,
+        degraded_streak_notify_every=2,
+    )
+    with env_file.open("a", encoding="utf-8") as handle:
+        handle.write("COLDMATH_LANE_ALERT_ENABLED=0\n")
+        handle.write("COLDMATH_SNAPSHOT_TIMEOUT_SECONDS=1\n")
+        handle.write("COLDMATH_STAGE_TIMEOUT_SECONDS=0\n")
+
+    previous_fake_snapshot_sleep = os.environ.get("COLDMATH_FAKE_SNAPSHOT_SLEEP_SECONDS")
+    os.environ["COLDMATH_FAKE_SNAPSHOT_SLEEP_SECONDS"] = "2.0"
+    start = time.monotonic()
+    try:
+        with pytest.raises(subprocess.CalledProcessError) as exc_info:
+            _run_hardening_script(
+                root=root,
+                env_file=env_file,
+                fake_module_root=fake_module_root,
+                timeout_seconds=15,
+            )
+    finally:
+        if previous_fake_snapshot_sleep is None:
+            os.environ.pop("COLDMATH_FAKE_SNAPSHOT_SLEEP_SECONDS", None)
+        else:
+            os.environ["COLDMATH_FAKE_SNAPSHOT_SLEEP_SECONDS"] = previous_fake_snapshot_sleep
+    elapsed_seconds = time.monotonic() - start
+    assert elapsed_seconds < 15
+    assert int(exc_info.value.returncode) == 124
+
+    log_file = output_dir / "logs" / "coldmath_hardening.log"
+    assert log_file.exists()
+    log_text = log_file.read_text(encoding="utf-8")
+    assert "stage timeout after 1s" in log_text
+    assert "coldmath-snapshot-summary" in log_text
+
+
+def test_coldmath_hardening_runs_coverage_velocity_report_stage_when_enabled(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    state_file = tmp_path / "lane_state.json"
+    fake_module_root = tmp_path / "fake_module_root"
+    _write_fake_betbot_cli(fake_module_root)
+
+    env_file = tmp_path / "coldmath_hardening.env"
+    _write_env_file(
+        env_file=env_file,
+        betbot_root=root,
+        output_dir=output_dir,
+        webhook_url="",
+        state_file=state_file,
+        degraded_streak_threshold=2,
+        degraded_streak_notify_every=2,
+    )
+    with env_file.open("a", encoding="utf-8") as handle:
+        handle.write("COLDMATH_LANE_ALERT_ENABLED=0\n")
+        handle.write("COLDMATH_DECISION_MATRIX_ENABLED=0\n")
+        handle.write("COLDMATH_RECOVERY_ADVISOR_ENABLED=0\n")
+        handle.write("COLDMATH_RECOVERY_LOOP_ENABLED=0\n")
+        handle.write("COLDMATH_RECOVERY_CAMPAIGN_ENABLED=0\n")
+        handle.write("COLDMATH_COVERAGE_VELOCITY_REPORT_ENABLED=1\n")
+
+    _run_hardening_script(root=root, env_file=env_file, fake_module_root=fake_module_root)
+
+    payload = _load_coldmath_hardening_latest(output_dir)
+    stages = payload.get("stages")
+    assert isinstance(stages, list)
+    coverage_stage = next((item for item in stages if isinstance(item, dict) and item.get("stage") == "coverage_velocity_report"), None)
+    assert isinstance(coverage_stage, dict)
+    assert coverage_stage.get("status") == "ok"
+    campaign_stage_index = next(
+        index
+        for index, item in enumerate(stages)
+        if isinstance(item, dict) and item.get("stage") == "kalshi_temperature_recovery_campaign"
+    )
+    coverage_stage_index = next(
+        index
+        for index, item in enumerate(stages)
+        if isinstance(item, dict) and item.get("stage") == "coverage_velocity_report"
+    )
+    persistence_stage_index = next(
+        index
+        for index, item in enumerate(stages)
+        if isinstance(item, dict) and item.get("stage") == "recovery_env_persistence"
+    )
+    assert campaign_stage_index < coverage_stage_index < persistence_stage_index
+
+
+def test_coldmath_hardening_skips_coverage_velocity_report_stage_when_disabled(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    state_file = tmp_path / "lane_state.json"
+    fake_module_root = tmp_path / "fake_module_root"
+    _write_fake_betbot_cli(fake_module_root)
+
+    env_file = tmp_path / "coldmath_hardening.env"
+    _write_env_file(
+        env_file=env_file,
+        betbot_root=root,
+        output_dir=output_dir,
+        webhook_url="",
+        state_file=state_file,
+        degraded_streak_threshold=2,
+        degraded_streak_notify_every=2,
+    )
+    with env_file.open("a", encoding="utf-8") as handle:
+        handle.write("COLDMATH_LANE_ALERT_ENABLED=0\n")
+        handle.write("COLDMATH_DECISION_MATRIX_ENABLED=0\n")
+        handle.write("COLDMATH_RECOVERY_ADVISOR_ENABLED=0\n")
+        handle.write("COLDMATH_RECOVERY_LOOP_ENABLED=0\n")
+        handle.write("COLDMATH_RECOVERY_CAMPAIGN_ENABLED=0\n")
+        handle.write("COLDMATH_COVERAGE_VELOCITY_REPORT_ENABLED=0\n")
+
+    _run_hardening_script(root=root, env_file=env_file, fake_module_root=fake_module_root)
+
+    payload = _load_coldmath_hardening_latest(output_dir)
+    stages = payload.get("stages")
+    assert isinstance(stages, list)
+    coverage_stage = next((item for item in stages if isinstance(item, dict) and item.get("stage") == "coverage_velocity_report"), None)
+    assert isinstance(coverage_stage, dict)
+    assert coverage_stage.get("status") == "skipped"
+
+
+def test_coldmath_hardening_persists_recovery_recommended_env_when_enabled(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    state_file = tmp_path / "lane_state.json"
+    fake_module_root = tmp_path / "fake_module_root"
+    _write_fake_betbot_cli(fake_module_root)
+
+    runtime_target_env = tmp_path / "runtime.env"
+    runtime_target_env.write_text(
+        "\n".join(
+            [
+                "UNCHANGED_SETTING=keep_me",
+                "COLDMATH_RECOVERY_LOOP_MAX_ITERATIONS=11",
+                "COLDMATH_RECOVERY_LOOP_STALL_ITERATIONS=7",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    persist_backup_dir = tmp_path / "persist_backups"
+
+    env_file = tmp_path / "coldmath_hardening.env"
+    _write_env_file(
+        env_file=env_file,
+        betbot_root=root,
+        output_dir=output_dir,
+        webhook_url="",
+        state_file=state_file,
+        degraded_streak_threshold=2,
+        degraded_streak_notify_every=2,
+    )
+    with env_file.open("a", encoding="utf-8") as handle:
+        handle.write("COLDMATH_LANE_ALERT_ENABLED=0\n")
+        handle.write("COLDMATH_RECOVERY_ADVISOR_ENABLED=0\n")
+        handle.write("COLDMATH_RECOVERY_LOOP_ENABLED=0\n")
+        handle.write("COLDMATH_RECOVERY_CAMPAIGN_ENABLED=0\n")
+        handle.write("COLDMATH_RECOVERY_AUTO_APPLY_RECOMMENDED_ENV=0\n")
+        handle.write("COLDMATH_RECOVERY_PERSIST_RECOMMENDED_ENV=1\n")
+        handle.write(f"COLDMATH_RECOVERY_PERSIST_TARGET_ENV_FILE={runtime_target_env}\n")
+        handle.write(f"COLDMATH_RECOVERY_PERSIST_BACKUP_DIR={persist_backup_dir}\n")
+
+    recommended_env = output_dir / "health" / "kalshi_temperature_recovery_recommended.env"
+    recommended_env.parent.mkdir(parents=True, exist_ok=True)
+    recommended_env.write_text(
+        "\n".join(
+            [
+                "COLDMATH_RECOVERY_LOOP_MAX_ITERATIONS=3",
+                "COLDMATH_RECOVERY_LOOP_STALL_ITERATIONS=2",
+                "COLDMATH_RECOVERY_ADVISOR_OPTIMIZER_TOP_N=8",
+                "NOT_ALLOWED_KEY=123",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    _run_hardening_script(root=root, env_file=env_file, fake_module_root=fake_module_root)
+
+    runtime_text = runtime_target_env.read_text(encoding="utf-8")
+    assert "UNCHANGED_SETTING=keep_me" in runtime_text
+    assert "COLDMATH_RECOVERY_LOOP_MAX_ITERATIONS=3" in runtime_text
+    assert "COLDMATH_RECOVERY_LOOP_STALL_ITERATIONS=2" in runtime_text
+    assert "COLDMATH_RECOVERY_ADVISOR_OPTIMIZER_TOP_N=8" in runtime_text
+    assert "NOT_ALLOWED_KEY=123" not in runtime_text
+
+    backups = sorted(persist_backup_dir.glob("runtime.env.*.bak"))
+    assert backups
+    backup_text = backups[-1].read_text(encoding="utf-8")
+    assert "COLDMATH_RECOVERY_LOOP_MAX_ITERATIONS=11" in backup_text
+    assert "COLDMATH_RECOVERY_LOOP_STALL_ITERATIONS=7" in backup_text
+
+    log_file = output_dir / "logs" / "coldmath_hardening.log"
+    assert log_file.exists()
+    log_text = log_file.read_text(encoding="utf-8")
+    assert "persisted recovery env overrides" in log_text
+
+    payload = _load_coldmath_hardening_latest(output_dir)
+    persistence = payload.get("recovery_env_persistence")
+    assert isinstance(persistence, dict)
+    assert persistence.get("status") == "persisted"
+    assert persistence.get("changed") is True
+    assert persistence.get("updated_count") == 3
+    assert persistence.get("replaced_count") == 2
+    assert persistence.get("added_count") == 1
+    assert str(persistence.get("target_file") or "") == str(runtime_target_env)
+    assert str(persistence.get("backup_file") or "").endswith(".bak")
+    stages = payload.get("stages")
+    assert isinstance(stages, list)
+    persistence_stage = next((item for item in stages if isinstance(item, dict) and item.get("stage") == "recovery_env_persistence"), None)
+    assert isinstance(persistence_stage, dict)
+    assert persistence_stage.get("status") == "ok"
 
 
 def test_coldmath_hardening_sets_bootstrap_lane_when_strict_signal_is_off(tmp_path: Path) -> None:

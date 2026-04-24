@@ -132,6 +132,45 @@ COLDMATH_DECISION_MATRIX_MAX_TOP_BLOCKER_SHARE="${COLDMATH_DECISION_MATRIX_MAX_T
 COLDMATH_DECISION_MATRIX_MIN_APPROVAL_RATE="${COLDMATH_DECISION_MATRIX_MIN_APPROVAL_RATE:-0.03}"
 COLDMATH_DECISION_MATRIX_MIN_INTENTS_SAMPLE="${COLDMATH_DECISION_MATRIX_MIN_INTENTS_SAMPLE:-1000}"
 COLDMATH_DECISION_MATRIX_MAX_SPARSE_EDGE_BLOCK_SHARE="${COLDMATH_DECISION_MATRIX_MAX_SPARSE_EDGE_BLOCK_SHARE:-0.80}"
+COLDMATH_COVERAGE_VELOCITY_REPORT_ENABLED="${COLDMATH_COVERAGE_VELOCITY_REPORT_ENABLED:-1}"
+COLDMATH_COVERAGE_VELOCITY_REPORT_HISTORY_LIMIT="${COLDMATH_COVERAGE_VELOCITY_REPORT_HISTORY_LIMIT:-24}"
+COLDMATH_RECOVERY_ADVISOR_ENABLED="${COLDMATH_RECOVERY_ADVISOR_ENABLED:-1}"
+COLDMATH_RECOVERY_ADVISOR_WEATHER_WINDOW_HOURS="${COLDMATH_RECOVERY_ADVISOR_WEATHER_WINDOW_HOURS:-720.0}"
+COLDMATH_RECOVERY_ADVISOR_WEATHER_MIN_BUCKET_SAMPLES="${COLDMATH_RECOVERY_ADVISOR_WEATHER_MIN_BUCKET_SAMPLES:-10}"
+COLDMATH_RECOVERY_ADVISOR_WEATHER_MAX_PROFILE_AGE_HOURS="${COLDMATH_RECOVERY_ADVISOR_WEATHER_MAX_PROFILE_AGE_HOURS:-336.0}"
+COLDMATH_RECOVERY_ADVISOR_WEATHER_NEGATIVE_EXPECTANCY_ATTEMPT_SHARE_TARGET="${COLDMATH_RECOVERY_ADVISOR_WEATHER_NEGATIVE_EXPECTANCY_ATTEMPT_SHARE_TARGET:-0.50}"
+COLDMATH_RECOVERY_ADVISOR_WEATHER_STALE_METAR_NEGATIVE_ATTEMPT_SHARE_TARGET="${COLDMATH_RECOVERY_ADVISOR_WEATHER_STALE_METAR_NEGATIVE_ATTEMPT_SHARE_TARGET:-0.60}"
+COLDMATH_RECOVERY_ADVISOR_WEATHER_STALE_METAR_ATTEMPT_SHARE_TARGET="${COLDMATH_RECOVERY_ADVISOR_WEATHER_STALE_METAR_ATTEMPT_SHARE_TARGET:-0.65}"
+COLDMATH_RECOVERY_ADVISOR_WEATHER_MIN_ATTEMPTS_TARGET="${COLDMATH_RECOVERY_ADVISOR_WEATHER_MIN_ATTEMPTS_TARGET:-200}"
+COLDMATH_RECOVERY_ADVISOR_OPTIMIZER_TOP_N="${COLDMATH_RECOVERY_ADVISOR_OPTIMIZER_TOP_N:-5}"
+COLDMATH_RECOVERY_LOOP_ENABLED="${COLDMATH_RECOVERY_LOOP_ENABLED:-1}"
+COLDMATH_RECOVERY_LOOP_MAX_ITERATIONS="${COLDMATH_RECOVERY_LOOP_MAX_ITERATIONS:-4}"
+COLDMATH_RECOVERY_LOOP_STALL_ITERATIONS="${COLDMATH_RECOVERY_LOOP_STALL_ITERATIONS:-2}"
+COLDMATH_RECOVERY_LOOP_MIN_GAP_IMPROVEMENT="${COLDMATH_RECOVERY_LOOP_MIN_GAP_IMPROVEMENT:-0.01}"
+COLDMATH_RECOVERY_LOOP_EXECUTE_ACTIONS="${COLDMATH_RECOVERY_LOOP_EXECUTE_ACTIONS:-1}"
+COLDMATH_RECOVERY_LOOP_PLATEAU_NEGATIVE_REGIME_SUPPRESSION_ENABLED="${COLDMATH_RECOVERY_LOOP_PLATEAU_NEGATIVE_REGIME_SUPPRESSION_ENABLED:-1}"
+COLDMATH_RECOVERY_LOOP_PLATEAU_NEGATIVE_REGIME_SUPPRESSION_MIN_BUCKET_SAMPLES="${COLDMATH_RECOVERY_LOOP_PLATEAU_NEGATIVE_REGIME_SUPPRESSION_MIN_BUCKET_SAMPLES:-18}"
+COLDMATH_RECOVERY_LOOP_PLATEAU_NEGATIVE_REGIME_SUPPRESSION_EXPECTANCY_THRESHOLD="${COLDMATH_RECOVERY_LOOP_PLATEAU_NEGATIVE_REGIME_SUPPRESSION_EXPECTANCY_THRESHOLD:--0.06}"
+COLDMATH_RECOVERY_LOOP_PLATEAU_NEGATIVE_REGIME_SUPPRESSION_TOP_N="${COLDMATH_RECOVERY_LOOP_PLATEAU_NEGATIVE_REGIME_SUPPRESSION_TOP_N:-10}"
+COLDMATH_RECOVERY_LOOP_RETUNE_WEATHER_WINDOW_HOURS_CAP="${COLDMATH_RECOVERY_LOOP_RETUNE_WEATHER_WINDOW_HOURS_CAP:-336}"
+COLDMATH_RECOVERY_LOOP_RETUNE_OVERBLOCKING_BLOCKED_SHARE_THRESHOLD="${COLDMATH_RECOVERY_LOOP_RETUNE_OVERBLOCKING_BLOCKED_SHARE_THRESHOLD:-0.25}"
+COLDMATH_RECOVERY_LOOP_RETUNE_UNDERBLOCKING_MIN_TOP_N="${COLDMATH_RECOVERY_LOOP_RETUNE_UNDERBLOCKING_MIN_TOP_N:-16}"
+COLDMATH_RECOVERY_LOOP_RETUNE_OVERBLOCKING_MAX_TOP_N="${COLDMATH_RECOVERY_LOOP_RETUNE_OVERBLOCKING_MAX_TOP_N:-4}"
+COLDMATH_RECOVERY_LOOP_RETUNE_MIN_BUCKET_SAMPLES_TARGET="${COLDMATH_RECOVERY_LOOP_RETUNE_MIN_BUCKET_SAMPLES_TARGET:-14}"
+COLDMATH_RECOVERY_LOOP_RETUNE_EXPECTANCY_THRESHOLD_TARGET="${COLDMATH_RECOVERY_LOOP_RETUNE_EXPECTANCY_THRESHOLD_TARGET:--0.045}"
+COLDMATH_STAGE_TIMEOUT_SECONDS="${COLDMATH_STAGE_TIMEOUT_SECONDS:-0}"
+COLDMATH_SNAPSHOT_TIMEOUT_SECONDS="${COLDMATH_SNAPSHOT_TIMEOUT_SECONDS:-$COLDMATH_STAGE_TIMEOUT_SECONDS}"
+COLDMATH_MARKET_INGEST_TIMEOUT_SECONDS="${COLDMATH_MARKET_INGEST_TIMEOUT_SECONDS:-$COLDMATH_STAGE_TIMEOUT_SECONDS}"
+COLDMATH_RECOVERY_ADVISOR_TIMEOUT_SECONDS="${COLDMATH_RECOVERY_ADVISOR_TIMEOUT_SECONDS:-$COLDMATH_STAGE_TIMEOUT_SECONDS}"
+COLDMATH_RECOVERY_LOOP_TIMEOUT_SECONDS="${COLDMATH_RECOVERY_LOOP_TIMEOUT_SECONDS:-$COLDMATH_STAGE_TIMEOUT_SECONDS}"
+COLDMATH_RECOVERY_CAMPAIGN_TIMEOUT_SECONDS="${COLDMATH_RECOVERY_CAMPAIGN_TIMEOUT_SECONDS:-$COLDMATH_STAGE_TIMEOUT_SECONDS}"
+COLDMATH_RECOVERY_CAMPAIGN_ENABLED="${COLDMATH_RECOVERY_CAMPAIGN_ENABLED:-1}"
+COLDMATH_RECOVERY_CAMPAIGN_EXECUTE_ACTIONS="${COLDMATH_RECOVERY_CAMPAIGN_EXECUTE_ACTIONS:-1}"
+COLDMATH_RECOVERY_AUTO_APPLY_RECOMMENDED_ENV="${COLDMATH_RECOVERY_AUTO_APPLY_RECOMMENDED_ENV:-1}"
+COLDMATH_RECOVERY_RECOMMENDED_ENV_FILE="${COLDMATH_RECOVERY_RECOMMENDED_ENV_FILE:-$COLDMATH_OUTPUT_DIR/health/kalshi_temperature_recovery_recommended.env}"
+COLDMATH_RECOVERY_PERSIST_RECOMMENDED_ENV="${COLDMATH_RECOVERY_PERSIST_RECOMMENDED_ENV:-0}"
+COLDMATH_RECOVERY_PERSIST_TARGET_ENV_FILE="${COLDMATH_RECOVERY_PERSIST_TARGET_ENV_FILE:-$ENV_FILE}"
+COLDMATH_RECOVERY_PERSIST_BACKUP_DIR="${COLDMATH_RECOVERY_PERSIST_BACKUP_DIR:-$COLDMATH_OUTPUT_DIR/health/recovery_env_backups}"
 COLDMATH_HARDENING_FAIL_ON_NOISE="${COLDMATH_HARDENING_FAIL_ON_NOISE:-0}"
 COLDMATH_ACTIONABLE_MIN_POSITIONS_ROWS="${COLDMATH_ACTIONABLE_MIN_POSITIONS_ROWS:-100}"
 COLDMATH_ACTIONABLE_MIN_CANDIDATES="${COLDMATH_ACTIONABLE_MIN_CANDIDATES:-4}"
@@ -159,24 +198,105 @@ COLDMATH_LANE_ALERT_DEGRADED_STREAK_THRESHOLD="${COLDMATH_LANE_ALERT_DEGRADED_ST
 COLDMATH_LANE_ALERT_DEGRADED_STREAK_NOTIFY_EVERY="${COLDMATH_LANE_ALERT_DEGRADED_STREAK_NOTIFY_EVERY:-3}"
 COLDMATH_LANE_ALERT_TARGET_URL="$(build_discord_target_url "$COLDMATH_LANE_ALERT_WEBHOOK_URL" "$COLDMATH_LANE_ALERT_WEBHOOK_THREAD_ID")"
 
+if [[ "$COLDMATH_RECOVERY_AUTO_APPLY_RECOMMENDED_ENV" == "1" ]]; then
+  if [[ -f "$COLDMATH_RECOVERY_RECOMMENDED_ENV_FILE" ]]; then
+    RECOVERY_RECOMMENDED_APPLIED_COUNT=0
+    while IFS= read -r RECOVERY_RECOMMENDED_LINE || [[ -n "$RECOVERY_RECOMMENDED_LINE" ]]; do
+      RECOVERY_RECOMMENDED_LINE="${RECOVERY_RECOMMENDED_LINE%$'\r'}"
+      if [[ -z "$RECOVERY_RECOMMENDED_LINE" || "$RECOVERY_RECOMMENDED_LINE" == \#* ]]; then
+        continue
+      fi
+      if [[ "$RECOVERY_RECOMMENDED_LINE" != *=* ]]; then
+        continue
+      fi
+      RECOVERY_RECOMMENDED_KEY="${RECOVERY_RECOMMENDED_LINE%%=*}"
+      RECOVERY_RECOMMENDED_VALUE="${RECOVERY_RECOMMENDED_LINE#*=}"
+      if [[ "$RECOVERY_RECOMMENDED_KEY" == export\ * ]]; then
+        RECOVERY_RECOMMENDED_KEY="${RECOVERY_RECOMMENDED_KEY#export }"
+      fi
+      if [[ ! "$RECOVERY_RECOMMENDED_KEY" =~ ^[A-Z0-9_]+$ ]]; then
+        continue
+      fi
+      if [[ "$RECOVERY_RECOMMENDED_KEY" != COLDMATH_RECOVERY_* && "$RECOVERY_RECOMMENDED_KEY" != COLDMATH_RECOVERY_ADVISOR_* ]]; then
+        continue
+      fi
+      printf -v "$RECOVERY_RECOMMENDED_KEY" "%s" "$RECOVERY_RECOMMENDED_VALUE"
+      RECOVERY_RECOMMENDED_APPLIED_COUNT=$((RECOVERY_RECOMMENDED_APPLIED_COUNT + 1))
+    done < "$COLDMATH_RECOVERY_RECOMMENDED_ENV_FILE"
+    echo "[$(timestamp_utc)] coldmath hardening applied recovery env overrides: count=$RECOVERY_RECOMMENDED_APPLIED_COUNT file=$COLDMATH_RECOVERY_RECOMMENDED_ENV_FILE" >> "$LOG_FILE"
+  else
+    echo "[$(timestamp_utc)] coldmath hardening recovery env overrides missing: file=$COLDMATH_RECOVERY_RECOMMENDED_ENV_FILE" >> "$LOG_FILE"
+  fi
+fi
+
 RUN_ID="$(date -u +"%Y%m%d_%H%M%S")_$$"
 RUN_START_EPOCH="$(date +%s)"
 
 STAGE_ROWS=()
 OVERALL_STATUS="ready"
+RECOVERY_ENV_PERSISTENCE_STATUS="disabled"
+RECOVERY_ENV_PERSISTENCE_CHANGED="0"
+RECOVERY_ENV_PERSISTENCE_UPDATED_COUNT="0"
+RECOVERY_ENV_PERSISTENCE_REPLACED_COUNT="0"
+RECOVERY_ENV_PERSISTENCE_ADDED_COUNT="0"
+RECOVERY_ENV_PERSISTENCE_BACKUP_FILE=""
+RECOVERY_ENV_PERSISTENCE_TARGET_FILE="$COLDMATH_RECOVERY_PERSIST_TARGET_ENV_FILE"
+RECOVERY_ENV_PERSISTENCE_ERROR=""
 
-run_stage() {
+run_stage_command() {
+  local timeout_seconds="${1:-0}"
+  shift
+  if [[ "$timeout_seconds" == "0" || "$timeout_seconds" == "0.0" || -z "$timeout_seconds" ]]; then
+    "$@" >> "$LOG_FILE" 2>&1
+    return $?
+  fi
+
+  "$PYTHON_BIN" - "$timeout_seconds" "$LOG_FILE" "$@" <<'PY'
+from __future__ import annotations
+
+import subprocess
+import sys
+from pathlib import Path
+
+
+def main() -> int:
+    timeout_seconds = float(sys.argv[1])
+    log_file = Path(sys.argv[2])
+    cmd = sys.argv[3:]
+    with log_file.open("ab") as log:
+        try:
+            completed = subprocess.run(cmd, stdout=log, stderr=log, timeout=timeout_seconds, check=False)
+        except subprocess.TimeoutExpired:
+            log.write(f"[coldmath_hardening] stage timeout after {timeout_seconds:g}s: {' '.join(cmd)}\n".encode("utf-8"))
+            return 124
+        except Exception as exc:
+            log.write(f"[coldmath_hardening] stage runner error: {type(exc).__name__}: {exc}\n".encode("utf-8"))
+            return 1
+    return int(completed.returncode)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+PY
+}
+
+run_stage_impl() {
   local required="$1"
   local stage_name="$2"
-  shift 2
+  local timeout_seconds="${3:-0}"
+  shift 3
   local stage_start stage_end stage_duration rc status
   stage_start="$(date +%s)"
   rc=0
-  if "$@" >> "$LOG_FILE" 2>&1; then
+  if run_stage_command "$timeout_seconds" "$@"; then
     status="ok"
   else
     rc=$?
-    status="error"
+    if [[ "$rc" -eq 124 && "$timeout_seconds" != "0" && "$timeout_seconds" != "0.0" && -n "$timeout_seconds" ]]; then
+      status="timeout"
+    else
+      status="error"
+    fi
   fi
   stage_end="$(date +%s)"
   stage_duration=$(( stage_end - stage_start ))
@@ -188,6 +308,250 @@ run_stage() {
       return "$rc"
     fi
   fi
+  return 0
+}
+
+run_stage() {
+  run_stage_impl "$1" "$2" 0 "${@:3}"
+}
+
+run_stage_with_timeout() {
+  run_stage_impl "$1" "$2" "$3" "${@:4}"
+}
+
+persist_recovery_recommended_env() {
+  local stage_start stage_end stage_duration stage_status stage_exit_code
+  stage_start="$(date +%s)"
+  stage_status="ok"
+  stage_exit_code=0
+
+  RECOVERY_ENV_PERSISTENCE_STATUS="disabled"
+  RECOVERY_ENV_PERSISTENCE_CHANGED="0"
+  RECOVERY_ENV_PERSISTENCE_UPDATED_COUNT="0"
+  RECOVERY_ENV_PERSISTENCE_REPLACED_COUNT="0"
+  RECOVERY_ENV_PERSISTENCE_ADDED_COUNT="0"
+  RECOVERY_ENV_PERSISTENCE_BACKUP_FILE=""
+  RECOVERY_ENV_PERSISTENCE_TARGET_FILE="$COLDMATH_RECOVERY_PERSIST_TARGET_ENV_FILE"
+  RECOVERY_ENV_PERSISTENCE_ERROR=""
+
+  if [[ "$COLDMATH_RECOVERY_PERSIST_RECOMMENDED_ENV" != "1" ]]; then
+    stage_status="skipped"
+  elif [[ ! -f "$COLDMATH_RECOVERY_RECOMMENDED_ENV_FILE" ]]; then
+    RECOVERY_ENV_PERSISTENCE_STATUS="recommended_file_missing"
+    stage_status="skipped"
+    echo "[$(timestamp_utc)] coldmath hardening recovery env persistence skipped: recommended file missing file=$COLDMATH_RECOVERY_RECOMMENDED_ENV_FILE" >> "$LOG_FILE"
+  else
+    local persist_output persist_status persist_changed persist_updated_count persist_replaced_count persist_added_count persist_backup_file persist_target_file persist_error
+    if ! persist_output="$("$PYTHON_BIN" - "$COLDMATH_RECOVERY_RECOMMENDED_ENV_FILE" "$COLDMATH_RECOVERY_PERSIST_TARGET_ENV_FILE" "$COLDMATH_RECOVERY_PERSIST_BACKUP_DIR" <<'PY'
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from pathlib import Path
+import re
+import shutil
+import sys
+
+
+_KEY_RE = re.compile(r"^[A-Z0-9_]+$")
+
+
+def _parse_updates(path: Path) -> dict[str, str]:
+    updates: dict[str, str] = {}
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.rstrip("\r").strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[7:].lstrip()
+        if "=" not in line:
+            continue
+        key_raw, value_raw = line.split("=", 1)
+        key = key_raw.strip()
+        if not _KEY_RE.fullmatch(key):
+            continue
+        if not (key.startswith("COLDMATH_RECOVERY_") or key.startswith("COLDMATH_RECOVERY_ADVISOR_")):
+            continue
+        updates[key] = value_raw.strip()
+    return updates
+
+
+def _parse_assignment_key(line: str) -> str:
+    text = line.strip()
+    if not text or text.startswith("#"):
+        return ""
+    if text.startswith("export "):
+        text = text[7:].lstrip()
+    if "=" not in text:
+        return ""
+    key_raw, _ = text.split("=", 1)
+    key = key_raw.strip()
+    if not _KEY_RE.fullmatch(key):
+        return ""
+    return key
+
+
+def _emit(*, status: str, changed: bool, updated_count: int, replaced_count: int, added_count: int, backup_file: str, target_file: str, error: str) -> None:
+    print(f"STATUS={status}")
+    print(f"CHANGED={1 if changed else 0}")
+    print(f"UPDATED_COUNT={max(0, int(updated_count))}")
+    print(f"REPLACED_COUNT={max(0, int(replaced_count))}")
+    print(f"ADDED_COUNT={max(0, int(added_count))}")
+    print(f"BACKUP_FILE={backup_file}")
+    print(f"TARGET_FILE={target_file}")
+    print(f"ERROR={error}")
+
+
+def main() -> int:
+    recommended_file = Path(sys.argv[1])
+    target_file = Path(sys.argv[2])
+    backup_dir = Path(sys.argv[3])
+
+    try:
+        updates = _parse_updates(recommended_file)
+        if not updates:
+            _emit(
+                status="ready",
+                changed=False,
+                updated_count=0,
+                replaced_count=0,
+                added_count=0,
+                backup_file="",
+                target_file=str(target_file),
+                error="",
+            )
+            return 0
+
+        if not target_file.exists():
+            _emit(
+                status="error",
+                changed=False,
+                updated_count=0,
+                replaced_count=0,
+                added_count=0,
+                backup_file="",
+                target_file=str(target_file),
+                error=f"Target env file not found: {target_file}",
+            )
+            return 0
+
+        original_text = target_file.read_text(encoding="utf-8")
+        original_norm = original_text if original_text.endswith("\n") or original_text == "" else original_text + "\n"
+        lines = original_norm.splitlines(keepends=True)
+
+        replaced_count = 0
+        added_count = 0
+        seen_keys: set[str] = set()
+        rendered_lines: list[str] = []
+        for line in lines:
+            key = _parse_assignment_key(line)
+            if key and key in updates:
+                rendered_lines.append(f"{key}={updates[key]}\n")
+                replaced_count += 1
+                seen_keys.add(key)
+            else:
+                rendered_lines.append(line)
+
+        for key, value in updates.items():
+            if key in seen_keys:
+                continue
+            rendered_lines.append(f"{key}={value}\n")
+            added_count += 1
+
+        rendered_text = "".join(rendered_lines)
+        changed = rendered_text != original_norm
+        backup_file = ""
+        if changed:
+            backup_dir.mkdir(parents=True, exist_ok=True)
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+            backup_path = backup_dir / f"{target_file.name}.{stamp}.bak"
+            shutil.copy2(target_file, backup_path)
+            target_file.write_text(rendered_text, encoding="utf-8")
+            backup_file = str(backup_path)
+
+        _emit(
+            status="ready",
+            changed=changed,
+            updated_count=len(updates),
+            replaced_count=replaced_count,
+            added_count=added_count,
+            backup_file=backup_file,
+            target_file=str(target_file),
+            error="",
+        )
+        return 0
+    except Exception as exc:
+        _emit(
+            status="error",
+            changed=False,
+            updated_count=0,
+            replaced_count=0,
+            added_count=0,
+            backup_file="",
+            target_file=str(target_file),
+            error=f"{type(exc).__name__}: {exc}",
+        )
+        return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+PY
+)"; then
+      RECOVERY_ENV_PERSISTENCE_STATUS="execution_failed"
+      RECOVERY_ENV_PERSISTENCE_ERROR="python_invocation_failed"
+      stage_status="error"
+      stage_exit_code=1
+      OVERALL_STATUS="partial"
+      echo "[$(timestamp_utc)] coldmath hardening recovery env persistence failed: target=$COLDMATH_RECOVERY_PERSIST_TARGET_ENV_FILE file=$COLDMATH_RECOVERY_RECOMMENDED_ENV_FILE" >> "$LOG_FILE"
+    else
+      persist_status="unknown"
+      persist_changed="0"
+      persist_updated_count="0"
+      persist_replaced_count="0"
+      persist_added_count="0"
+      persist_backup_file=""
+      persist_target_file="$COLDMATH_RECOVERY_PERSIST_TARGET_ENV_FILE"
+      persist_error=""
+      while IFS='=' read -r key value; do
+        case "$key" in
+          STATUS) persist_status="$value" ;;
+          CHANGED) persist_changed="$value" ;;
+          UPDATED_COUNT) persist_updated_count="$value" ;;
+          REPLACED_COUNT) persist_replaced_count="$value" ;;
+          ADDED_COUNT) persist_added_count="$value" ;;
+          BACKUP_FILE) persist_backup_file="$value" ;;
+          TARGET_FILE) persist_target_file="$value" ;;
+          ERROR) persist_error="$value" ;;
+        esac
+      done <<< "$persist_output"
+
+      RECOVERY_ENV_PERSISTENCE_CHANGED="$persist_changed"
+      RECOVERY_ENV_PERSISTENCE_UPDATED_COUNT="$persist_updated_count"
+      RECOVERY_ENV_PERSISTENCE_REPLACED_COUNT="$persist_replaced_count"
+      RECOVERY_ENV_PERSISTENCE_ADDED_COUNT="$persist_added_count"
+      RECOVERY_ENV_PERSISTENCE_BACKUP_FILE="$persist_backup_file"
+      RECOVERY_ENV_PERSISTENCE_TARGET_FILE="$persist_target_file"
+      RECOVERY_ENV_PERSISTENCE_ERROR="$persist_error"
+
+      if [[ "$persist_status" != "ready" ]]; then
+        RECOVERY_ENV_PERSISTENCE_STATUS="error"
+        stage_status="error"
+        stage_exit_code=1
+        OVERALL_STATUS="partial"
+        echo "[$(timestamp_utc)] coldmath hardening recovery env persistence error: target=$persist_target_file file=$COLDMATH_RECOVERY_RECOMMENDED_ENV_FILE error=$persist_error" >> "$LOG_FILE"
+      elif [[ "$persist_changed" == "1" ]]; then
+        RECOVERY_ENV_PERSISTENCE_STATUS="persisted"
+        echo "[$(timestamp_utc)] coldmath hardening persisted recovery env overrides: updated=$persist_updated_count replaced=$persist_replaced_count added=$persist_added_count target=$persist_target_file backup=$persist_backup_file" >> "$LOG_FILE"
+      else
+        RECOVERY_ENV_PERSISTENCE_STATUS="no_change"
+        echo "[$(timestamp_utc)] coldmath hardening recovery env persistence no-op: updated=$persist_updated_count target=$persist_target_file" >> "$LOG_FILE"
+      fi
+    fi
+  fi
+
+  stage_end="$(date +%s)"
+  stage_duration=$(( stage_end - stage_start ))
+  STAGE_ROWS+=("recovery_env_persistence|${stage_status}|${stage_exit_code}|${stage_duration}|optional")
   return 0
 }
 
@@ -226,7 +590,7 @@ fi
 if [[ "$COLDMATH_INCLUDE_ALL_TRADE_ROLES" != "1" ]]; then
   snapshot_cmd+=(--disable-all-trade-roles)
 fi
-run_stage required "coldmath_snapshot_summary" "${snapshot_cmd[@]}"
+run_stage_with_timeout required "coldmath_snapshot_summary" "$COLDMATH_SNAPSHOT_TIMEOUT_SECONDS" "${snapshot_cmd[@]}"
 
 if [[ "$COLDMATH_MARKET_INGEST_ENABLED" == "1" ]]; then
   ingest_cmd=(
@@ -272,7 +636,7 @@ if [[ "$COLDMATH_MARKET_INGEST_ENABLED" == "1" ]]; then
   if [[ "$COLDMATH_INCLUDE_ALL_TRADE_ROLES" != "1" ]]; then
     ingest_cmd+=(--coldmath-disable-all-trade-roles)
   fi
-  run_stage optional "polymarket_market_ingest" "${ingest_cmd[@]}"
+  run_stage_with_timeout optional "polymarket_market_ingest" "$COLDMATH_MARKET_INGEST_TIMEOUT_SECONDS" "${ingest_cmd[@]}"
 else
   STAGE_ROWS+=("polymarket_market_ingest|skipped|0|0|optional")
 fi
@@ -374,6 +738,112 @@ else
   STAGE_ROWS+=("decision_matrix_hardening|skipped|0|0|optional")
 fi
 
+if [[ "$COLDMATH_RECOVERY_ADVISOR_ENABLED" == "1" ]]; then
+  recovery_advisor_cmd=(
+    "$PYTHON_BIN" -m betbot.cli kalshi-temperature-recovery-advisor
+    --output-dir "$COLDMATH_OUTPUT_DIR"
+    --weather-window-hours "$COLDMATH_RECOVERY_ADVISOR_WEATHER_WINDOW_HOURS"
+    --weather-min-bucket-samples "$COLDMATH_RECOVERY_ADVISOR_WEATHER_MIN_BUCKET_SAMPLES"
+    --weather-max-profile-age-hours "$COLDMATH_RECOVERY_ADVISOR_WEATHER_MAX_PROFILE_AGE_HOURS"
+    --weather-negative-expectancy-attempt-share-target "$COLDMATH_RECOVERY_ADVISOR_WEATHER_NEGATIVE_EXPECTANCY_ATTEMPT_SHARE_TARGET"
+    --weather-stale-metar-negative-attempt-share-target "$COLDMATH_RECOVERY_ADVISOR_WEATHER_STALE_METAR_NEGATIVE_ATTEMPT_SHARE_TARGET"
+    --weather-stale-metar-attempt-share-target "$COLDMATH_RECOVERY_ADVISOR_WEATHER_STALE_METAR_ATTEMPT_SHARE_TARGET"
+    --weather-min-attempts-target "$COLDMATH_RECOVERY_ADVISOR_WEATHER_MIN_ATTEMPTS_TARGET"
+    --optimizer-top-n "$COLDMATH_RECOVERY_ADVISOR_OPTIMIZER_TOP_N"
+  )
+  run_stage_with_timeout optional "kalshi_temperature_recovery_advisor" "$COLDMATH_RECOVERY_ADVISOR_TIMEOUT_SECONDS" "${recovery_advisor_cmd[@]}"
+else
+  STAGE_ROWS+=("kalshi_temperature_recovery_advisor|skipped|0|0|optional")
+fi
+
+if [[ "$COLDMATH_RECOVERY_LOOP_ENABLED" == "1" ]]; then
+  recovery_loop_cmd=(
+    "$PYTHON_BIN" -m betbot.cli kalshi-temperature-recovery-loop
+    --output-dir "$COLDMATH_OUTPUT_DIR"
+    --trader-env-file "$ENV_FILE"
+    --max-iterations "$COLDMATH_RECOVERY_LOOP_MAX_ITERATIONS"
+    --stall-iterations "$COLDMATH_RECOVERY_LOOP_STALL_ITERATIONS"
+    --min-gap-improvement "$COLDMATH_RECOVERY_LOOP_MIN_GAP_IMPROVEMENT"
+    --weather-window-hours "$COLDMATH_RECOVERY_ADVISOR_WEATHER_WINDOW_HOURS"
+    --weather-min-bucket-samples "$COLDMATH_RECOVERY_ADVISOR_WEATHER_MIN_BUCKET_SAMPLES"
+    --weather-max-profile-age-hours "$COLDMATH_RECOVERY_ADVISOR_WEATHER_MAX_PROFILE_AGE_HOURS"
+    --weather-negative-expectancy-attempt-share-target "$COLDMATH_RECOVERY_ADVISOR_WEATHER_NEGATIVE_EXPECTANCY_ATTEMPT_SHARE_TARGET"
+    --weather-stale-metar-negative-attempt-share-target "$COLDMATH_RECOVERY_ADVISOR_WEATHER_STALE_METAR_NEGATIVE_ATTEMPT_SHARE_TARGET"
+    --weather-stale-metar-attempt-share-target "$COLDMATH_RECOVERY_ADVISOR_WEATHER_STALE_METAR_ATTEMPT_SHARE_TARGET"
+    --weather-min-attempts-target "$COLDMATH_RECOVERY_ADVISOR_WEATHER_MIN_ATTEMPTS_TARGET"
+    --optimizer-top-n "$COLDMATH_RECOVERY_ADVISOR_OPTIMIZER_TOP_N"
+    --plateau-negative-regime-suppression-min-bucket-samples "$COLDMATH_RECOVERY_LOOP_PLATEAU_NEGATIVE_REGIME_SUPPRESSION_MIN_BUCKET_SAMPLES"
+    --plateau-negative-regime-suppression-expectancy-threshold "$COLDMATH_RECOVERY_LOOP_PLATEAU_NEGATIVE_REGIME_SUPPRESSION_EXPECTANCY_THRESHOLD"
+    --plateau-negative-regime-suppression-top-n "$COLDMATH_RECOVERY_LOOP_PLATEAU_NEGATIVE_REGIME_SUPPRESSION_TOP_N"
+    --retune-weather-window-hours-cap "$COLDMATH_RECOVERY_LOOP_RETUNE_WEATHER_WINDOW_HOURS_CAP"
+    --retune-overblocking-blocked-share-threshold "$COLDMATH_RECOVERY_LOOP_RETUNE_OVERBLOCKING_BLOCKED_SHARE_THRESHOLD"
+    --retune-underblocking-min-top-n "$COLDMATH_RECOVERY_LOOP_RETUNE_UNDERBLOCKING_MIN_TOP_N"
+    --retune-overblocking-max-top-n "$COLDMATH_RECOVERY_LOOP_RETUNE_OVERBLOCKING_MAX_TOP_N"
+    --retune-min-bucket-samples-target "$COLDMATH_RECOVERY_LOOP_RETUNE_MIN_BUCKET_SAMPLES_TARGET"
+    --retune-expectancy-threshold-target "$COLDMATH_RECOVERY_LOOP_RETUNE_EXPECTANCY_THRESHOLD_TARGET"
+  )
+  if [[ "$COLDMATH_RECOVERY_LOOP_PLATEAU_NEGATIVE_REGIME_SUPPRESSION_ENABLED" == "1" ]]; then
+    recovery_loop_cmd+=(--plateau-negative-regime-suppression-enabled)
+  else
+    recovery_loop_cmd+=(--no-plateau-negative-regime-suppression-enabled)
+  fi
+  if [[ "$COLDMATH_RECOVERY_LOOP_EXECUTE_ACTIONS" != "1" ]]; then
+    recovery_loop_cmd+=(--no-execute-actions)
+  fi
+  run_stage_with_timeout optional "kalshi_temperature_recovery_loop" "$COLDMATH_RECOVERY_LOOP_TIMEOUT_SECONDS" "${recovery_loop_cmd[@]}"
+else
+  STAGE_ROWS+=("kalshi_temperature_recovery_loop|skipped|0|0|optional")
+fi
+
+if [[ "$COLDMATH_RECOVERY_CAMPAIGN_ENABLED" == "1" ]]; then
+  recovery_campaign_cmd=(
+    "$PYTHON_BIN" -m betbot.cli kalshi-temperature-recovery-campaign
+    --output-dir "$COLDMATH_OUTPUT_DIR"
+    --trader-env-file "$ENV_FILE"
+    --weather-window-hours "$COLDMATH_RECOVERY_ADVISOR_WEATHER_WINDOW_HOURS"
+    --weather-min-bucket-samples "$COLDMATH_RECOVERY_ADVISOR_WEATHER_MIN_BUCKET_SAMPLES"
+    --weather-max-profile-age-hours "$COLDMATH_RECOVERY_ADVISOR_WEATHER_MAX_PROFILE_AGE_HOURS"
+    --weather-negative-expectancy-attempt-share-target "$COLDMATH_RECOVERY_ADVISOR_WEATHER_NEGATIVE_EXPECTANCY_ATTEMPT_SHARE_TARGET"
+    --weather-stale-metar-negative-attempt-share-target "$COLDMATH_RECOVERY_ADVISOR_WEATHER_STALE_METAR_NEGATIVE_ATTEMPT_SHARE_TARGET"
+    --weather-stale-metar-attempt-share-target "$COLDMATH_RECOVERY_ADVISOR_WEATHER_STALE_METAR_ATTEMPT_SHARE_TARGET"
+    --weather-min-attempts-target "$COLDMATH_RECOVERY_ADVISOR_WEATHER_MIN_ATTEMPTS_TARGET"
+    --optimizer-top-n "$COLDMATH_RECOVERY_ADVISOR_OPTIMIZER_TOP_N"
+    --plateau-negative-regime-suppression-min-bucket-samples "$COLDMATH_RECOVERY_LOOP_PLATEAU_NEGATIVE_REGIME_SUPPRESSION_MIN_BUCKET_SAMPLES"
+    --plateau-negative-regime-suppression-expectancy-threshold "$COLDMATH_RECOVERY_LOOP_PLATEAU_NEGATIVE_REGIME_SUPPRESSION_EXPECTANCY_THRESHOLD"
+    --plateau-negative-regime-suppression-top-n "$COLDMATH_RECOVERY_LOOP_PLATEAU_NEGATIVE_REGIME_SUPPRESSION_TOP_N"
+    --retune-weather-window-hours-cap "$COLDMATH_RECOVERY_LOOP_RETUNE_WEATHER_WINDOW_HOURS_CAP"
+    --retune-overblocking-blocked-share-threshold "$COLDMATH_RECOVERY_LOOP_RETUNE_OVERBLOCKING_BLOCKED_SHARE_THRESHOLD"
+    --retune-underblocking-min-top-n "$COLDMATH_RECOVERY_LOOP_RETUNE_UNDERBLOCKING_MIN_TOP_N"
+    --retune-overblocking-max-top-n "$COLDMATH_RECOVERY_LOOP_RETUNE_OVERBLOCKING_MAX_TOP_N"
+    --retune-min-bucket-samples-target "$COLDMATH_RECOVERY_LOOP_RETUNE_MIN_BUCKET_SAMPLES_TARGET"
+    --retune-expectancy-threshold-target "$COLDMATH_RECOVERY_LOOP_RETUNE_EXPECTANCY_THRESHOLD_TARGET"
+  )
+  if [[ "$COLDMATH_RECOVERY_LOOP_PLATEAU_NEGATIVE_REGIME_SUPPRESSION_ENABLED" == "1" ]]; then
+    recovery_campaign_cmd+=(--plateau-negative-regime-suppression-enabled)
+  else
+    recovery_campaign_cmd+=(--no-plateau-negative-regime-suppression-enabled)
+  fi
+  if [[ "$COLDMATH_RECOVERY_CAMPAIGN_EXECUTE_ACTIONS" != "1" ]]; then
+    recovery_campaign_cmd+=(--no-execute-actions)
+  fi
+  run_stage_with_timeout optional "kalshi_temperature_recovery_campaign" "$COLDMATH_RECOVERY_CAMPAIGN_TIMEOUT_SECONDS" "${recovery_campaign_cmd[@]}"
+else
+  STAGE_ROWS+=("kalshi_temperature_recovery_campaign|skipped|0|0|optional")
+fi
+
+if [[ "$COLDMATH_COVERAGE_VELOCITY_REPORT_ENABLED" == "1" ]]; then
+  coverage_velocity_report_cmd=(
+    "$PYTHON_BIN" -m betbot.cli kalshi-temperature-coverage-velocity-report
+    --output-dir "$COLDMATH_OUTPUT_DIR"
+    --history-limit "$COLDMATH_COVERAGE_VELOCITY_REPORT_HISTORY_LIMIT"
+  )
+  run_stage optional "coverage_velocity_report" "${coverage_velocity_report_cmd[@]}"
+else
+  STAGE_ROWS+=("coverage_velocity_report|skipped|0|0|optional")
+fi
+
+persist_recovery_recommended_env
+
 latest_snapshot_file="$(ls -1t "$COLDMATH_OUTPUT_DIR"/coldmath_snapshot_summary_*.json 2>/dev/null | head -n 1 || true)"
 latest_ingest_file="$(ls -1t "$COLDMATH_OUTPUT_DIR"/polymarket_temperature_markets_summary_*.json 2>/dev/null | head -n 1 || true)"
 latest_replication_file="$(ls -1t "$COLDMATH_OUTPUT_DIR"/coldmath_replication_plan_*.json 2>/dev/null | head -n 1 || true)"
@@ -390,7 +860,7 @@ RUN_DURATION_SECONDS=$(( RUN_END_EPOCH - RUN_START_EPOCH ))
 STAGE_ROWS_JOINED="$(printf '%s;;' "${STAGE_ROWS[@]}")"
 HEALTH_DIR="$COLDMATH_OUTPUT_DIR/health"
 
-health_emit_result="$("$PYTHON_BIN" - "$HEALTH_DIR" "$RUN_ID" "$OVERALL_STATUS" "$RUN_START_EPOCH" "$RUN_END_EPOCH" "$RUN_DURATION_SECONDS" "$COLDMATH_WALLET_ADDRESS" "$COLDMATH_OUTPUT_DIR" "$COLDMATH_SNAPSHOT_DIR" "$STAGE_ROWS_JOINED" "$latest_snapshot_file" "$latest_ingest_file" "$latest_replication_file" "$latest_decision_matrix_file" "$COLDMATH_ACTIONABLE_MIN_POSITIONS_ROWS" "$COLDMATH_ACTIONABLE_MIN_CANDIDATES" "$COLDMATH_ACTIONABLE_MIN_MATCHED_RATIO" "$COLDMATH_ACTIONABLE_REQUIRE_INGEST" "$COLDMATH_ACTIONABLE_REQUIRE_REPLICATION" "$COLDMATH_ACTIONABLE_REQUIRE_DECISION_MATRIX" "$COLDMATH_ACTIONABLE_MIN_MATRIX_SCORE" "$COLDMATH_ACTIONABLE_ALLOWED_MATRIX_STATUSES" "$COLDMATH_ACTIONABLE_REQUIRE_MATRIX_SUPPORTS" "$COLDMATH_ACTIONABLE_ALLOW_MATRIX_BOOTSTRAP" "$COLDMATH_ACTIONABLE_MATRIX_BOOTSTRAP_MAX_HOURS" "$COLDMATH_ACTIONABLE_MATRIX_BOOTSTRAP_DISABLE_AT_SETTLED_OUTCOMES" "$COLDMATH_ACTIONABLE_MATRIX_BOOTSTRAP_STATE_FILE" <<'PY'
+health_emit_result="$("$PYTHON_BIN" - "$HEALTH_DIR" "$RUN_ID" "$OVERALL_STATUS" "$RUN_START_EPOCH" "$RUN_END_EPOCH" "$RUN_DURATION_SECONDS" "$COLDMATH_WALLET_ADDRESS" "$COLDMATH_OUTPUT_DIR" "$COLDMATH_SNAPSHOT_DIR" "$STAGE_ROWS_JOINED" "$latest_snapshot_file" "$latest_ingest_file" "$latest_replication_file" "$latest_decision_matrix_file" "$COLDMATH_ACTIONABLE_MIN_POSITIONS_ROWS" "$COLDMATH_ACTIONABLE_MIN_CANDIDATES" "$COLDMATH_ACTIONABLE_MIN_MATCHED_RATIO" "$COLDMATH_ACTIONABLE_REQUIRE_INGEST" "$COLDMATH_ACTIONABLE_REQUIRE_REPLICATION" "$COLDMATH_ACTIONABLE_REQUIRE_DECISION_MATRIX" "$COLDMATH_ACTIONABLE_MIN_MATRIX_SCORE" "$COLDMATH_ACTIONABLE_ALLOWED_MATRIX_STATUSES" "$COLDMATH_ACTIONABLE_REQUIRE_MATRIX_SUPPORTS" "$COLDMATH_ACTIONABLE_ALLOW_MATRIX_BOOTSTRAP" "$COLDMATH_ACTIONABLE_MATRIX_BOOTSTRAP_MAX_HOURS" "$COLDMATH_ACTIONABLE_MATRIX_BOOTSTRAP_DISABLE_AT_SETTLED_OUTCOMES" "$COLDMATH_ACTIONABLE_MATRIX_BOOTSTRAP_STATE_FILE" "$RECOVERY_ENV_PERSISTENCE_STATUS" "$RECOVERY_ENV_PERSISTENCE_CHANGED" "$RECOVERY_ENV_PERSISTENCE_UPDATED_COUNT" "$RECOVERY_ENV_PERSISTENCE_REPLACED_COUNT" "$RECOVERY_ENV_PERSISTENCE_ADDED_COUNT" "$RECOVERY_ENV_PERSISTENCE_BACKUP_FILE" "$RECOVERY_ENV_PERSISTENCE_TARGET_FILE" "$RECOVERY_ENV_PERSISTENCE_ERROR" <<'PY'
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -491,6 +961,14 @@ actionable_allow_matrix_bootstrap = _to_bool(sys.argv[24])
 actionable_matrix_bootstrap_max_hours = _to_float(sys.argv[25], 0.0)
 actionable_matrix_bootstrap_disable_at_settled_outcomes = _to_int(sys.argv[26], 0)
 actionable_matrix_bootstrap_state_file = str(sys.argv[27] or "").strip()
+recovery_env_persistence_status = str(sys.argv[28] or "").strip().lower() or "unknown"
+recovery_env_persistence_changed = _to_bool(sys.argv[29])
+recovery_env_persistence_updated_count = _to_int(sys.argv[30], 0)
+recovery_env_persistence_replaced_count = _to_int(sys.argv[31], 0)
+recovery_env_persistence_added_count = _to_int(sys.argv[32], 0)
+recovery_env_persistence_backup_file = str(sys.argv[33] or "").strip()
+recovery_env_persistence_target_file = str(sys.argv[34] or "").strip()
+recovery_env_persistence_error = str(sys.argv[35] or "").strip()
 
 stage_rows: list[dict[str, object]] = []
 for row in [item for item in stage_rows_raw.split(";;") if item]:
@@ -534,6 +1012,16 @@ payload: dict[str, object] = {
         "polymarket_temperature_markets_summary": {"file": ingest_file, "status": ingest_status},
         "coldmath_replication_plan": {"file": replication_file, "status": replication_status},
         "decision_matrix_hardening": {"file": decision_matrix_file, "status": decision_matrix_status},
+    },
+    "recovery_env_persistence": {
+        "status": recovery_env_persistence_status,
+        "changed": recovery_env_persistence_changed,
+        "updated_count": recovery_env_persistence_updated_count,
+        "replaced_count": recovery_env_persistence_replaced_count,
+        "added_count": recovery_env_persistence_added_count,
+        "backup_file": recovery_env_persistence_backup_file,
+        "target_file": recovery_env_persistence_target_file,
+        "error": recovery_env_persistence_error,
     },
 }
 

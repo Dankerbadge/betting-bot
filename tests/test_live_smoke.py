@@ -1,5 +1,7 @@
 import tempfile
 import sys
+import json
+from datetime import datetime, timezone
 from pathlib import Path
 import unittest
 from contextlib import redirect_stdout
@@ -189,6 +191,48 @@ class LiveSmokeTests(unittest.TestCase):
             self.assertEqual(summary["status"], "failed")
             self.assertEqual(summary["checks_failed"], 1)
             self.assertEqual(summary["failed"][0]["component"], "odds_provider")
+
+    def test_run_live_smoke_uses_provider_artifact_for_non_therundown(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            key_path = base / "kalshi.pem"
+            key_path.write_text("dummy", encoding="utf-8")
+            env_file = base / "env.txt"
+            env_file.write_text(
+                (
+                    "KALSHI_ACCESS_KEY_ID=abc123\n"
+                    f"KALSHI_PRIVATE_KEY_PATH={key_path}\n"
+                    "KALSHI_ENV=demo\n"
+                    "ODDS_PROVIDER=opticodds\n"
+                    "OPTICODDS_API_KEY=opt123\n"
+                ),
+                encoding="utf-8",
+            )
+            (base / "live_candidates_summary_4_2026-04-21_20260421_010101.json").write_text(
+                json.dumps(
+                    {
+                        "captured_at": datetime.now(timezone.utc).isoformat(),
+                        "status": "ready",
+                        "candidates_written": 3,
+                        "market_pairs_with_consensus": 2,
+                        "positive_ev_candidates": 1,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            summary = run_live_smoke(
+                env_file=str(env_file),
+                output_dir=str(base),
+                http_get_json=lambda *_: (200, {"balance": 50}),
+                sign_request=lambda *_: "signed-payload",
+            )
+
+            self.assertEqual(summary["status"], "passed")
+            self.assertEqual(summary["checks_failed"], 0)
+            odds_check = next(check for check in summary["checks"] if check["component"] == "odds_provider")
+            self.assertTrue(odds_check["ok"])
+            self.assertEqual(odds_check["details"]["artifact_status"], "ready")
 
     def test_run_live_smoke_flags_kalshi_env_mismatch(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

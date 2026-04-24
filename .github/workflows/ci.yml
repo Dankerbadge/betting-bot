@@ -41,6 +41,9 @@ jobs:
       - name: Install project and locked dev dependencies
         run: make install-dev
 
+      - name: Run strict gatechain regression suite
+        run: make test-gatechain
+
       - name: Run pre-commit hooks
         env:
           SKIP: end-of-file-fixer,trailing-whitespace

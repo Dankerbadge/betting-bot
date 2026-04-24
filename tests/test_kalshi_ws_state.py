@@ -548,6 +548,100 @@ class KalshiWsStateTests(unittest.TestCase):
             self.assertEqual(authority["status"], "ready")
             self.assertTrue(authority["gate_pass"])
 
+    def test_run_ws_state_collect_preserves_previous_ready_state_on_desync(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            current_now = datetime.now(timezone.utc)
+            env_path = base / "kalshi.env"
+            env_path.write_text(
+                "\n".join(
+                    [
+                        "KALSHI_ENV=demo",
+                        "KALSHI_ACCESS_KEY_ID=test-access-key",
+                        "KALSHI_PRIVATE_KEY_PATH=/tmp/test-private-key.pem",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            ws_state_path = base / "kalshi_ws_state_latest.json"
+            ws_state_path.write_text(
+                json.dumps(
+                    {
+                        "summary": {
+                            "status": "ready",
+                            "gate_pass": True,
+                            "market_count": 1,
+                            "desynced_market_count": 0,
+                            "events_processed": 3,
+                            "last_event_at": (current_now - timedelta(seconds=5)).isoformat(),
+                        },
+                        "markets": {
+                            "KXTEST-PREVIOUS-READY-1": {
+                                "ticker": "KXTEST-PREVIOUS-READY-1",
+                                "top_of_book": {
+                                    "best_yes_bid_dollars": 0.42,
+                                    "best_no_bid_dollars": 0.57,
+                                },
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            scripted_messages = [
+                json.dumps(
+                    {
+                        "type": "orderbook_snapshot",
+                        "seq": 1,
+                        "msg": {
+                            "market_ticker": "KXTEST-PREVIOUS-READY-1",
+                            "yes": [[42, 100]],
+                            "no": [[58, 80]],
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "orderbook_delta",
+                        "seq": 3,
+                        "msg": {
+                            "market_ticker": "KXTEST-PREVIOUS-READY-1",
+                            "yes": [[43, 60]],
+                            "no": [[57, 90]],
+                        },
+                    }
+                ),
+            ]
+            factory = _FakeWebSocketFactory(scripted_messages)
+            summary = run_kalshi_ws_state_collect(
+                env_file=str(env_path),
+                channels=("orderbook_snapshot", "orderbook_delta"),
+                market_tickers=("KXTEST-PREVIOUS-READY-1",),
+                output_dir=str(base),
+                ws_state_json=str(ws_state_path),
+                run_seconds=1.0,
+                max_events=2,
+                max_staleness_seconds=60.0,
+                websocket_client_factory=factory,
+                sign_request=lambda *_: "fake-signature",
+                sleep_fn=lambda seconds: None,
+                now=current_now,
+            )
+            self.assertTrue(summary["fallback_state_used"])
+            self.assertEqual(summary["status_before_fallback"], "desynced")
+            self.assertEqual(summary["fallback_state_reason"], "preserved_previous_ready_state")
+            self.assertEqual(summary["status"], "ready")
+            self.assertEqual(summary["desynced_market_count"], 0)
+            self.assertTrue(summary["gate_pass"])
+
+            authority = load_ws_state_authority(
+                ws_state_json=summary["ws_state_json"],
+                captured_at=current_now + timedelta(seconds=10),
+                max_staleness_seconds=60.0,
+            )
+            self.assertEqual(authority["status"], "ready")
+            self.assertTrue(authority["gate_pass"])
+
     def test_run_ws_state_collect_preserves_previous_stale_state_on_upstream_failure(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
@@ -878,6 +972,107 @@ class KalshiWsStateTests(unittest.TestCase):
             self.assertIsInstance(params, dict)
             if isinstance(params, dict):
                 self.assertEqual(params.get("market_tickers"), ["KXAUTO-1"])
+
+    def test_run_ws_state_collect_auto_discovers_market_tickers_from_temperature_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            env_path = base / "kalshi.env"
+            env_path.write_text(
+                "\n".join(
+                    [
+                        "KALSHI_ENV=demo",
+                        "KALSHI_ACCESS_KEY_ID=test-access-key",
+                        "KALSHI_PRIVATE_KEY_PATH=/tmp/test-private-key.pem",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (base / "kalshi_temperature_trade_plan_summary_20260329_120000.json").write_text(
+                json.dumps(
+                    {
+                        "planned_orders": 1,
+                        "top_plans": [{"market_ticker": "KXTEMP-1"}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            scripted_messages = [
+                json.dumps(
+                    {
+                        "type": "orderbook_snapshot",
+                        "seq": 1,
+                        "msg": {
+                            "market_ticker": "KXTEMP-1",
+                            "yes": [[43, 100]],
+                            "no": [[57, 100]],
+                        },
+                    }
+                ),
+            ]
+            factory = _FakeWebSocketFactory(scripted_messages)
+            summary = run_kalshi_ws_state_collect(
+                env_file=str(env_path),
+                channels=("orderbook_snapshot",),
+                output_dir=str(base),
+                run_seconds=1.0,
+                max_events=1,
+                max_staleness_seconds=60.0,
+                websocket_client_factory=factory,
+                sign_request=lambda private_key_path, timestamp_ms, method, path: "fake-signature",
+                sleep_fn=lambda seconds: None,
+            )
+            self.assertEqual(summary["status"], "ready")
+            self.assertEqual(summary["market_tickers_explicit"], [])
+            self.assertEqual(summary["market_tickers_auto_discovered"], ["KXTEMP-1"])
+            self.assertEqual(summary["market_tickers"], ["KXTEMP-1"])
+
+    def test_run_ws_state_collect_auto_discovers_market_tickers_from_temperature_csv(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            env_path = base / "kalshi.env"
+            env_path.write_text(
+                "\n".join(
+                    [
+                        "KALSHI_ENV=demo",
+                        "KALSHI_ACCESS_KEY_ID=test-access-key",
+                        "KALSHI_PRIVATE_KEY_PATH=/tmp/test-private-key.pem",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (base / "kalshi_temperature_contract_specs_20260329_120000.csv").write_text(
+                "market_ticker,series_ticker\nKXCSV-1,KXCSV\n",
+                encoding="utf-8",
+            )
+            scripted_messages = [
+                json.dumps(
+                    {
+                        "type": "orderbook_snapshot",
+                        "seq": 1,
+                        "msg": {
+                            "market_ticker": "KXCSV-1",
+                            "yes": [[46, 75]],
+                            "no": [[54, 80]],
+                        },
+                    }
+                ),
+            ]
+            factory = _FakeWebSocketFactory(scripted_messages)
+            summary = run_kalshi_ws_state_collect(
+                env_file=str(env_path),
+                channels=("orderbook_snapshot",),
+                output_dir=str(base),
+                run_seconds=1.0,
+                max_events=1,
+                max_staleness_seconds=60.0,
+                websocket_client_factory=factory,
+                sign_request=lambda private_key_path, timestamp_ms, method, path: "fake-signature",
+                sleep_fn=lambda seconds: None,
+            )
+            self.assertEqual(summary["status"], "ready")
+            self.assertEqual(summary["market_tickers_explicit"], [])
+            self.assertEqual(summary["market_tickers_auto_discovered"], ["KXCSV-1"])
+            self.assertEqual(summary["market_tickers"], ["KXCSV-1"])
 
 
 if __name__ == "__main__":

@@ -48,6 +48,14 @@ def main() -> int:
     if command == "kalshi-temperature-live-readiness":
         pipeline_status = (os.environ.get("FAKE_LIVE_READINESS_STATUS") or "green").strip().lower()
         pipeline_reason = (os.environ.get("FAKE_LIVE_READINESS_REASON") or "").strip()
+        payload_mode = (os.environ.get("FAKE_LIVE_READINESS_PAYLOAD_MODE") or "valid").strip().lower()
+        output_path = output_dir / f"kalshi_temperature_live_readiness_{stamp}.json"
+        if payload_mode == "skip_write":
+            return 0
+        if payload_mode == "invalid_json":
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text("{invalid_json", encoding="utf-8")
+            return 0
         payload: dict[str, object] = {
             "status": "ready",
             "captured_at": datetime.now(timezone.utc).isoformat(),
@@ -56,7 +64,7 @@ def main() -> int:
                 "shortest_horizon_pipeline_reason": pipeline_reason,
             },
         }
-        _write_json(output_dir / f"kalshi_temperature_live_readiness_{stamp}.json", payload)
+        _write_json(output_path, payload)
         return 0
 
     if command == "kalshi-temperature-go-live-gate":
@@ -186,12 +194,15 @@ def _run_readiness_cycle(
     tool_dir: Path,
     live_readiness_status: str,
     live_readiness_reason: str,
+    extra_env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     script = root / "infra" / "digitalocean" / "run_temperature_readiness_reports.sh"
     env = dict(os.environ)
     env["PATH"] = f"{tool_dir}:{env.get('PATH', '')}"
     env["FAKE_LIVE_READINESS_STATUS"] = live_readiness_status
     env["FAKE_LIVE_READINESS_REASON"] = live_readiness_reason
+    if extra_env:
+        env.update(extra_env)
     return subprocess.run(
         ["/bin/bash", str(script), str(env_file)],
         check=False,
@@ -480,3 +491,72 @@ def test_readiness_reports_alert_can_notify_every_red_when_dedupe_disabled(tmp_p
     assert second.returncode == 0
     assert len(captured_payloads) == 2
     assert state_file.exists()
+
+
+def test_readiness_reports_strict_live_readiness_artifact_fails_on_malformed_json(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    fake_root = _prepare_fake_betbot_root(tmp_path)
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    state_file = tmp_path / "pipeline_alert_state.json"
+    tool_dir = _prepare_tool_shims(tmp_path)
+
+    env_file = tmp_path / "readiness.env"
+    _write_env_file(
+        env_file=env_file,
+        betbot_root=fake_root,
+        output_dir=output_dir,
+        webhook_url="",
+        state_file=state_file,
+    )
+    with env_file.open("a", encoding="utf-8") as handle:
+        handle.write("READINESS_STRICT_LIVE_READINESS_ARTIFACT=1\n")
+
+    run = _run_readiness_cycle(
+        root=root,
+        env_file=env_file,
+        tool_dir=tool_dir,
+        live_readiness_status="green",
+        live_readiness_reason="",
+        extra_env={"FAKE_LIVE_READINESS_PAYLOAD_MODE": "invalid_json"},
+    )
+
+    assert run.returncode == 1
+    log_file = output_dir / "logs" / "readiness_reports.log"
+    log_text = log_file.read_text(encoding="utf-8")
+    assert "live_readiness_artifact_invalid" in log_text
+    assert "reason=parse_error" in log_text
+
+
+def test_readiness_reports_strict_live_readiness_artifact_fails_when_missing(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    fake_root = _prepare_fake_betbot_root(tmp_path)
+    output_dir = tmp_path / "out"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    state_file = tmp_path / "pipeline_alert_state.json"
+    tool_dir = _prepare_tool_shims(tmp_path)
+
+    env_file = tmp_path / "readiness.env"
+    _write_env_file(
+        env_file=env_file,
+        betbot_root=fake_root,
+        output_dir=output_dir,
+        webhook_url="",
+        state_file=state_file,
+    )
+    with env_file.open("a", encoding="utf-8") as handle:
+        handle.write("READINESS_STRICT_LIVE_READINESS_ARTIFACT=1\n")
+
+    run = _run_readiness_cycle(
+        root=root,
+        env_file=env_file,
+        tool_dir=tool_dir,
+        live_readiness_status="green",
+        live_readiness_reason="",
+        extra_env={"FAKE_LIVE_READINESS_PAYLOAD_MODE": "skip_write"},
+    )
+
+    assert run.returncode == 1
+    log_file = output_dir / "logs" / "readiness_reports.log"
+    log_text = log_file.read_text(encoding="utf-8")
+    assert "live_readiness_artifact_missing" in log_text
